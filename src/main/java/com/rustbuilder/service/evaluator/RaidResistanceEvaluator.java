@@ -114,6 +114,8 @@ public class RaidResistanceEvaluator {
 
         if (!hasTC && !hasLR) {
             score = 0.0; // No key targets — invalid base
+        } else if (hasTC && sulfurToTC == 0) {
+            score = 0.0; // TC is directly reachable through an open side/roof.
         } else {
             int effTC = hasTC ? sulfurToTC : 0;
             int effLR = hasLR ? minSulfurToLR : 0;

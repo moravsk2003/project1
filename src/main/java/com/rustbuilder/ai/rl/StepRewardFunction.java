@@ -6,14 +6,17 @@ import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.Socket;
-import com.rustbuilder.service.physics.StabilityService;
 import com.rustbuilder.config.GameConstants;
+import com.rustbuilder.service.evaluator.LogisticsEvaluator;
+import com.rustbuilder.service.graph.HouseGraph;
+import com.rustbuilder.service.graph.HouseGraph.TileNode;
 
 /**
  * Calculates intermediate rewards for each RL step to guide the agent.
  * Rewards are kept small (mostly 0.0-0.5 range) to avoid Q-value explosion.
  */
 public class StepRewardFunction {
+    private static final int SPATIAL_REWARD_SEARCH_THRESHOLD = 96;
 
     public static double calculate(GridModel gridModel,
                                    BuildAction action,
@@ -53,7 +56,7 @@ public class StepRewardFunction {
         if (blocks.isEmpty()) return reward;
 
         // ===== 1. Socket Connection Reward =====
-        int socketConnections = countSocketConnections(placed, blocks);
+        int socketConnections = countSocketConnections(gridModel, placed, blocks);
         boolean isFurniture = placed.getType() == BuildingType.TC || 
                               placed.getType() == BuildingType.WORKBENCH || 
                               placed.getType() == BuildingType.LOOT_ROOM;
@@ -65,7 +68,7 @@ public class StepRewardFunction {
         }
 
         // ===== 2. Structural Stability Reward =====
-        StabilityService.recalculateAll(gridModel);
+        // EpisodeRunner calls GridModel.finalizeLoad() immediately before reward calculation.
         double stability = placed.getStability();
         if (stability > 0) {
             reward += stability * config.stabilityRewardMult;
@@ -76,9 +79,15 @@ public class StepRewardFunction {
         // ===== 3. Type-specific bonuses =====
         if (action.actionType == BuildAction.ActionType.TC) {
             reward += config.tcPlacementBonus;
-        } else if (action.actionType == BuildAction.ActionType.WORKBENCH || 
-                   action.actionType == BuildAction.ActionType.LOOT_ROOM) {
-            reward += config.secondaryDeployableBonus;
+        } else if (action.actionType == BuildAction.ActionType.WORKBENCH) {
+            if (countBlocksOfType(blocks, BuildingType.WORKBENCH) == 1 &&
+                    countOpenDeployablesOfType(gridModel, "workbench") <= 1) {
+                reward += config.secondaryDeployableBonus;
+            }
+        } else if (action.actionType == BuildAction.ActionType.LOOT_ROOM) {
+            if (countOpenDeployablesOfType(gridModel, "loot_room") <= 1) {
+                reward += config.secondaryDeployableBonus;
+            }
         }
 
         // Foundation count bonus
@@ -98,16 +107,20 @@ public class StepRewardFunction {
 
         // ===== 4. Spatial compactness =====
         if (blocks.size() > 1) {
-            double minDist = Double.MAX_VALUE;
+            double tileSize = GameConstants.TILE_SIZE;
+            double scatteredThreshold = tileSize * 3;
+            double minDistSq = Double.MAX_VALUE;
             for (BuildingBlock b : blocks) {
                 if (b == placed) continue;
-                double d = Math.hypot(b.getX() - placed.getX(), b.getY() - placed.getY());
-                if (d < minDist) minDist = d;
+                double dx = b.getX() - placed.getX();
+                double dy = b.getY() - placed.getY();
+                double dSq = dx * dx + dy * dy;
+                if (dSq < minDistSq) minDistSq = dSq;
             }
-            double tileSize = GameConstants.TILE_SIZE;
-            if (minDist <= tileSize) {
+            double tileSizeSq = tileSize * tileSize;
+            if (minDistSq <= tileSizeSq) {
                 reward += config.spatialCompactnessBonus;
-            } else if (minDist > tileSize * 3) {
+            } else if (minDistSq > scatteredThreshold * scatteredThreshold) {
                 reward += config.spatialScatteredPenalty;
             }
         }
@@ -118,11 +131,14 @@ public class StepRewardFunction {
     /**
      * Count how many other blocks this block connects to via socket proximity.
      */
-    private static int countSocketConnections(BuildingBlock placed, List<BuildingBlock> allBlocks) {
+    private static int countSocketConnections(GridModel gridModel, BuildingBlock placed, List<BuildingBlock> allBlocks) {
         int connections = 0;
         List<Socket> placedSockets = placed.getSockets();
+        List<BuildingBlock> candidates = allBlocks.size() > SPATIAL_REWARD_SEARCH_THRESHOLD
+            ? gridModel.getNearbyBlocks(placed.getX(), placed.getY(), placed.getZ(), GameConstants.TILE_SIZE * 2.5)
+            : allBlocks;
         
-        for (BuildingBlock other : allBlocks) {
+        for (BuildingBlock other : candidates) {
             if (other == placed) continue;
             
             // Quick distance check first
@@ -151,5 +167,28 @@ public class StepRewardFunction {
 
     private static boolean isFoundation(BuildingBlock b) {
         return b.getType() == BuildingType.FOUNDATION || b.getType() == BuildingType.TRIANGLE_FOUNDATION;
+    }
+
+    private static int countBlocksOfType(List<BuildingBlock> blocks, BuildingType type) {
+        int count = 0;
+        for (BuildingBlock block : blocks) {
+            if (block.getType() == type) {
+                count++;
+            }
+        }
+        return count;
+    }
+
+    private static int countOpenDeployablesOfType(GridModel gridModel, String graphNodeType) {
+        HouseGraph graph = new HouseGraph();
+        graph.buildGraph(gridModel.getAllBlocks());
+
+        int openCount = 0;
+        for (TileNode node : graph.findAllNodesByType(graphNodeType)) {
+            if (LogisticsEvaluator.isOpenToOutside(graph, node)) {
+                openCount++;
+            }
+        }
+        return openCount;
     }
 }

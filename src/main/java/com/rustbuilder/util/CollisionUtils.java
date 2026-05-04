@@ -18,8 +18,6 @@ public class CollisionUtils {
 
     private static boolean isSeparated(double[] polyA, double[] polyB) {
         int n = polyA.length / 2;
-        double[] minMaxA = new double[2];
-        double[] minMaxB = new double[2];
         
         for (int i = 0; i < n; i++) {
             // Edge vector
@@ -36,30 +34,28 @@ public class CollisionUtils {
             double normalY = edgeX;
 
             // Project both polygons onto normal
-            project(polyA, normalX, normalY, minMaxA);
-            project(polyB, normalX, normalY, minMaxB);
+            double minA = Double.MAX_VALUE;
+            double maxA = -Double.MAX_VALUE;
+            for (int p = 0; p < polyA.length / 2; p++) {
+                double dot = polyA[p * 2] * normalX + polyA[p * 2 + 1] * normalY;
+                if (dot < minA) minA = dot;
+                if (dot > maxA) maxA = dot;
+            }
+
+            double minB = Double.MAX_VALUE;
+            double maxB = -Double.MAX_VALUE;
+            for (int p = 0; p < polyB.length / 2; p++) {
+                double dot = polyB[p * 2] * normalX + polyB[p * 2 + 1] * normalY;
+                if (dot < minB) minB = dot;
+                if (dot > maxB) maxB = dot;
+            }
 
             // Check for gap with tolerance for floating point errors
             double EPSILON = 0.001;
-            if (minMaxA[1] <= minMaxB[0] + EPSILON || minMaxB[1] <= minMaxA[0] + EPSILON) {
+            if (maxA <= minB + EPSILON || maxB <= minA + EPSILON) {
                 return true; // Separated
             }
         }
         return false;
-    }
-
-    private static void project(double[] poly, double nx, double ny, double[] outMinMax) {
-        double min = Double.MAX_VALUE;
-        double max = -Double.MAX_VALUE;
-
-        for (int i = 0; i < poly.length / 2; i++) {
-            double dot = poly[i * 2] * nx + poly[i * 2 + 1] * ny;
-            if (dot < min)
-                min = dot;
-            if (dot > max)
-                max = dot;
-        }
-        outMinMax[0] = min;
-        outMinMax[1] = max;
     }
 }

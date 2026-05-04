@@ -53,7 +53,9 @@ public class RLGeneratorDialog {
 
     // UI Components
     private ComboBox<String> modelComboBox;
+    private ComboBox<RLTrainingService.EncoderMode> encoderModeComboBox;
     private TextField newModelField;
+    private boolean syncingEncoderMode = false;
     
     private Slider logisticsSlider;
     private Slider costSlider;
@@ -69,7 +71,7 @@ public class RLGeneratorDialog {
     private Spinner<Integer> stepsSpinner;
     private Spinner<Integer> epochsSpinner;
     
-    private CheckBox multiDiscreteCheck;
+    // Legacy multiDiscreteCheck removed
     private ProgressBar progressBar;
     private Label statusLabel;
     private TextArea diagnosticLogArea;
@@ -77,6 +79,7 @@ public class RLGeneratorDialog {
     private Button trainButton;
     private Button stopButton;
     private Button generateButton;
+    private Button bestRewardButton;
     private Button diagnosticButton;
     
     // Summary Labels
@@ -155,6 +158,11 @@ public class RLGeneratorDialog {
      */
     public static void showDialog(Stage owner, RLTrainingService service, GridModel grid, Runnable refresh) {
         RLGeneratorDialog dialog = new RLGeneratorDialog(owner, service, grid, refresh, null);
+        dialog.show();
+    }
+
+    public static void showDialog(Stage owner, RLTrainingService service, GridModel grid, Runnable refresh, GameCanvas gameCanvas) {
+        RLGeneratorDialog dialog = new RLGeneratorDialog(owner, service, grid, refresh, gameCanvas);
         dialog.show();
     }
 
@@ -273,11 +281,20 @@ public class RLGeneratorDialog {
         VBox box = card();
         box.getChildren().add(sectionTitle("🧪  Experimental Settings"));
 
-        multiDiscreteCheck = new CheckBox("Enable Multi-Discrete Flow");
-        HintUtils.attachHint(multiDiscreteCheck, HintKey.MULTI_DISCRETE);
-        multiDiscreteCheck.setStyle("-fx-text-fill: #ecf0f1;");
-        multiDiscreteCheck.setSelected(rlService.isUseMultiDiscreteFlow());
-        multiDiscreteCheck.setOnAction(e -> rlService.setUseMultiDiscreteFlow(multiDiscreteCheck.isSelected()));
+        HBox encoderRow = new HBox(8);
+        encoderRow.setAlignment(Pos.CENTER_LEFT);
+
+        Label encoderLabel = bodyLabel("State Encoder:");
+        HintUtils.attachHint(encoderLabel, "State Encoder", "Select the state encoder architecture used for new RL training runs.");
+
+        encoderModeComboBox = new ComboBox<>();
+        encoderModeComboBox.getItems().setAll(RLTrainingService.EncoderMode.values());
+        encoderModeComboBox.setValue(rlService.getEncoderMode());
+        encoderModeComboBox.setPrefWidth(170);
+        HintUtils.attachHint(encoderModeComboBox, "State Encoder", "V1 uses the legacy voxel encoder. V2 uses bucketed voxels. V3 uses the hybrid voxel/global encoder.");
+        encoderModeComboBox.setOnAction(e -> handleEncoderModeSelection());
+
+        encoderRow.getChildren().addAll(encoderLabel, encoderModeComboBox);
 
         CheckBox aimSectorCheck = new CheckBox("Learn Aim Sector (Phase 5)");
         HintUtils.attachHint(aimSectorCheck, HintKey.MULTI_DISCRETE);
@@ -285,8 +302,58 @@ public class RLGeneratorDialog {
         aimSectorCheck.setSelected(rlService.isUseAimSectorLearning());
         aimSectorCheck.setOnAction(e -> rlService.setUseAimSectorLearning(aimSectorCheck.isSelected()));
 
-        box.getChildren().addAll(multiDiscreteCheck, aimSectorCheck);
+        box.getChildren().addAll(encoderRow, aimSectorCheck);
         return box;
+    }
+
+    private void handleEncoderModeSelection() {
+        if (syncingEncoderMode || encoderModeComboBox == null) return;
+        RLTrainingService.EncoderMode selectedMode = encoderModeComboBox.getValue();
+        if (selectedMode == null || selectedMode == rlService.getEncoderMode()) return;
+
+        if (trainingRunning) {
+            showAlert("Stop training before switching the state encoder.");
+            syncEncoderModeCombo();
+            return;
+        }
+
+        switchEncoderMode(selectedMode, true);
+    }
+
+    private void switchEncoderMode(RLTrainingService.EncoderMode mode, boolean userInitiated) {
+        if (mode == null) mode = RLTrainingService.EncoderMode.V1;
+        RLTrainingService.EncoderMode previousMode = rlService.getEncoderMode();
+        if (previousMode == mode) {
+            syncEncoderModeCombo();
+            return;
+        }
+
+        rlService.setEncoderMode(mode);
+        syncEncoderModeCombo();
+        updateSummaryUI();
+
+        String source = userInitiated ? "Selected" : "Loaded";
+        appendStatus(String.format("%s state encoder %s. Runtime stats and replay buffers were reset.", source, mode));
+    }
+
+    private void syncEncoderModeCombo() {
+        if (encoderModeComboBox == null) return;
+        syncingEncoderMode = true;
+        try {
+            encoderModeComboBox.setValue(rlService.getEncoderMode());
+        } finally {
+            syncingEncoderMode = false;
+        }
+    }
+
+    private RLTrainingService.EncoderMode encoderModeFromVersion(String encoderVersion) {
+        if ("v3".equalsIgnoreCase(encoderVersion)) {
+            return RLTrainingService.EncoderMode.V3;
+        }
+        if ("v2".equalsIgnoreCase(encoderVersion)) {
+            return RLTrainingService.EncoderMode.V2;
+        }
+        return RLTrainingService.EncoderMode.V1;
     }
 
     private VBox createStatsSection() {
@@ -326,11 +393,15 @@ public class RLGeneratorDialog {
         HintUtils.attachHint(generateButton, "Застосувати", "Перенести найкращу згенеровану базу на ігрове поле.");
         generateButton.setOnAction(e -> applyBest());
 
-        diagnosticButton = styledBtn("▶ Run Single Diagnostic Step", "#f39c12");
-        HintUtils.attachHint(diagnosticButton, "Діагностика", "Запустити один крок тренування з виведенням детальної інформації.");
+        bestRewardButton = styledBtn("Apply Best Reward", "#8e44ad");
+        HintUtils.attachHint(bestRewardButton, "Найкраща винагорода", "Показати будинок з найбільшою сумарною винагородою епізоду: step reward + final reward.");
+        bestRewardButton.setOnAction(e -> applyBestReward());
+
+        diagnosticButton = styledBtn("▶ Run Single AI Step", "#f39c12");
+        HintUtils.attachHint(diagnosticButton, "Один крок ШІ", "Завантажена RL-модель читає поточну базу на полі та виконує одну дію.");
         diagnosticButton.setOnAction(e -> runDiagnosticStep());
 
-        box.getChildren().addAll(trainButton, stopButton, generateButton, diagnosticButton);
+        box.getChildren().addAll(trainButton, stopButton, generateButton, bestRewardButton, diagnosticButton);
         return box;
     }
 
@@ -362,12 +433,10 @@ public class RLGeneratorDialog {
         double rw = raidSlider.getValue();
         double ww = workingAreaSlider.getValue();
         
-        rlService.setUseMultiDiscreteFlow(multiDiscreteCheck.isSelected());
-        rlService.setLogFile(modelName);
-
+        final String finalModelName = modelName;
         Thread trainingThread = new Thread(() -> {
             try {
-                rlService.train(ep, steps, lw, cw, rw, ww, epochs,
+                rlService.train(finalModelName, ep, steps, lw, cw, rw, ww, epochs,
                     this::onTrainingProgress, 
                     () -> Platform.runLater(() -> statusLabel.setText("Status: Epoch Complete")));
                 
@@ -452,41 +521,57 @@ public class RLGeneratorDialog {
     }
 
     private void applyBest() {
-        GridModel best = rlService.getBestGridModel();
+        GridModel best = rlService.getBestGridModelSnapshot();
         if (best == null || best.getAllBlocks().isEmpty()) {
             showAlert("No successful base trained yet!");
             return;
         }
-        
+
+        applyGridToMain(best);
+        appendStatus("Applied best trained layout (Score: " + String.format("%.2f", rlService.getBestScore()) + ", Blocks: " + mainGrid.getAllBlocks().size() + ")");
+    }
+
+    private void applyBestReward() {
+        GridModel best = rlService.getBestRewardGridModelSnapshot();
+        if (best == null || best.getAllBlocks().isEmpty()) {
+            showAlert("No best-reward episode recorded yet!");
+            return;
+        }
+
+        applyGridToMain(best);
+        appendStatus("Applied best reward layout (Total Reward: " + String.format("%.2f", rlService.getBestTotalReward()) + ", Blocks: " + mainGrid.getAllBlocks().size() + ")");
+    }
+
+    private void applyGridToMain(GridModel source) {
         mainGrid.clear();
-        for (BuildingBlock b : best.getAllBlocks()) {
-            mainGrid.addBlockSilent(cloneBlock(b));
+        for (BuildingBlock b : source.getAllBlocks()) {
+            BuildingBlock clone = cloneBlock(b);
+            if (clone != null) {
+                mainGrid.addBlockSilent(clone);
+            }
         }
         mainGrid.finalizeLoad();
-        if (refreshCallback != null) refreshCallback.run();
+        if (refreshCallback != null) {
+            refreshCallback.run();
+        }
         if (gameCanvas != null) {
             gameCanvas.invalidateCache();
             gameCanvas.draw();
         }
-        
-        appendStatus("Applied best trained layout (Score: " + String.format("%.2f", rlService.getBestScore()) + ")");
     }
 
     private void runDiagnosticStep() {
         if (trainingRunning) return;
         
-        appendStatus("--- Starting Diagnostic Step ---");
-        
-        com.rustbuilder.ai.rl.multidiscrete.MultiDiscretePhaseContext context = 
-            new com.rustbuilder.ai.rl.multidiscrete.MultiDiscretePhaseContext(
-                mainGrid, true, false, 0, 1
-            );
-            
         com.rustbuilder.ai.rl.multidiscrete.MultiDiscretePhasePolicy policy = rlService.getMultiDiscretePolicy();
         if (policy == null) {
             showAlert("No active RL policy found.");
             return;
         }
+
+        GridModel stepGrid = mainGrid.clone();
+        diagnosticButton.setDisable(true);
+        appendStatus("--- Running AI Single Step ---");
         
         com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteStateObserver guiObserver = 
             new com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteStateObserver() {
@@ -503,20 +588,20 @@ public class RLGeneratorDialog {
         
         Thread t = new Thread(() -> {
             try {
-                com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteAction action = policy.chooseAction(context, guiObserver);
-                if (action == null || action.getTypeIndex() == -1) {
-                    appendStatus("  No action selected (STOP).");
+                com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteAction action = rlService.chooseSingleStepAction(stepGrid, guiObserver);
+                if (action == null || !action.isValid() || action.getTypeIndex() == com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteActionSpace.STOP_TYPE_INDEX) {
+                    appendStatus("  AI selected STOP. No block placed.");
+                    Platform.runLater(() -> diagnosticButton.setDisable(false));
                     return;
                 }
                 
-                com.rustbuilder.ai.ea.BaseGenome.BuildAction legacy = 
+                com.rustbuilder.ai.ea.BaseGenome.BuildAction bAction = 
                     com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteActionMapper.toBuildAction(action);
-                    
-                com.rustbuilder.ai.rl.RLTrainingService.PlacementResult res = rlService.placeBlock(mainGrid, legacy);
                 
                 Platform.runLater(() -> {
+                    com.rustbuilder.ai.rl.RLTrainingService.PlacementResult res = rlService.placeBlock(mainGrid, bAction);
                     if (res.inserted) {
-                        appendStatus("  Placement successful: " + legacy.actionType);
+                        appendStatus("  Placement successful: " + bAction.actionType);
                     } else {
                         appendStatus("  Placement FAILED: " + res.failReason);
                     }
@@ -525,9 +610,11 @@ public class RLGeneratorDialog {
                         gameCanvas.invalidateCache();
                         gameCanvas.draw();
                     }
+                    diagnosticButton.setDisable(false);
                 });
             } catch (Exception ex) {
-                appendStatus("  Diagnostic Error: " + ex.toString());
+                appendStatus("  Single Step Error: " + ex.toString());
+                Platform.runLater(() -> diagnosticButton.setDisable(false));
             }
         });
         t.setDaemon(true);
@@ -593,9 +680,11 @@ public class RLGeneratorDialog {
         String name = modelComboBox.getValue();
         if (name == null) return;
         try {
-            rlService.resetRuntimeState(); // Hard reset derived stats
-            RLModel meta = RLModelManager.loadModel(name, rlService);
-            RLModelManager.restoreFromModel(rlService, meta); // Also calls resetRuntimeState() but double checking
+            RLModel meta = RLModelManager.loadMetadata(name);
+            switchEncoderMode(encoderModeFromVersion(meta.stateEncoderVersion), false);
+            RLModelManager.restoreFromModel(rlService, meta); // Validates action-space shape before loading weights.
+            RLModelManager.loadNetworkWeights(name, rlService);
+            syncEncoderModeCombo();
             
             currentModelName = name;
             newModelField.setText(name);
@@ -610,12 +699,12 @@ public class RLGeneratorDialog {
             }
             syncRewardUIFromConfig();
             
-            multiDiscreteCheck.setSelected(rlService.isUseMultiDiscreteFlow());
+            // Legacy multiDiscrete check removed
             updateStats();
             updateSummaryUI(); // Important: refresh UI after load
             
             appendStatus("Model loaded successfully: " + meta.toString());
-        } catch (IOException | ClassNotFoundException ex) {
+        } catch (IOException | ClassNotFoundException | IllegalArgumentException ex) {
             showAlert("Load failed: " + ex.getMessage());
         }
     }
@@ -637,16 +726,12 @@ public class RLGeneratorDialog {
             policyName = rlService.getMultiDiscretePolicy().getClass().getSimpleName();
         }
         
-        boolean hasBaseline = rlService.getMultiDiscreteLearningProvider() != null;
-        
         appendStatus(String.format("Active Policy: %s", policyName));
-        appendStatus(String.format("Q-Table Baseline: %s", hasBaseline ? "YES" : "NO"));
         appendStatus(String.format("Best Score: %.4f | Episodes: %d", rlService.getBestScore(), rlService.getEpisodesTrained()));
     }
 
     public void show() {
         refreshModelList();
-        multiDiscreteCheck.setSelected(rlService.isUseMultiDiscreteFlow());
         updateStats();
         updateSummaryUI();
         reportMode();
@@ -660,11 +745,9 @@ public class RLGeneratorDialog {
     }
 
     public void reportMode() {
-        boolean activeMD = rlService.isUseMultiDiscreteFlow();
-        boolean learnsMD = rlService.isUseMultiDiscreteLearning();
+        boolean learnsMD = true;
         
-        String report = String.format("[RL UI REPORT] mode=%s, training=%s", 
-            activeMD ? "MULTI_DISCRETE" : "LEGACY",
+        String report = String.format("[RL UI REPORT] mode=MULTI_DISCRETE, training=%s", 
             learnsMD ? "ENABLED" : "DISABLED");
         
         appendStatus(report);
@@ -772,6 +855,7 @@ public class RLGeneratorDialog {
         addRewardRow(grid, row++, "З'єднання (Socket)", "socketConnectionReward", "Нагорода за кожне з'єднання між блоками.");
         addRewardRow(grid, row++, "Множник стабільності", "stabilityRewardMult", "Множник для структурної стабільності (0-1).");
         addRewardRow(grid, row++, "Розміщення шафи", "tcPlacementBonus", "Одноразовий бонус за розміщення шафи (TC).");
+        addRewardRow(grid, row++, "Закрита шафа", "tcEnclosedBonus", "Бонус, якщо TC неможливо досягти ззовні без рейд-витрат.");
         addRewardRow(grid, row++, "Бонус за предмети", "secondaryDeployableBonus", "Бонус за розміщення верстака або лутової.");
         addRewardRow(grid, row++, "Компактність", "spatialCompactnessBonus", "Нагорода за будівництво впритул до існуючих блоків.");
         addRewardRow(grid, row++, "Штраф за розсіювання", "spatialScatteredPenalty", "Штраф за початок будівництва надто далеко.");
@@ -838,6 +922,7 @@ public class RLGeneratorDialog {
         updateSpinner("socketConnectionReward", config.socketConnectionReward);
         updateSpinner("stabilityRewardMult", config.stabilityRewardMult);
         updateSpinner("tcPlacementBonus", config.tcPlacementBonus);
+        updateSpinner("tcEnclosedBonus", config.tcEnclosedBonus);
         updateSpinner("secondaryDeployableBonus", config.secondaryDeployableBonus);
         updateSpinner("spatialCompactnessBonus", config.spatialCompactnessBonus);
         updateSpinner("spatialScatteredPenalty", config.spatialScatteredPenalty);
@@ -874,6 +959,7 @@ public class RLGeneratorDialog {
         config.socketConnectionReward = rewardSpinners.get("socketConnectionReward").getValue();
         config.stabilityRewardMult = rewardSpinners.get("stabilityRewardMult").getValue();
         config.tcPlacementBonus = rewardSpinners.get("tcPlacementBonus").getValue();
+        config.tcEnclosedBonus = rewardSpinners.get("tcEnclosedBonus").getValue();
         config.secondaryDeployableBonus = rewardSpinners.get("secondaryDeployableBonus").getValue();
         config.spatialCompactnessBonus = rewardSpinners.get("spatialCompactnessBonus").getValue();
         config.spatialScatteredPenalty = rewardSpinners.get("spatialScatteredPenalty").getValue();

@@ -14,11 +14,13 @@ import java.util.List;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import com.rustbuilder.ai.rl.legacy.QTable;
-import com.rustbuilder.ai.rl.multidiscrete.QTableMultiDiscreteDecisionProvider;
+import com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteActionSpace;
+
+
+
 
 /**
- * Manages RL model persistence — save/load neural networks, Q-Tables, and parameters.
+ * Manages RL model persistence — save/load neural networks and parameters.
  */
 public class RLModelManager {
 
@@ -38,7 +40,25 @@ public class RLModelManager {
         public final double costWeight;
         public final double raidWeight;
         public final double workingAreaWeight;
-        public RLRewardConfig rewardConfig; // Added for persistence
+        public RLRewardConfig rewardConfig; 
+
+        // Compatibility metadata
+        public String stateEncoderName = "Voxel";
+        public String stateEncoderVersion = "v1";
+        public int voxelChannels = 11;
+        public int gridWidth = 8;
+        public int gridHeight = 8;
+        public int gridFloors = 8;
+        public int actionTypeCount = 11;
+        public int actionFloorCount = 8;
+        public int actionTileCount = 64;
+        public int actionRotationCount = MultiDiscreteActionSpace.ROTATION_COUNT;
+        public int actionAimCount = MultiDiscreteActionSpace.AIM_SECTOR_COUNT;
+        public String tileIndexingMode = "LEGACY_64";
+        public boolean hasGlobalVector = false;
+        public int globalFeatureCount = 0;
+        public boolean hasObjectTable = false;
+        public boolean hasGraphState = false;
 
         public RLModel(String name, int episodesTrained,
                        double bestScore, double epsilon,
@@ -77,41 +97,28 @@ public class RLModelManager {
             oos.writeObject(model);
         }
         Path netFile = getModelsDir().resolve(model.name + ".rnet");
-        rlService.getAgent().save(netFile.toString());
-        
-        // Save experimental QTable if it exists
-        if (rlService.getMultiDiscreteLearningProvider() != null) {
-            Path qFile = getModelsDir().resolve(model.name + ".rqtb");
-            try (ObjectOutputStream oosIdx = new ObjectOutputStream(
-                    new BufferedOutputStream(Files.newOutputStream(qFile)))) {
-                oosIdx.writeObject(rlService.getMultiDiscreteLearningProvider().getQTable());
-            }
-        }
+        rlService.getMultiDiscreteAgent().save(netFile.toString());
     }
 
     public static RLModel loadModel(String name, RLTrainingService rlService) throws IOException, ClassNotFoundException {
+        RLModel model = loadMetadata(name);
+        loadNetworkWeights(name, rlService);
+        return model;
+    }
+
+    public static RLModel loadMetadata(String name) throws IOException, ClassNotFoundException {
         Path file = getModelsDir().resolve(name + ".rmeta");
-        RLModel model;
         try (ObjectInputStream ois = new ObjectInputStream(
                 new BufferedInputStream(Files.newInputStream(file)))) {
-            model = (RLModel) ois.readObject();
+            return (RLModel) ois.readObject();
         }
+    }
+
+    public static void loadNetworkWeights(String name, RLTrainingService rlService) throws IOException {
         Path netFile = getModelsDir().resolve(name + ".rnet");
         if (Files.exists(netFile)) {
-            rlService.getAgent().load(netFile.toString());
+            rlService.getMultiDiscreteAgent().load(netFile.toString());
         }
-        
-        // Load experimental QTable if it exists
-        Path qFile = getModelsDir().resolve(name + ".rqtb");
-        if (Files.exists(qFile) && rlService.getMultiDiscreteLearningProvider() != null) {
-            try (ObjectInputStream oisIdx = new ObjectInputStream(
-                    new BufferedInputStream(Files.newInputStream(qFile)))) {
-                QTable qTable = (QTable) oisIdx.readObject();
-                // Update baseline artifact only, do NOT switch active policy
-                rlService.updateMultiDiscreteQTableBaseline(new QTableMultiDiscreteDecisionProvider(qTable));
-            }
-        }
-        return model;
     }
 
     public static List<String> listModels() {
@@ -136,8 +143,7 @@ public class RLModelManager {
         try {
             boolean d1 = Files.deleteIfExists(meta);
             boolean d2 = Files.deleteIfExists(net);
-            boolean d3 = Files.deleteIfExists(getModelsDir().resolve(name + ".rqtb"));
-            return d1 || d2 || d3;
+            return d1 || d2;
         } catch (IOException e) {
             return false;
         }
@@ -150,13 +156,59 @@ public class RLModelManager {
             cfg = RLRewardConfig.createDefault();
         }
 
-        return new RLModel(name, rlService.getEpisodesTrained(),
+        RLModel model = new RLModel(name, rlService.getEpisodesTrained(),
                            rlService.getBestScore(), rlService.getEpsilon(),
                            logW, costW, raidW, workingAreaW,
                            cfg.clone());
+                           
+        com.rustbuilder.ai.rl.env.spec.EncodingRuntimeConfig config = rlService.getRuntimeConfig();
+        model.stateEncoderName = config.stateEncodingSpec.encoderName;
+        model.stateEncoderVersion = config.stateEncodingSpec.encoderVersion;
+        model.voxelChannels = config.stateEncodingSpec.voxelChannels;
+        model.gridWidth = config.gridSpec.width;
+        model.gridHeight = config.gridSpec.height;
+        model.gridFloors = config.gridSpec.floors;
+        model.actionTypeCount = config.actionSpaceSpec.typeCount;
+        model.actionFloorCount = config.actionSpaceSpec.floorCount;
+        model.actionTileCount = config.actionSpaceSpec.tileCount;
+        model.actionRotationCount = config.actionSpaceSpec.rotationCount;
+        model.actionAimCount = config.actionSpaceSpec.aimCount;
+        model.tileIndexingMode = config.actionSpaceSpec.tileIndexingMode.name();
+        model.hasGlobalVector = config.stateEncodingSpec.hasGlobalVector;
+        model.globalFeatureCount = config.stateEncodingSpec.globalFeatureCount;
+        model.hasObjectTable = config.stateEncodingSpec.hasObjectTable;
+        model.hasGraphState = config.stateEncodingSpec.hasGraphState;
+        
+        return model;
     }
 
     public static void restoreFromModel(RLTrainingService rlService, RLModel model) {
+        com.rustbuilder.ai.rl.env.spec.EncodingRuntimeConfig currentConfig = rlService.getRuntimeConfig();
+        
+        // Strict model compatibility check
+        if (!model.stateEncoderName.equals(currentConfig.stateEncodingSpec.encoderName) ||
+            !model.stateEncoderVersion.equals(currentConfig.stateEncodingSpec.encoderVersion) ||
+            model.voxelChannels != currentConfig.stateEncodingSpec.voxelChannels ||
+            model.gridWidth != currentConfig.gridSpec.width ||
+            model.gridHeight != currentConfig.gridSpec.height ||
+            model.gridFloors != currentConfig.gridSpec.floors ||
+            model.actionTypeCount != currentConfig.actionSpaceSpec.typeCount ||
+            model.actionFloorCount != currentConfig.actionSpaceSpec.floorCount ||
+            model.actionTileCount != currentConfig.actionSpaceSpec.tileCount ||
+            model.actionRotationCount != currentConfig.actionSpaceSpec.rotationCount ||
+            model.actionAimCount != currentConfig.actionSpaceSpec.aimCount ||
+            !model.tileIndexingMode.equals(currentConfig.actionSpaceSpec.tileIndexingMode.name()) ||
+            model.hasGlobalVector != currentConfig.stateEncodingSpec.hasGlobalVector ||
+            model.globalFeatureCount != currentConfig.stateEncodingSpec.globalFeatureCount ||
+            model.hasObjectTable != currentConfig.stateEncodingSpec.hasObjectTable ||
+            model.hasGraphState != currentConfig.stateEncodingSpec.hasGraphState) {
+            throw new IllegalArgumentException("Model compatibility check failed! " +
+                    "Model uses encoder version " + model.stateEncoderVersion + 
+                    " (" + model.voxelChannels + " channels), " +
+                    "but current runtime is " + currentConfig.stateEncodingSpec.encoderVersion + 
+                    " (" + currentConfig.stateEncodingSpec.voxelChannels + " channels).");
+        }
+
         rlService.resetRuntimeState();
         rlService.setEpisodesTrained(model.episodesTrained);
         rlService.setEpsilon(model.epsilon);

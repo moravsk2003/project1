@@ -2,36 +2,51 @@ package com.rustbuilder.ai.rl;
 
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.BuildingBlock;
+import com.rustbuilder.ai.rl.log.StopReason;
 import com.rustbuilder.service.evaluator.HouseEvaluator;
 import com.rustbuilder.config.GameConstants;
 import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 
 public class EpisodeEvaluator {
+    private static final int SPATIAL_COMPONENT_SEARCH_THRESHOLD = 128;
 
     private final HouseEvaluator evaluator;
     private final RLRewardConfig rewardConfig;
-    private final boolean useMultiDiscreteFlow;
 
-    public EpisodeEvaluator(HouseEvaluator evaluator, RLRewardConfig rewardConfig, boolean useMultiDiscreteFlow) {
+    public EpisodeEvaluator(HouseEvaluator evaluator, RLRewardConfig rewardConfig) {
         this.evaluator = evaluator;
         this.rewardConfig = rewardConfig;
-        this.useMultiDiscreteFlow = useMultiDiscreteFlow;
     }
 
-    public void evaluate(EpisodeResult result, int maxStepsPerEpisode, int epoch, int ep, int totalEpisodes, boolean useMultiDiscreteLearning, com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteExperienceReplay multiDiscreteMemory) {
+    public void evaluate(EpisodeResult result, int maxStepsPerEpisode, int epoch, int ep, int totalEpisodes, com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteExperienceReplay multiDiscreteMemory) {
         GridModel grid = result.grid;
-        int missedSteps = maxStepsPerEpisode - result.totalActions;
-        double earlyStopPenalty = useMultiDiscreteFlow ? 0.0 : -Math.pow(Math.abs(missedSteps * rewardConfig.earlyStopPenaltyMult), 1.2);
+        int missedSteps = Math.max(0, maxStepsPerEpisode - result.totalActions);
+        double earlyStopPenalty = 0.0;
+        if (result.stopReason == StopReason.AGENT_STOP && missedSteps > 0) {
+            earlyStopPenalty = -Math.pow(Math.abs(missedSteps * rewardConfig.earlyStopPenaltyMult), 1.2);
+        }
+        result.earlyStopPenalty = earlyStopPenalty;
 
         if (grid.getAllBlocks().size() > 5) {
             result.evaluationResult = evaluator.evaluate(grid);
             
             List<BuildingBlock> allBlocks = grid.getAllBlocks();
             int blockCount = allBlocks.size();
+            boolean useSpatialComponentSearch = blockCount > SPATIAL_COMPONENT_SEARCH_THRESHOLD;
+            Map<BuildingBlock, Integer> blockIndex = null;
+            if (useSpatialComponentSearch) {
+                blockIndex = new IdentityHashMap<>(blockCount);
+                for (int i = 0; i < blockCount; i++) {
+                    blockIndex.put(allBlocks.get(i), i);
+                }
+            }
             
             // Structural connectivity analysis (DFS-based components)
             boolean[] visited = new boolean[blockCount];
+            int[] componentByBlock = new int[blockCount];
             List<List<Integer>> components = new ArrayList<>();
             
             for (int i = 0; i < blockCount; i++) {
@@ -43,13 +58,33 @@ public class EpisodeEvaluator {
                 while (!queue.isEmpty()) {
                     int cur = queue.poll();
                     comp.add(cur);
-                    for (int j = 0; j < blockCount; j++) {
-                        if (visited[j]) continue;
-                        if (areBlocksConnected(allBlocks.get(cur), allBlocks.get(j))) {
+                    BuildingBlock currentBlock = allBlocks.get(cur);
+                    if (useSpatialComponentSearch) {
+                        List<BuildingBlock> neighbors = grid.getNearbyBlocks(
+                            currentBlock.getX(), currentBlock.getY(), currentBlock.getZ(), GameConstants.TILE_SIZE * 1.5
+                        );
+                        for (BuildingBlock neighbor : neighbors) {
+                            Integer neighborIndex = blockIndex.get(neighbor);
+                            if (neighborIndex == null) continue;
+                            int j = neighborIndex;
+                            if (visited[j]) continue;
+                            if (areBlocksConnected(currentBlock, neighbor)) {
+                                visited[j] = true;
+                                queue.add(j);
+                            }
+                        }
+                    } else {
+                        for (int j = 0; j < blockCount; j++) {
+                            if (visited[j]) continue;
+                            if (!areBlocksConnected(currentBlock, allBlocks.get(j))) continue;
                             visited[j] = true;
                             queue.add(j);
                         }
                     }
+                }
+                int componentIndex = components.size();
+                for (int idx : comp) {
+                    componentByBlock[idx] = componentIndex;
                 }
                 components.add(comp);
             }
@@ -63,17 +98,17 @@ public class EpisodeEvaluator {
                 }
                 for (int c = 0; c < components.size(); c++) {
                     if (c == mainIdx) continue;
-                    double minDist = Double.MAX_VALUE;
+                    double minDistSq = Double.MAX_VALUE;
                     for (int fi : components.get(c)) {
                         for (int mi : components.get(mainIdx)) {
-                            double d = Math.hypot(
-                                allBlocks.get(fi).getX() - allBlocks.get(mi).getX(),
-                                allBlocks.get(fi).getY() - allBlocks.get(mi).getY());
-                            if (d < minDist) minDist = d;
+                            double dx = allBlocks.get(fi).getX() - allBlocks.get(mi).getX();
+                            double dy = allBlocks.get(fi).getY() - allBlocks.get(mi).getY();
+                            double dSq = dx * dx + dy * dy;
+                            if (dSq < minDistSq) minDistSq = dSq;
                         }
                     }
-                    double minDistTiles = minDist / GameConstants.TILE_SIZE;
-                    fragmentPenalty += rewardConfig.fragmentBasePenalty + (minDistTiles * minDistTiles) * rewardConfig.fragmentDistPenaltyMult;
+                    double minDistTilesSq = minDistSq / (GameConstants.TILE_SIZE * GameConstants.TILE_SIZE);
+                    fragmentPenalty += rewardConfig.fragmentBasePenalty + minDistTilesSq * rewardConfig.fragmentDistPenaltyMult;
                 }
             }
             
@@ -83,37 +118,34 @@ public class EpisodeEvaluator {
                 if (b.getType() == com.rustbuilder.model.core.BuildingType.TC) { tcBlock = b; break; }
             }
             if (tcBlock != null) {
-                int tcCompIdx = -1;
-                for (int c = 0; c < components.size(); c++) {
-                    for (int idx : components.get(c)) {
-                        if (allBlocks.get(idx) == tcBlock) { tcCompIdx = c; break; }
-                    }
-                    if (tcCompIdx >= 0) break;
-                }
+                int tcIndex = indexOfIdentity(allBlocks, tcBlock);
+                int tcCompIdx = tcIndex < 0 ? -1 : componentByBlock[tcIndex];
                 for (int i = 0; i < blockCount; i++) {
                     BuildingBlock b = allBlocks.get(i);
                     if (b == tcBlock) continue;
-                    int bComp = -1;
-                    for (int c = 0; c < components.size(); c++) {
-                        if (components.get(c).contains(i)) { bComp = c; break; }
-                    }
+                    int bComp = componentByBlock[i];
                     if (bComp != tcCompIdx) tcPenalty += rewardConfig.tcConnectivityPenalty;
-                    double distToTC = Math.hypot(b.getX() - tcBlock.getX(), b.getY() - tcBlock.getY()) / GameConstants.TILE_SIZE;
+                    double dx = b.getX() - tcBlock.getX();
+                    double dy = b.getY() - tcBlock.getY();
+                    double distToTC = Math.sqrt(dx * dx + dy * dy) / GameConstants.TILE_SIZE;
                     tcPenalty += distToTC * rewardConfig.tcDistancePenaltyMult;
                 }
             }
             
             double rawScore = result.evaluationResult.finalScore * rewardConfig.finalScoreMultiplier;
-            double logisticsBonus = (result.evaluationResult.logistics.score > 0) ? rewardConfig.logisticsBonus : 0.0;
+            double logisticsBonus = rewardConfig.logisticsBonus * result.evaluationResult.logistics.score;
             double raidBonus = (result.evaluationResult.raid.sulfurToTC > 0) ? (result.evaluationResult.raid.score * rewardConfig.raidBonusMultiplier) : 0.0;
+            double tcEnclosedBonus = (tcBlock != null && result.evaluationResult.raid.sulfurToTC > 0)
+                    ? rewardConfig.tcEnclosedBonus
+                    : 0.0;
             
             result.finalEvalReward = rawScore + logisticsBonus + raidBonus + connectivityBonus
-                        + earlyStopPenalty + fragmentPenalty + tcPenalty;
+                        + tcEnclosedBonus + earlyStopPenalty + fragmentPenalty + tcPenalty;
             
             // Distribute final reward backwards in neural memory (Multi-discrete)
-            if (useMultiDiscreteLearning && multiDiscreteMemory != null && multiDiscreteMemory.size() > 0) {
+            if (multiDiscreteMemory != null && multiDiscreteMemory.size() > 0) {
                 // terminal reward shaping: distribute a portion of final Eval back to useful steps
-                double shapedTailReward = result.finalEvalReward * 0.25;
+                double shapedTailReward = (result.finalEvalReward - earlyStopPenalty) * 0.25;
                 if (result.episodeTransitions != null && !result.episodeTransitions.isEmpty()) {
                     int distributeCount = Math.min(result.episodeTransitions.size(), 8);
                     double rewardPerStep = shapedTailReward / distributeCount;
@@ -130,7 +162,19 @@ public class EpisodeEvaluator {
 
     private boolean areBlocksConnected(BuildingBlock b1, BuildingBlock b2) {
         if (b1.getZ() != b2.getZ()) return false;
-        double dist = Math.hypot(b1.getX() - b2.getX(), b1.getY() - b2.getY());
-        return dist <= GameConstants.TILE_SIZE * 1.5;
+        double dx = b1.getX() - b2.getX();
+        double dy = b1.getY() - b2.getY();
+        double distSq = dx * dx + dy * dy;
+        double threshold = GameConstants.TILE_SIZE * 1.5;
+        return distSq <= threshold * threshold;
+    }
+
+    private int indexOfIdentity(List<BuildingBlock> blocks, BuildingBlock target) {
+        for (int i = 0; i < blocks.size(); i++) {
+            if (blocks.get(i) == target) {
+                return i;
+            }
+        }
+        return -1;
     }
 }

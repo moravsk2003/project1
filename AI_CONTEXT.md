@@ -16,10 +16,10 @@
 ### 2.1. com.rustbuilder.model.core & com.rustbuilder.model
 *   **GridModel**: Центральне сховище стану. Використовує побітовий зсув (bit-shifting) для генерації 64-бітних ключів просторового індексу (`getSpatialKey`). Це критично для продуктивності методів `hasCollision` та `getNearbyBlocks` ($O(1)$ пошук).
 *   **BuildingBlock**: Визначає геометрію та тип блоку. Позиція (X, Y) базується на `TILE_SIZE` (60px), а Z — на висоті поверху.
-*   **Socket**: Точки прив'язки для конструкцій. З'єднання вважається успішним, якщо відстань між сокетами $< 1.3$.
+*   **Socket**: Точки прив'язки для конструкцій. З'єднання вважається успішним, якщо квадрат відстані (squared distance) між сокетами $< 1.3$ (фактична відстань $\approx 1.14$).
 
 ### 2.2. com.rustbuilder.service.physics
-*   **StabilityService**: Розраховує структурну підтримку. Використовує BFS-поширення підтримки від фундаментів (стабільність 1.0). Блоки зі стабільністю $< 0.1$ автоматично видаляються через `recalculateAll()`.
+*   **StabilityService**: Лише розраховує стабільність блоків (0.0 - 1.0) за допомогою BFS-поширення. Фактичне видалення нестабільних блоків (з показником $< 0.1$) виконується класом GridModel під час фіналізації завантаження сітки.
 *   **SnappingService**: Логіка автоматичного вирівнювання блоків у UI-редакторі.
 
 ### 2.3. com.rustbuilder.service.evaluator & .graph
@@ -33,7 +33,7 @@
 *   **MultiDiscreteDQNAgent**: Нейромережа DL4J зі спільним CNN-стовбуром та 5 головами (heads).
 *   **Balanced Replay Memory**: У `MultiDiscreteExperienceReplay` впроваджено використання двох ізольованих буферів (`validBuffer` та `invalidBuffer`). Метод `sample()` забезпечує збалансований семплінг (50/50). Це архітектурне рішення запобігає деградації мережі на ранніх етапах, коли агент міг би навчитися лише дії STOP через домінування штрафів за невалідні спроби розміщення.
 *   **Phases**:
-    1. **Type**: Вибір типу блоку (Foundation, Wall, Floor, etc.) або STOP.
+    1. **Type**: Вибір типу блоку або STOP (індекси 0..10, загалом 11 типів).
     2. **Floor**: Вибір рівня (0..7).
     3. **Tile**: Вибір позиції на сітці (0..63).
     4. **Rotation**: Орієнтація (0..3).
@@ -51,6 +51,12 @@
 *   **tcPenalty**: Штраф за ізоляцію TC від основного компонента.
 *   **Head-Aware Credit Assignment**: У `MultiDiscreteDQNAgent.trainBatch` реалізовано евристичний розподіл провини між головами мережі. Наприклад, якщо `reward <= penaltyNoSupport`, штраф для голів Rotation та Floor збільшується у 1.5 та 1.2 рази відповідно. Якщо `reward <= penaltyBadSocket`, основний штраф отримують голови Tile та Type.
 *   **Reward Shaping**: Динамічна зміна `RLRewardConfig` (понад 20 параметрів) без перезапуску.
++
++### 3.4. State Representation Encoders
++Система енкодерів, керована `EncodingRuntimeConfig`:
++*   **VoxelV1StateEncoder**: Базовий 11-канальний енкодер.
++*   **BucketedVoxelV2StateEncoder**: Оптимізований 16-канальний енкодер з бакетизацією (`VoxelAggregationBuffer`).
++*   **HybridV3StateEncoder**: 16-канальний енкодер, який поєднує воксельні дані з масивом глобальних метрик (`GlobalFeatureEncoder` / `GlobalFeatureDiagnostics`).
 
 ## 4. Evolutionary Engine (EA Flow)
 
@@ -69,7 +75,7 @@
 5. **Sparse Reward Shaping (Tail Distribution)**: Для вирішення проблеми рідкісних нагород у `EpisodeEvaluator` впроваджено механізм розмазування фінальної оцінки епізоду (`shapedTailReward = 25%` від `finalEvalReward`) на останні 8 кроків агента в пам'яті (backward distribution). Це прискорює конвергенцію та допомагає мережі краще зрозуміти логіку успішного завершення будівництва.
 
 ### 5.2. Persistence & Logging
-*   **RLModelManager**: Зберігає `.rmeta` (метадані), `.rnet` (мережа), `.rqtb` (табличний бейзлайн QTable).
+*   **RLModelManager**: Зберігає `.rmeta` (метадані) та `.rnet` (мережа). Гарантує сувору перевірку сумісності під час завантаження моделі (stateEncoderVersion, voxelChannels тощо).
 *   **RLTrainingLogger**: Працює в асинхронному режимі. Генерує 3 файли: `epoch.csv`, `episodes.csv`, `invalid_actions.csv`.
 
 ## 6. Domain Glossary
@@ -85,10 +91,9 @@
 3.  **Action Mapping**: `RotationIndex` (0..3) строго відповідає `Orientation` або градусам.
 4.  **Graph Integrity**: Граф будується лише на стабільних блоках після `grid.finalizeLoad()`.
 5.  **Death Spiral Prevention**: Завжди скидати лічильники при Island Restart.
++6.  **State Compatibility**: RLModelManager гарантує, що модель не завантажиться, якщо збережена версія та розмірність енкодера (StateEncodingSpec) не збігаються з поточною рантайм-конфігурацією.
 
 ## 8. Known Risks and Common Misreadings
-*   **God Object**: `RLTrainingService` перевантажений (епізоди, UI, логи).
-*   **Credit Assignment Hack**: Евристичний розподіл нагороди між "головами" нейромережі.
 *   **Performance**: `HeuristicMaskingUtils` — вузьке місце, якщо не використовувати оптимізований порядок секторів.
 *   **MDP Risk**: Параметр `step` вилучений із хешування стану в `QTable` для збереження марковської властивості.
 
@@ -99,10 +104,10 @@
 4.  **Йди за потоком даних**: `NeuralMultiDiscreteDecisionProvider` -> `MultiDiscreteActionMapper` -> `GridPlacementUtils`.
 
 ## 10. Task-Oriented File Maps
-*   **RL Action Space**: `HeuristicMaskingUtils`, `GridPlacementUtils`, `MultiDiscreteActionMapper`, `NeuralMultiDiscreteDecisionProvider`.
-*   **Evaluation & Rewards**: `HouseEvaluator`, `StepRewardFunction`, `RaidResistanceEvaluator`, `EpisodeEvaluator`, `HouseGraph`.
-*   **Physics**: `GridModel`, `StabilityService`, `GridPlacementUtils`, `CollisionUtils`.
-*   **GA Evolution**: `GeneticAlgorithmService`, `BaseGenome`.
+*   **Core & Physics**: `GridModel`, `StabilityService`, `GridPlacementUtils`, `CollisionUtils`, `BuildingTypeUtils`, `BlockFactory`.
+*   **RL Action Space**: `HeuristicMaskingUtils`, `MultiDiscreteActionMapper`, `NeuralMultiDiscreteDecisionProvider`.
+*   **State Encoding**: `EncodingRuntimeConfig`, `VoxelV1StateEncoder`, `BucketedVoxelV2StateEncoder`, `HybridV3StateEncoder`, `GlobalFeatureEncoder`.
+*   **Evaluation, Logistics & Logging**: `HouseEvaluator`, `StepRewardFunction`, `RaidResistanceEvaluator`, `EpisodeEvaluator`, `EpisodeRunner`, `HouseGraph`, `RLTrainingLogger`.
 
 ## 11. Safe Refactoring Guidance
 *   Зміни у фізиці (сокети, колізії) вимагають синхронних змін у `HeuristicMaskingUtils`.
@@ -111,6 +116,4 @@
 
 ## 12. Open Questions / Unstable Areas
 *   **Phase 5 (Aim Sector)**: Активне калібрування нагород для стимуляції навчання точного примагнічування.
-*   **STOP Logic**: Потребує стабілізації механізму раннього завершення епізоду з бонусом за якість.
-*   **QTable Baseline**: Синхронізація табличного бейзлайну з новим 5-фазним простором дій.
 *   **Credit Assignment**: Математика перерозподілу штрафів між головами нейромережі залишається експериментальною.

@@ -51,10 +51,10 @@ public class BaseGenome implements Serializable {
         public int orientation; // 0=N, 1=E, 2=S, 3=W
         public int tier;        // 0=Twig, 1=Wood, 2=Stone, 3=Metal, 4=HQM
         public int doorType;    // 0=Sheet, 1=Garage, 2=Armored
-        public int aimSector;   // 0-24 grid for raycast offset
+        public int aimSector;   // 0-15 grid for raycast offset
 
         public BuildAction(ActionType actionType, int gridX, int gridY, int floor, int orientation, int tier, int doorType) {
-            this(actionType, gridX, gridY, floor, orientation, tier, doorType, 12);
+            this(actionType, gridX, gridY, floor, orientation, tier, doorType, 5);
         }
 
         public BuildAction(ActionType actionType, int gridX, int gridY, int floor, int orientation, int tier, int doorType, int aimSector) {
@@ -84,7 +84,7 @@ public class BaseGenome implements Serializable {
                 RNG.nextInt(4),
                 2 + RNG.nextInt(3), // tier: STONE(2), METAL(3), HQM(4)
                 RNG.nextInt(3),     // door type
-                12                  // aim sector
+                5                   // aim sector
             );
         }
 

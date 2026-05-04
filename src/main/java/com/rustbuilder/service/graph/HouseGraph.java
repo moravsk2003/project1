@@ -21,6 +21,8 @@ import com.rustbuilder.util.BuildingTypeUtils;
  * Edges = connections between adjacent tiles through walls/doors/stairs.
  */
 public class HouseGraph {
+    private static final int SPATIAL_TILE_SEARCH_THRESHOLD = 96;
+    private static final int SPATIAL_WALL_SEARCH_THRESHOLD = 64;
 
     /** A node in the house graph, representing a tile position. */
     public static class TileNode {
@@ -83,10 +85,12 @@ public class HouseGraph {
         addNode(outsideNode);
 
         // 1. Identify all foundation/floor tiles and create nodes
+        Map<NodeKey, BuildingBlock> tileBlockIndex = new HashMap<>();
         for (BuildingBlock block : blocks) {
             if (isFoundationOrFloor(block)) {
                 TileNode node = new TileNode(block.getX(), block.getY(), block.getZ(), "tile");
                 addNode(node);
+                tileBlockIndex.put(node.id, block);
             }
         }
 
@@ -132,12 +136,25 @@ public class HouseGraph {
         for (TileNode n : tileNodes) {
             tileIndex.put(n.id, n);
         }
+        boolean useTileSpatialIndex = tileNodes.size() > SPATIAL_TILE_SEARCH_THRESHOLD;
+        TileSpatialIndex tileSpatialIndex = useTileSpatialIndex ? new TileSpatialIndex(tileNodes) : null;
 
-        // wallsByFloor: pre-filter walls per floor so findWallBetween doesn't scan all blocks
+        // Small graphs are faster with direct floor lists; large graphs benefit from spatial wall lookup.
         Map<Integer, List<BuildingBlock>> wallsByFloor = new HashMap<>();
+        int wallCount = 0;
         for (BuildingBlock b : blocks) {
             if (isWallType(b)) {
                 wallsByFloor.computeIfAbsent(b.getZ(), k -> new ArrayList<>()).add(b);
+                wallCount++;
+            }
+        }
+        boolean useWallSpatialIndex = wallCount > SPATIAL_WALL_SEARCH_THRESHOLD;
+        WallSpatialIndex wallIndex = useWallSpatialIndex ? new WallSpatialIndex() : null;
+        if (useWallSpatialIndex) {
+            for (List<BuildingBlock> floorWalls : wallsByFloor.values()) {
+                for (BuildingBlock wall : floorWalls) {
+                    wallIndex.add(wall);
+                }
             }
         }
 
@@ -148,7 +165,7 @@ public class HouseGraph {
 
         for (TileNode a : tileNodes) {
             // Determine if this tile is a triangle (3 polygon vertices)
-            BuildingBlock aBlock = getBlockForTile(blocks, a);
+            BuildingBlock aBlock = tileBlockIndex.get(a.id);
             boolean aIsTriangle = aBlock != null &&
                     (aBlock.getType() == BuildingType.TRIANGLE_FOUNDATION ||
                      aBlock.getType() == BuildingType.TRIANGLE_FLOOR);
@@ -166,22 +183,21 @@ public class HouseGraph {
                     TileNode b = tileIndex.get(nk);
                     if (b == null) continue;
 
-                    List<BuildingBlock> floorWalls = wallsByFloor.getOrDefault(a.z, java.util.Collections.emptyList());
-                    BuildingBlock wall = findWallBetween(floorWalls, a, b);
+                    BuildingBlock wall = findWallBetween(wallsByFloor, wallIndex, useWallSpatialIndex, a, b);
                     addHorizontalEdges(a, b, wall);
                 }
             } else {
-                // Triangle tile: fallback pairwise check within this tile's floor
-                for (TileNode b : tileNodes) {
-                    if (b == a || b.z != a.z) continue;
-                    if (a.id.hashCode() >= b.id.hashCode()) continue; // process once
-                    double dist = Math.hypot(a.x - b.x, a.y - b.y);
-                    if (dist < T * 1.1) {
-                        List<BuildingBlock> floorWalls = wallsByFloor.getOrDefault(a.z, java.util.Collections.emptyList());
-                        BuildingBlock wall = findWallBetween(floorWalls, a, b);
-                        addHorizontalEdges(a, b, wall);
+                // Triangle tile: local spatial lookup preserves the distance-based behaviour without O(T^2).
+                double triangleNeighborThreshold = T * 1.1;
+                if (useTileSpatialIndex) {
+                    for (TileNode b : tileSpatialIndex.getNearby(a.x, a.y, a.z, triangleNeighborThreshold)) {
+                        maybeAddTriangleEdge(wallsByFloor, wallIndex, useWallSpatialIndex, a, b, triangleNeighborThreshold);
                     }
-                }
+                } else {
+                    for (TileNode b : tileNodes) {
+                        maybeAddTriangleEdge(wallsByFloor, wallIndex, useWallSpatialIndex, a, b, triangleNeighborThreshold);
+                    }
+                } 
             }
         }
 
@@ -199,7 +215,7 @@ public class HouseGraph {
 
         // 5. Connect outside to tiles that have an exposed edge (no wall on boundary)
         for (TileNode tile : tileNodes) {
-            if (hasExposedEdge(blocks, tile, wallsByFloor, tileIndex)) {
+            if (hasExposedEdge(tile, wallsByFloor, wallIndex, useWallSpatialIndex, tileIndex, tileBlockIndex)) {
                 addEdge(outsideNode, tile, 1, 0, null);
                 addEdge(tile, outsideNode, 1, 0, null);
             }
@@ -207,7 +223,7 @@ public class HouseGraph {
 
         // 6. Outside connects through outer walls for raiding
         for (TileNode tile : tileNodes) {
-            List<BuildingBlock> outerWalls = findOuterWalls(blocks, tile, wallsByFloor, tileIndex);
+            List<BuildingBlock> outerWalls = findOuterWalls(tile, wallsByFloor, wallIndex, useWallSpatialIndex, tileIndex, tileBlockIndex);
             for (BuildingBlock wall : outerWalls) {
                 int sulfur;
                 double walkCost;
@@ -235,6 +251,16 @@ public class HouseGraph {
                     addEdge(below, above, Double.MAX_VALUE, sulfur, block);
                     addEdge(above, below, Double.MAX_VALUE, sulfur, block);
                 }
+            }
+        }
+
+        // 8. Open roof: a tile without a horizontal surface directly above is open to outside.
+        // This matters for multi-floor bases: walls alone do not close a cell if there is no roof.
+        for (TileNode tile : tileNodes) {
+            NodeKey roofKey = new NodeKey(tile.x, tile.y, tile.z + 1, "tile");
+            if (!tileIndex.containsKey(roofKey)) {
+                addEdge(outsideNode, tile, 1, 0, null);
+                addEdge(tile, outsideNode, 1, 0, null);
             }
         }
     }
@@ -327,17 +353,48 @@ public class HouseGraph {
         return BuildingTypeUtils.isWall(b.getType());
     }
 
-    /**
-     * Find wall between two adjacent tiles using a pre-filtered wall list for their floor.
-     */
-    private BuildingBlock findWallBetween(List<BuildingBlock> floorWalls, TileNode a, TileNode b) {
+    private void maybeAddTriangleEdge(Map<Integer, List<BuildingBlock>> wallsByFloor,
+                                      WallSpatialIndex wallIndex,
+                                      boolean useWallSpatialIndex,
+                                      TileNode a,
+                                      TileNode b,
+                                      double threshold) {
+        if (b == a || !shouldProcessPair(a, b)) return;
+        double dx = a.x - b.x;
+        double dy = a.y - b.y;
+        double distSq = dx * dx + dy * dy;
+        if (distSq < threshold * threshold) {
+            BuildingBlock wall = findWallBetween(wallsByFloor, wallIndex, useWallSpatialIndex, a, b);
+            addHorizontalEdges(a, b, wall);
+        }
+    }
+
+    private BuildingBlock findWallBetween(Map<Integer, List<BuildingBlock>> wallsByFloor,
+                                          WallSpatialIndex wallIndex,
+                                          boolean useWallSpatialIndex,
+                                          TileNode a,
+                                          TileNode b) {
         // Tile centers
         double ax = a.x + GameConstants.HALF_TILE;
         double ay = a.y + GameConstants.HALF_TILE;
         double bx = b.x + GameConstants.HALF_TILE;
         double by = b.y + GameConstants.HALF_TILE;
 
-        for (BuildingBlock block : floorWalls) {
+        List<BuildingBlock> candidates;
+        if (useWallSpatialIndex) {
+            double padding = GameConstants.HALF_TILE;
+            candidates = wallIndex.getNearby(
+                Math.min(ax, bx) - padding,
+                Math.min(ay, by) - padding,
+                Math.max(ax, bx) + padding,
+                Math.max(ay, by) + padding,
+                a.z
+            );
+        } else {
+            candidates = wallsByFloor.getOrDefault(a.z, Collections.emptyList());
+        }
+
+        for (BuildingBlock block : candidates) {
             if (!isWallType(block)) continue;
             // floor already filtered by caller
 
@@ -374,14 +431,11 @@ public class HouseGraph {
     }
 
 
-    private BuildingBlock getBlockForTile(List<BuildingBlock> blocks, TileNode tile) {
-        for (BuildingBlock b : blocks) {
-            if (isFoundationOrFloor(b) && b.getZ() == tile.z && 
-                Math.abs(b.getX() - tile.x) < 0.1 && Math.abs(b.getY() - tile.y) < 0.1) {
-                return b;
-            }
-        }
-        return null;
+    private boolean shouldProcessPair(TileNode a, TileNode b) {
+        if (a.z != b.z) return false;
+        if (a.id.x != b.id.x) return a.id.x < b.id.x;
+        if (a.id.y != b.id.y) return a.id.y < b.id.y;
+        return a.id.type.compareTo(b.id.type) < 0;
     }
 
     private List<double[]> getOuterCheckPoints(BuildingBlock tileBlock) {
@@ -404,18 +458,25 @@ public class HouseGraph {
             
             double dx = mx - cx;
             double dy = my - cy;
-            double len = Math.hypot(dx, dy);
-            if (len > 0) { dx /= len; dy /= len; }
+            double lenSq = dx * dx + dy * dy;
+            if (lenSq > 0) {
+                double invLen = 1.0 / Math.sqrt(lenSq);
+                dx *= invLen;
+                dy *= invLen;
+            }
             
             checkPoints.add(new double[] { cx + dx * 60.0, cy + dy * 60.0 });
         }
         return checkPoints;
     }
 
-    private boolean hasExposedEdge(List<BuildingBlock> blocks, TileNode tile,
+    private boolean hasExposedEdge(TileNode tile,
                                    Map<Integer, List<BuildingBlock>> wallsByFloor,
-                                   Map<NodeKey, TileNode> tileIndex) {
-        BuildingBlock tileBlock = getBlockForTile(blocks, tile);
+                                   WallSpatialIndex wallIndex,
+                                   boolean useWallSpatialIndex,
+                                   Map<NodeKey, TileNode> tileIndex,
+                                   Map<NodeKey, BuildingBlock> tileBlockIndex) {
+        BuildingBlock tileBlock = tileBlockIndex.get(tile.id);
         if (tileBlock == null) return false;
 
         List<double[]> checkPoints = getOuterCheckPoints(tileBlock);
@@ -429,19 +490,21 @@ public class HouseGraph {
 
             if (!hasNeighbor) {
                 TileNode tempNeighbor = new TileNode(pt[0] - GameConstants.HALF_TILE, pt[1] - GameConstants.HALF_TILE, tile.z, "tile");
-                List<BuildingBlock> floorWalls = wallsByFloor.getOrDefault(tile.z, java.util.Collections.emptyList());
-                BuildingBlock wall = findWallBetween(floorWalls, tile, tempNeighbor);
+                BuildingBlock wall = findWallBetween(wallsByFloor, wallIndex, useWallSpatialIndex, tile, tempNeighbor);
                 if (wall == null) return true;
             }
         }
         return false;
     }
 
-    private List<BuildingBlock> findOuterWalls(List<BuildingBlock> blocks, TileNode tile,
+    private List<BuildingBlock> findOuterWalls(TileNode tile,
                                                Map<Integer, List<BuildingBlock>> wallsByFloor,
-                                               Map<NodeKey, TileNode> tileIndex) {
+                                               WallSpatialIndex wallIndex,
+                                               boolean useWallSpatialIndex,
+                                               Map<NodeKey, TileNode> tileIndex,
+                                               Map<NodeKey, BuildingBlock> tileBlockIndex) {
         List<BuildingBlock> outerWalls = new ArrayList<>();
-        BuildingBlock tileBlock = getBlockForTile(blocks, tile);
+        BuildingBlock tileBlock = tileBlockIndex.get(tile.id);
         if (tileBlock == null) return outerWalls;
 
         List<double[]> checkPoints = getOuterCheckPoints(tileBlock);
@@ -454,11 +517,132 @@ public class HouseGraph {
 
             if (!hasNeighbor) {
                 TileNode tempNeighbor = new TileNode(pt[0] - GameConstants.HALF_TILE, pt[1] - GameConstants.HALF_TILE, tile.z, "tile");
-                List<BuildingBlock> floorWalls = wallsByFloor.getOrDefault(tile.z, java.util.Collections.emptyList());
-                BuildingBlock wall = findWallBetween(floorWalls, tile, tempNeighbor);
+                BuildingBlock wall = findWallBetween(wallsByFloor, wallIndex, useWallSpatialIndex, tile, tempNeighbor);
                 if (wall != null) outerWalls.add(wall);
             }
         }
         return outerWalls;
+    }
+
+    private static final class TileSpatialIndex {
+        private final Map<CellKey, List<TileNode>> cells = new HashMap<>();
+
+        TileSpatialIndex(List<TileNode> tiles) {
+            for (TileNode tile : tiles) {
+                cells.computeIfAbsent(cellKey(tile.x, tile.y, tile.z), k -> new ArrayList<>()).add(tile);
+            }
+        }
+
+        List<TileNode> getNearby(double x, double y, int z, double radius) {
+            List<TileNode> result = new ArrayList<>();
+            int gxMin = toCell(x - radius);
+            int gxMax = toCell(x + radius);
+            int gyMin = toCell(y - radius);
+            int gyMax = toCell(y + radius);
+            for (int gx = gxMin; gx <= gxMax; gx++) {
+                for (int gy = gyMin; gy <= gyMax; gy++) {
+                    List<TileNode> bucket = cells.get(new CellKey(gx, gy, z));
+                    if (bucket != null) {
+                        result.addAll(bucket);
+                    }
+                }
+            }
+            return result;
+        }
+    }
+
+    private static final class WallSpatialIndex {
+        private final Map<CellKey, List<BuildingBlock>> cells = new HashMap<>();
+
+        void add(BuildingBlock wall) {
+            double[] poly = wall.getCollisionPoints();
+            if (poly == null || poly.length < 2) return;
+
+            double minX = Double.MAX_VALUE;
+            double minY = Double.MAX_VALUE;
+            double maxX = -Double.MAX_VALUE;
+            double maxY = -Double.MAX_VALUE;
+            for (int i = 0; i < poly.length / 2; i++) {
+                double x = poly[i * 2];
+                double y = poly[i * 2 + 1];
+                if (x < minX) minX = x;
+                if (y < minY) minY = y;
+                if (x > maxX) maxX = x;
+                if (y > maxY) maxY = y;
+            }
+
+            int gxMin = toCell(minX);
+            int gxMax = toCell(maxX);
+            int gyMin = toCell(minY);
+            int gyMax = toCell(maxY);
+            for (int gx = gxMin; gx <= gxMax; gx++) {
+                for (int gy = gyMin; gy <= gyMax; gy++) {
+                    cells.computeIfAbsent(new CellKey(gx, gy, wall.getZ()), k -> new ArrayList<>()).add(wall);
+                }
+            }
+        }
+
+        List<BuildingBlock> getNearby(double minX, double minY, double maxX, double maxY, int z) {
+            List<BuildingBlock> result = new ArrayList<>();
+            int gxMin = toCell(minX);
+            int gxMax = toCell(maxX);
+            int gyMin = toCell(minY);
+            int gyMax = toCell(maxY);
+            for (int gx = gxMin; gx <= gxMax; gx++) {
+                for (int gy = gyMin; gy <= gyMax; gy++) {
+                    List<BuildingBlock> bucket = cells.get(new CellKey(gx, gy, z));
+                    if (bucket == null) continue;
+                    for (BuildingBlock wall : bucket) {
+                        if (!containsIdentity(result, wall)) {
+                            result.add(wall);
+                        }
+                    }
+                }
+            }
+            return result;
+        }
+    }
+
+    private static boolean containsIdentity(List<BuildingBlock> blocks, BuildingBlock target) {
+        for (BuildingBlock block : blocks) {
+            if (block == target) return true;
+        }
+        return false;
+    }
+
+    private static CellKey cellKey(double x, double y, int z) {
+        return new CellKey(toCell(x), toCell(y), z);
+    }
+
+    private static int toCell(double value) {
+        return (int) Math.floor(value / GameConstants.TILE_SIZE);
+    }
+
+    private static final class CellKey {
+        private final int x;
+        private final int y;
+        private final int z;
+
+        private CellKey(int x, int y, int z) {
+            this.x = x;
+            this.y = y;
+            this.z = z;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof CellKey)) return false;
+            CellKey other = (CellKey) o;
+            return x == other.x && y == other.y && z == other.z;
+        }
+
+        @Override
+        public int hashCode() {
+            int result = x;
+            result = 31 * result + y;
+            result = 31 * result + z;
+            return result;
+        }
     }
 }

@@ -101,7 +101,9 @@ public class StabilityService {
     }
 
     private static double getSupportFactor(BuildingBlock supported, BuildingBlock supporter) {
-        double dist = Math.hypot(supported.getX() - supporter.getX(), supported.getY() - supporter.getY());
+        double dx = supported.getX() - supporter.getX();
+        double dy = supported.getY() - supporter.getY();
+        double distSq = dx * dx + dy * dy;
         double zDiff = supported.getZ() - supporter.getZ();
 
         // 1. Wall on Foundation (Vertical)
@@ -144,14 +146,14 @@ public class StabilityService {
              supported.getType() == BuildingType.WORKBENCH ||
              supported.getType() == BuildingType.LOOT_ROOM) &&
             (isFoundation(supporter) || isFloor(supporter))) {
-            if (zDiff == 0 && dist < 1.0) {
+            if (zDiff == 0 && distSq < 1.0) {
                  return 1.0;
             }
         }
 
         // 7. Door inside a Doorway
         if (supported.getType() == BuildingType.DOOR && supporter.getType() == BuildingType.DOORWAY) {
-            if (zDiff == 0 && dist < 1.0) {
+            if (zDiff == 0 && distSq < 1.0) {
                 return 1.0;
             }
         }

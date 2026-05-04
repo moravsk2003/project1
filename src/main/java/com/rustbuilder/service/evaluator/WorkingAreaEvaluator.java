@@ -17,7 +17,7 @@ import java.util.Set;
 
 /**
  * Evaluates working area using the house graph:
- * raw = protected tile area / open-edge perimeter.
+ * raw = protected tile area / protected component perimeter.
  */
 public class WorkingAreaEvaluator {
 
@@ -66,7 +66,7 @@ public class WorkingAreaEvaluator {
         }
 
         int openPerimeter = countOpenPerimeterEdges(graph, selectedComponent);
-        double raw = area / Math.max(openPerimeter, 1.0);
+        double raw = openPerimeter > 0 ? area / openPerimeter : 0.0;
         double score = normalize(raw);
 
         return new WorkingAreaResult(area, openPerimeter, selectedComponent.size(), raw, score);
@@ -223,30 +223,32 @@ public class WorkingAreaEvaluator {
         for (TileNode tile : component) {
             Set<String> seenBoundaryTargets = new HashSet<>();
             for (TileEdge edge : graph.getEdges(tile)) {
-                if (!isWalkable(edge)) {
-                    continue;
-                }
-
                 TileNode next = edge.to;
                 if ("tile".equals(next.type)) {
                     String key = next.id.toString();
                     if (!seenBoundaryTargets.add(key)) {
                         continue;
                     }
-                    if (!component.contains(next) && edge.blocker == null) {
+                    if (!component.contains(next)) {
                         perimeter++;
                     }
                 } else if ("outside".equals(next.type)) {
-                    if (!seenBoundaryTargets.add("outside")) {
+                    String key = outsideBoundaryKey(edge);
+                    if (!seenBoundaryTargets.add(key)) {
                         continue;
                     }
-                    if (edge.blocker == null) {
-                        perimeter++;
-                    }
+                    perimeter++;
                 }
             }
         }
         return perimeter;
+    }
+
+    private String outsideBoundaryKey(TileEdge edge) {
+        if (edge.blocker != null) {
+            return "outside:" + edge.blocker.getId();
+        }
+        return "outside:open";
     }
 
     /**

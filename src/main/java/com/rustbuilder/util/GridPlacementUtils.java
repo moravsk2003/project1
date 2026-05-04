@@ -1,6 +1,7 @@
 package com.rustbuilder.util;
 
 import com.rustbuilder.ai.ea.BaseGenome.BuildAction;
+import com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteActionSpace;
 import com.rustbuilder.ai.rl.PlacementError;
 import com.rustbuilder.config.GameConstants;
 import com.rustbuilder.model.GridModel;
@@ -15,8 +16,11 @@ import com.rustbuilder.model.structure.Foundation;
 import com.rustbuilder.model.structure.TriangleFloor;
 import com.rustbuilder.model.structure.TriangleFoundation;
 import com.rustbuilder.model.structure.Wall;
+import java.util.List;
 
 public class GridPlacementUtils {
+    private static final int SPATIAL_TARGET_SEARCH_THRESHOLD = 96;
+    private static final ThreadLocal<DummyBlocks> DUMMY_BLOCKS = ThreadLocal.withInitial(DummyBlocks::new);
 
     public static class Placement {
         public double x, y, rotation;
@@ -46,13 +50,16 @@ public class GridPlacementUtils {
         double startX = GameConstants.GRID_ORIGIN_X;
         double startY = GameConstants.GRID_ORIGIN_Y;
 
-        // Tile-local aiming offset (aimSector is a 5x5 grid, center=12)
-        int sectorX = action.aimSector % 5;
-        int sectorY = action.aimSector / 5;
-        // Map [0..4] to [-2..2] then scale (step size = 30% of tile)
+        // Tile-local aiming offset (aimSector is a 4x4 grid).
+        int aimSector = Math.max(0, Math.min(MultiDiscreteActionSpace.AIM_SECTOR_COUNT - 1, action.aimSector));
+        int aimGrid = MultiDiscreteActionSpace.AIM_GRID_SIZE;
+        int sectorX = aimSector % aimGrid;
+        int sectorY = aimSector / aimGrid;
+        // Map [0..3] to [-1.5..1.5] then scale (step size = 30% of tile)
         double stepSize = tileSize * 0.3; // 60 * 0.3 = 18px
-        double offsetX = (sectorX - 2) * stepSize;
-        double offsetY = (sectorY - 2) * stepSize;
+        double center = (aimGrid - 1) / 2.0;
+        double offsetX = (sectorX - center) * stepSize;
+        double offsetY = (sectorY - center) * stepSize;
 
         // Note: Building models are centered on top-left X/Y actually
         // gridX, gridY means the center of the grid cell
@@ -66,20 +73,26 @@ public class GridPlacementUtils {
         int z = (action.actionType == BuildAction.ActionType.FOUNDATION || action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION) ? 0 : action.floor;
 
         BuildingBlock target = null;
-        double minDist = Double.MAX_VALUE;
-        // Find closest block
-        for (BuildingBlock b : grid.getAllBlocks()) {
+        double minDistSq = Double.MAX_VALUE;
+        List<BuildingBlock> allBlocks = grid.getAllBlocks();
+        List<BuildingBlock> candidates = allBlocks.size() > SPATIAL_TARGET_SEARCH_THRESHOLD
+            ? grid.getNearbyBlocks(rawCenterX, rawCenterY, z, tileSize * 2.0)
+            : allBlocks;
+        for (BuildingBlock b : candidates) {
             if (b.getZ() != z && b.getZ() != z - 1) continue; // Only same floor or floor below
             
             // Measure from center of block to rawCenter
-            double d = Math.hypot(b.getX() + halfTile - rawCenterX, b.getY() + halfTile - rawCenterY);
-            if (d < minDist) { 
-                minDist = d; 
+            double dx = b.getX() + halfTile - rawCenterX;
+            double dy = b.getY() + halfTile - rawCenterY;
+            double dSq = dx * dx + dy * dy;
+            if (dSq < minDistSq) { 
+                minDistSq = dSq; 
                 target = b; 
             }
         }
 
-        boolean isFirst = target == null || minDist > tileSize * 1.5;
+        double firstThreshold = tileSize * 1.5;
+        boolean isFirst = target == null || minDistSq > firstThreshold * firstThreshold;
 
         // 1. Initial / Free placement
         if (isFirst) {
@@ -87,7 +100,7 @@ public class GridPlacementUtils {
                 return new Placement(exactX, exactY, 0, Orientation.NORTH, true, PlacementError.NONE);
             }
             if (action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION) {
-                return new Placement(exactX, exactY, 0, Orientation.NORTH, true, PlacementError.NONE);
+                return new Placement(exactX, exactY, horizontalRotationDegrees(action), Orientation.NORTH, true, PlacementError.NONE);
             }
             return new Placement(0, 0, 0, Orientation.NORTH, false, PlacementError.BAD_SOCKET_IS_FIRST);
         }
@@ -102,8 +115,8 @@ public class GridPlacementUtils {
 
         // 4. Walls / Doorways / Windows
         if (isWallLike(action.actionType)) {
-            if (target != null && isValidBase(target.getType(), true)) {
-                Orientation orient = getOrientationFromAction(target.getType(), action.orientation);
+            if (target != null && isValidWallTarget(target, z)) {
+                Orientation orient = getWallOrientation(target, action.orientation);
                 return new Placement(target.getX(), target.getY(), target.getRotation(), orient, true);
             }
             return new Placement(0,0,0,null,false, target == null ? PlacementError.BAD_SOCKET_NO_TARGET : PlacementError.BAD_SOCKET_WRONG_TARGET_TYPE); // Invalid attachment target for wall
@@ -111,28 +124,29 @@ public class GridPlacementUtils {
 
         // 5. Connecting Foundations/Floors mathematically
         if (target != null && isValidBase(target.getType(), true)) {
-            // Instantiate a dummy in the center of the AI's requested cell
+            // Reuse a per-thread dummy in the center of the AI's requested cell
             BuildingBlock dummy = instantiateDummy(action.actionType, exactX, exactY, z);
             if (dummy == null) return new Placement(0,0,0,null,false);
             
-            // Try 4 orientations to find the one that best connects sockets mathematically
+            // Use the selected horizontal rotation, then snap that shape to the closest socket.
             double bestShiftX = 0;
             double bestShiftY = 0;
             double bestRot = 0;
-            double globalMinDist = Double.MAX_VALUE;
+            double globalMinDistSq = Double.MAX_VALUE;
             
-            int rotations = (action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION || action.actionType == BuildAction.ActionType.TRIANGLE_FLOOR) ? 6 : 4;
-            for (int rotGuess = 0; rotGuess < rotations; rotGuess++) {
-                 double testRot = target.getRotation() + rotGuess * (rotations == 6 ? 60 : 90);
+            double testRot = target.getRotation() + horizontalRotationDegrees(action);
+            {
                  dummy.setRotation((testRot + 360) % 360);
                  
                  for (Socket tSock : target.getSockets()) {
                      if (tSock.getSide() == 10) continue; // Skip center socket
                      for (Socket dSock : dummy.getSockets()) {
                          if (dSock.getSide() == 10) continue;
-                         double dist = Math.hypot(tSock.getX() - dSock.getX(), tSock.getY() - dSock.getY());
-                         if (dist < globalMinDist) {
-                             globalMinDist = dist;
+                         double dx = tSock.getX() - dSock.getX();
+                         double dy = tSock.getY() - dSock.getY();
+                         double distSq = dx * dx + dy * dy;
+                         if (distSq < globalMinDistSq) {
+                             globalMinDistSq = distSq;
                              bestShiftX = tSock.getX() - dSock.getX();
                              bestShiftY = tSock.getY() - dSock.getY();
                              bestRot = dummy.getRotation();
@@ -141,7 +155,8 @@ public class GridPlacementUtils {
                  }
             }
             
-            if (globalMinDist < tileSize * 0.5) {
+            double socketThreshold = tileSize * 0.5;
+            if (globalMinDistSq < socketThreshold * socketThreshold) {
                  double finalSnapX = exactX + bestShiftX;
                  double finalSnapY = exactY + bestShiftY;
                  
@@ -150,19 +165,22 @@ public class GridPlacementUtils {
                  double cy1 = target.getY() + halfTile;
                  double cx2 = finalSnapX + halfTile;
                  double cy2 = finalSnapY + halfTile;
-                 double centerDist = Math.hypot(cx2 - cx1, cy2 - cy1);
+                 double centerDx = cx2 - cx1;
+                 double centerDy = cy2 - cy1;
+                 double centerDistSq = centerDx * centerDx + centerDy * centerDy;
                  
-                 if (centerDist >= tileSize * 0.9) {
-                     Placement p = new Placement(finalSnapX, finalSnapY, bestRot, Orientation.NORTH, true); p.minDist = minDist; p.socketDist = globalMinDist; return p;
+                 double centerThreshold = tileSize * 0.9;
+                 if (centerDistSq >= centerThreshold * centerThreshold) {
+                     Placement p = new Placement(finalSnapX, finalSnapY, bestRot, Orientation.NORTH, true); p.minDist = Math.sqrt(minDistSq); p.socketDist = Math.sqrt(globalMinDistSq); return p;
                  } else {
-                     Placement p = new Placement(0,0,0,null,false, PlacementError.BAD_SOCKET_CENTERDIST_REJECT); p.minDist = minDist; p.socketDist = globalMinDist; return p;
+                     Placement p = new Placement(0,0,0,null,false, PlacementError.BAD_SOCKET_CENTERDIST_REJECT); p.minDist = Math.sqrt(minDistSq); p.socketDist = Math.sqrt(globalMinDistSq); return p;
                  }
             } else {
-                 Placement p = new Placement(0,0,0,null,false, PlacementError.BAD_SOCKET_NO_SOCKET_ALIGNMENT); p.minDist = minDist; p.socketDist = globalMinDist; return p;
+                 Placement p = new Placement(0,0,0,null,false, PlacementError.BAD_SOCKET_NO_SOCKET_ALIGNMENT); p.minDist = Math.sqrt(minDistSq); p.socketDist = Math.sqrt(globalMinDistSq); return p;
             }
         }
 
-        Placement p = new Placement(0,0,0,null,false, target == null ? PlacementError.BAD_SOCKET_NO_TARGET : PlacementError.BAD_SOCKET_WRONG_TARGET_TYPE); p.minDist = minDist; return p;
+        Placement p = new Placement(0,0,0,null,false, target == null ? PlacementError.BAD_SOCKET_NO_TARGET : PlacementError.BAD_SOCKET_WRONG_TARGET_TYPE); p.minDist = target == null ? -1.0 : Math.sqrt(minDistSq); return p;
     }
     
     private static boolean isWallLike(BuildAction.ActionType type) {
@@ -173,6 +191,37 @@ public class GridPlacementUtils {
         if (type == BuildingType.FOUNDATION || type == BuildingType.TRIANGLE_FOUNDATION || type == BuildingType.FLOOR || type == BuildingType.TRIANGLE_FLOOR) return true;
         if (includeWall && (type == BuildingType.WALL || type == BuildingType.DOORWAY || type == BuildingType.WINDOW_FRAME)) return true;
         return false;
+    }
+
+    private static double horizontalRotationDegrees(BuildAction action) {
+        if (action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION ||
+            action.actionType == BuildAction.ActionType.TRIANGLE_FLOOR) {
+            int index = action.orientation % 6;
+            if (index < 0) index += 6;
+            return index * 60.0;
+        }
+
+        int index = action.orientation % 4;
+        if (index < 0) index += 4;
+        return index * 90.0;
+    }
+
+    private static boolean isValidWallTarget(BuildingBlock target, int placementFloor) {
+        if (target == null) return false;
+        if (BuildingTypeUtils.isHorizontalSurface(target.getType())) {
+            return target.getZ() == placementFloor;
+        }
+        if (BuildingTypeUtils.isWall(target.getType())) {
+            return placementFloor > 0 && target.getZ() == placementFloor - 1;
+        }
+        return false;
+    }
+
+    private static Orientation getWallOrientation(BuildingBlock target, int orientationSelection) {
+        if (target instanceof Wall && BuildingTypeUtils.isWall(target.getType())) {
+            return ((Wall) target).getOrientation();
+        }
+        return getOrientationFromAction(target.getType(), orientationSelection);
     }
 
     private static Orientation getOrientationFromAction(BuildingType baseType, int orientationSelection) {
@@ -186,12 +235,27 @@ public class GridPlacementUtils {
     }
     
     private static BuildingBlock instantiateDummy(BuildAction.ActionType type, double x, double y, int z) {
-        switch (type) {
-             case FOUNDATION: return new Foundation(x, y, z);
-             case TRIANGLE_FOUNDATION: return new TriangleFoundation(x, y, z, 0);
-             case FLOOR: return new Floor(x, y, z, 0);
-             case TRIANGLE_FLOOR: return new TriangleFloor(x, y, z, 0);
-             default: return null;
+        BuildingBlock dummy = DUMMY_BLOCKS.get().get(type);
+        if (dummy != null) {
+            dummy.setTransform(x, y, z, 0);
+        }
+        return dummy;
+    }
+
+    private static class DummyBlocks {
+        private final Foundation foundation = new Foundation(0, 0, 0);
+        private final TriangleFoundation triangleFoundation = new TriangleFoundation(0, 0, 0, 0);
+        private final Floor floor = new Floor(0, 0, 0, 0);
+        private final TriangleFloor triangleFloor = new TriangleFloor(0, 0, 0, 0);
+
+        private BuildingBlock get(BuildAction.ActionType type) {
+            switch (type) {
+                case FOUNDATION: return foundation;
+                case TRIANGLE_FOUNDATION: return triangleFoundation;
+                case FLOOR: return floor;
+                case TRIANGLE_FLOOR: return triangleFloor;
+                default: return null;
+            }
         }
     }
 
@@ -220,6 +284,11 @@ public class GridPlacementUtils {
     public static boolean isActionActuallyFeasible(GridModel grid, BuildAction action) {
         Placement placement = calculatePlacement(grid, action);
         if (!placement.valid) return false;
+
+        List<BuildingBlock> allBlocks = grid.getAllBlocks();
+        if (isOccupiedExactSlot(grid, action, placement, allBlocks)) {
+            return false;
+        }
         
         BuildingBlock block = createRealBlock(action, placement);
         if (block == null) return false;
@@ -229,7 +298,10 @@ public class GridPlacementUtils {
                               action.actionType == BuildAction.ActionType.LOOT_ROOM;
         if (isFurniture) {
             if (grid.canPlace(block)) {
-                for (BuildingBlock b2 : grid.getAllBlocks()) {
+                List<BuildingBlock> furnitureCandidates = allBlocks.size() > SPATIAL_TARGET_SEARCH_THRESHOLD
+                    ? grid.getNearbyBlocks(block.getX(), block.getY(), block.getZ(), 1.0)
+                    : allBlocks;
+                for (BuildingBlock b2 : furnitureCandidates) {
                     if (com.rustbuilder.util.BuildingTypeUtils.isFurniture(b2.getType()) &&
                         b2.getZ() == block.getZ() &&
                         Math.abs(b2.getX() - block.getX()) < 1.0 &&
@@ -243,5 +315,40 @@ public class GridPlacementUtils {
         } else {
             return grid.canPlace(block);
         }
+    }
+
+    private static boolean isOccupiedExactSlot(GridModel grid, BuildAction action, Placement placement, List<BuildingBlock> allBlocks) {
+        int z = (action.actionType == BuildAction.ActionType.FOUNDATION || action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION) ? 0 : action.floor;
+        boolean horizontal = action.actionType == BuildAction.ActionType.FOUNDATION
+            || action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION
+            || action.actionType == BuildAction.ActionType.FLOOR
+            || action.actionType == BuildAction.ActionType.TRIANGLE_FLOOR;
+        boolean furniture = action.actionType == BuildAction.ActionType.TC
+            || action.actionType == BuildAction.ActionType.WORKBENCH
+            || action.actionType == BuildAction.ActionType.LOOT_ROOM;
+
+        if (!horizontal && !furniture) {
+            return false;
+        }
+
+        List<BuildingBlock> candidates = allBlocks.size() > SPATIAL_TARGET_SEARCH_THRESHOLD
+            ? grid.getNearbyBlocks(placement.x, placement.y, z, 1.0)
+            : allBlocks;
+        for (BuildingBlock existing : candidates) {
+            if (existing.getZ() != z) {
+                continue;
+            }
+            if (Math.abs(existing.getX() - placement.x) >= 1.0 || Math.abs(existing.getY() - placement.y) >= 1.0) {
+                continue;
+            }
+            if (horizontal && BuildingTypeUtils.isHorizontalSurface(existing.getType())) {
+                return true;
+            }
+            if (furniture && BuildingTypeUtils.isFurniture(existing.getType())) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

@@ -1,15 +1,12 @@
 package com.rustbuilder.ai.rl.multidiscrete;
 
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
 import com.rustbuilder.ai.ea.BaseGenome.BuildAction;
 import com.rustbuilder.ai.ea.BaseGenome.BuildAction.ActionType;
-import com.rustbuilder.ai.rl.legacy.ActionSpace;
-import com.rustbuilder.config.GameConstants;
 import com.rustbuilder.model.GridModel;
-import com.rustbuilder.model.core.BuildingBlock;
-import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.util.GridPlacementUtils;
 
 /**
@@ -28,6 +25,19 @@ public class HeuristicMaskingUtils {
 
     private static final int GRID_SIZE = MultiDiscreteActionSpace.GRID_SIZE;
     private static final int MAX_FLOORS = MultiDiscreteActionSpace.FLOOR_COUNT;
+    private static final List<Integer> ROTATION_ZERO = Collections.singletonList(0);
+    private static final List<Integer> CARDINAL_ROTATIONS = Collections.unmodifiableList(Arrays.asList(0, 1, 2, 3));
+    private static final List<Integer> TRIANGLE_ROTATIONS = Collections.unmodifiableList(Arrays.asList(0, 1, 2, 3, 4, 5));
+    private static final List<Integer> FLOOR_ZERO = Collections.singletonList(0);
+    private static final List<Integer> STOP_TILE = Collections.singletonList(0);
+    private static final List<Integer> STOP_AIM = Collections.singletonList(MultiDiscreteActionSpace.DEFAULT_AIM_SECTOR);
+    private static final int FALLBACK_AIM_CHECK_BUDGET = 96;
+    private static final List<Integer> CENTER_TILES = Collections.unmodifiableList(Arrays.asList(
+        (GRID_SIZE / 2 - 1) * GRID_SIZE + (GRID_SIZE / 2 - 1),
+        (GRID_SIZE / 2 - 1) * GRID_SIZE + (GRID_SIZE / 2),
+        (GRID_SIZE / 2) * GRID_SIZE + (GRID_SIZE / 2 - 1),
+        (GRID_SIZE / 2) * GRID_SIZE + (GRID_SIZE / 2)
+    ));
 
     public static boolean DEBUG_MODE = false;
 
@@ -43,26 +53,27 @@ public class HeuristicMaskingUtils {
      * Uses CHEAP gating rules (TC/Loot limits, ceiling-wall dependencies).
      */
     public static List<Integer> getValidTypes(GridModel grid, boolean hasTC, boolean hasLootRoom, int step) {
-        List<Integer> baseTypes = ActionSpace.getValidTypeActions(hasTC, hasLootRoom, step);
+        return getValidTypes(new MultiDiscretePhaseContext(grid, hasTC, hasLootRoom, step, step + 1));
+    }
+
+    public static List<Integer> getValidTypes(MultiDiscretePhaseContext context) {
+        List<Integer> baseTypes = MultiDiscreteActionSpace.getValidTypeActions(
+            context.isHasTC(),
+            context.isHasLootRoom(),
+            context.getStep()
+        );
         List<Integer> gated = new ArrayList<>();
-        int blocks = grid.getAllBlocks().size();
-        
-        // Fast pre-check for ceiling rule
-        boolean hasAtLeastOneWall = false;
-        for (BuildingBlock b : grid.getAllBlocks()) {
-            BuildingType bt = b.getType();
-            if (bt == BuildingType.WALL || bt == BuildingType.DOORWAY || bt == BuildingType.WINDOW_FRAME) {
-                hasAtLeastOneWall = true;
-                break;
-            }
-        }
+        int blocks = context.getBlockCount();
+        boolean hasAtLeastOneWall = context.hasAnyWall();
         
         for (Integer tIndex : baseTypes) {
-            if (tIndex == com.rustbuilder.ai.rl.legacy.ActionSpace.STOP_TYPE_INDEX) {
-                gated.add(tIndex);
+            if (tIndex == MultiDiscreteActionSpace.STOP_TYPE_INDEX) {
+                if (blocks >= MultiDiscreteActionSpace.MIN_BLOCKS_BEFORE_STOP) {
+                    gated.add(tIndex);
+                }
                 continue;
             }
-            ActionType type = ActionSpace.decodeType(tIndex);
+            ActionType type = MultiDiscreteActionSpace.decodeType(tIndex);
             if (type == null) {
                 gated.add(tIndex);
                 continue;
@@ -94,13 +105,21 @@ public class HeuristicMaskingUtils {
         return getValidTypes(grid, hasTC, hasLootRoom, step);
     }
 
+    public static List<Integer> getFeasibleTypes(MultiDiscretePhaseContext context) {
+        return getValidTypes(context);
+    }
+
     /**
      * Phase 2: Get valid floors for the selected type.
      * Uses CHEAP structural heuristics (walls below, foundations at floor 0).
      */
     public static List<Integer> getValidFloors(GridModel grid, int typeIndex, int step) {
         // [PERF] Removed hasFeasibleTile scan. Just return basic structurally-valid floors.
-        return getBasicFloors(grid, typeIndex);
+        return getBasicFloors(new MultiDiscretePhaseContext(grid, false, false, step, step + 1), typeIndex);
+    }
+
+    public static List<Integer> getValidFloors(MultiDiscretePhaseContext context, int typeIndex) {
+        return getBasicFloors(context, typeIndex);
     }
 
     /**
@@ -108,61 +127,74 @@ public class HeuristicMaskingUtils {
      * Uses CHEAP pre-filtering without rotation/aim dry-runs.
      */
     public static List<Integer> getValidTiles(GridModel grid, int typeIndex, int floorIndex, int step) {
+        return getValidTiles(new MultiDiscretePhaseContext(grid, false, false, step, step + 1), typeIndex, floorIndex);
+    }
+
+    public static List<Integer> getValidTiles(MultiDiscretePhaseContext context, int typeIndex, int floorIndex) {
         List<Integer> valid = new ArrayList<>();
-        ActionType type = ActionSpace.decodeType(typeIndex);
-        if (type == null) return Collections.singletonList(0); // STOP
+        ActionType type = MultiDiscreteActionSpace.decodeType(typeIndex);
+        if (type == null) return STOP_TILE; // STOP
 
-        if (step == 0) {
-            // First step must be in the center
-            addCenterTiles(valid);
-        } else {
-            // Check all tiles for structural proximity
+        if (context.getStep() == 0) {
+            return CENTER_TILES;
+        }
+
+        if (isFoundationType(type)) {
             for (int tileIdx = 0; tileIdx < MultiDiscreteActionSpace.TILE_COUNT; tileIdx++) {
-                int tx = tileIdx / GRID_SIZE;
-                int ty = tileIdx % GRID_SIZE;
-
-                if (passesNearStructureRule(grid, type, tx, ty, floorIndex)) {
-                    valid.add(tileIdx);
-                }
+                valid.add(tileIdx);
             }
+            return valid;
+        }
+
+        if (isWallLikeType(type)) {
+            valid.addAll(context.getWallPlacementTiles(floorIndex));
+        } else if (isCeilingType(type)) {
+            valid.addAll(context.getCeilingPlacementTiles(floorIndex));
+        } else if (isFurnitureType(type)) {
+            valid.addAll(context.getSurfaceTiles(floorIndex));
+        } else {
+            valid.addAll(context.getNearSurfaceTiles(floorIndex));
         }
 
         if (valid.isEmpty()) {
             emptyTilesCount++;
+        } else {
+            tilesRejectedByNearStructureRule += MultiDiscreteActionSpace.TILE_COUNT - valid.size();
         }
 
         return valid;
     }
 
     /**
-     * Phase 4: Get valid rotations (0..3).
+     * Phase 4: Get valid rotations.
      * No longer scans aim sectors or performs dry-runs.
      */
     public static List<Integer> getValidRotations(GridModel grid, int typeIndex, int floorIndex, int tileIndex) {
-        ActionType type = ActionSpace.decodeType(typeIndex);
-        if (type == null) return Collections.singletonList(0); // STOP
+        ActionType type = MultiDiscreteActionSpace.decodeType(typeIndex);
+        if (type == null) return ROTATION_ZERO; // STOP
 
         // [PERF] For structural and deployable types, the orientation (rotation index)
         // does not determine placement feasibility in the current engine. 
         // Foundation/floor snapping and deployable centering are handled internally.
         if (isRotationInvariant(type)) {
-            return Collections.singletonList(0);
+            return ROTATION_ZERO;
         }
 
-        // Return all 4 rotations for anything else (walls, doors, etc.)
-        List<Integer> rots = new ArrayList<>();
-        for (int i = 0; i < 4; i++) rots.add(i);
-        return rots;
+        if (isTriangleType(type)) {
+            return TRIANGLE_ROTATIONS;
+        }
+
+        return CARDINAL_ROTATIONS;
     }
 
     /**
-     * Phase 5: Get valid aim sectors (0..24) for the selected type, floor, tile, and rotation.
+     * Phase 5: Get valid aim sectors for the selected type, floor, tile, and rotation.
      * THIS IS THE ONLY PHASE that performs exact physics feasibility checks (dry-runs).
      */
     public static List<Integer> getValidAimSectors(GridModel grid, int typeIndex, int floorIndex, int tileIndex, int rotationIndex) {
         List<Integer> valid = new ArrayList<>();
-        ActionType type = ActionSpace.decodeType(typeIndex);
-        if (type == null) return Collections.singletonList(12); // Default center for STOP
+        ActionType type = MultiDiscreteActionSpace.decodeType(typeIndex);
+        if (type == null) return STOP_AIM; // Default center for STOP
 
         int tx = tileIndex / GRID_SIZE;
         int ty = tileIndex % GRID_SIZE;
@@ -181,95 +213,107 @@ public class HeuristicMaskingUtils {
         return valid;
     }
 
-    private static final int[] SECTOR_OPTIMIZED_ORDER = {
-        12, // Center
-        6, 7, 8, 11, 13, 16, 17, 18, // Ring 1 (neighbors of 12)
-        0, 1, 2, 3, 4, 5, 9, 10, 14, 15, 19, 20, 21, 22, 23, 24 // Ring 2 (edges)
-    };
+    public static int getFirstValidAimSector(GridModel grid, int typeIndex, int floorIndex, int tileIndex, int rotationIndex) {
+        ActionType type = MultiDiscreteActionSpace.decodeType(typeIndex);
+        if (type == null) return MultiDiscreteActionSpace.DEFAULT_AIM_SECTOR;
 
-    // --- Private Helpers ---
+        int tx = tileIndex / GRID_SIZE;
+        int ty = tileIndex % GRID_SIZE;
 
-    private static void addCenterTiles(List<Integer> list) {
-        list.add((GRID_SIZE / 2 - 1) * GRID_SIZE + (GRID_SIZE / 2 - 1));
-        list.add((GRID_SIZE / 2 - 1) * GRID_SIZE + (GRID_SIZE / 2));
-        list.add((GRID_SIZE / 2) * GRID_SIZE + (GRID_SIZE / 2 - 1));
-        list.add((GRID_SIZE / 2) * GRID_SIZE + (GRID_SIZE / 2));
-    }
-
-    /**
-     * Cheap structural tile pruning.
-     * Blocks must be near other blocks on the same floor or a wall below.
-     */
-    private static boolean passesNearStructureRule(GridModel grid, ActionType type, int tx, int ty, int floorIndex) {
-        if (isFoundationType(type)) return true; // Foundations start the base
-
-        double x = 200.0 + tx * GameConstants.TILE_SIZE;
-        double y = 200.0 + ty * GameConstants.TILE_SIZE;
-        double radius = GameConstants.TILE_SIZE * 1.2;
-
-        List<BuildingBlock> near = grid.getNearbyBlocks(x, y, floorIndex, radius);
-        
-        boolean hasSameFloorAnyBlock = false;
-        for (BuildingBlock b : near) {
-            if (b.getZ() == floorIndex) {
-                hasSameFloorAnyBlock = true;
-                break;
+        for (int sector : SECTOR_OPTIMIZED_ORDER) {
+            BuildAction trial = new BuildAction(type, tx, ty, floorIndex, rotationIndex, 2, 0, sector);
+            if (GridPlacementUtils.isActionActuallyFeasible(grid, trial)) {
+                return sector;
             }
         }
-        if (hasSameFloorAnyBlock) return true;
 
-        // If no same-floor neighbors, we MUST have a wall/support below
-        if (floorIndex > 0) {
-            // Reuse the nearby query if possible (getNearbyBlocks with z=floorIndex usually gets +/- 1 floor range depending on implementation, 
-            // but here we assume it's exact or we need another query).
-            // Optimization: if GridModel.getNearbyBlocks is already floor-aware, we might need a separate call for below.
-            List<BuildingBlock> below = grid.getNearbyBlocks(x, y, floorIndex - 1, radius);
-            for (BuildingBlock b : below) {
-                if (b.getZ() == floorIndex - 1) {
-                    BuildingType bt = b.getType();
-                    if (bt == BuildingType.WALL || bt == BuildingType.DOORWAY || bt == BuildingType.WINDOW_FRAME) {
-                        return true;
+        return -1;
+    }
+
+    public static MultiDiscreteAction findFeasibleBuildAction(GridModel grid, boolean hasTC, boolean hasLootRoom, int step, java.util.Random random) {
+        return findFeasibleBuildAction(new MultiDiscretePhaseContext(grid, hasTC, hasLootRoom, step, step + 1), random);
+    }
+
+    public static MultiDiscreteAction findFeasibleBuildAction(MultiDiscretePhaseContext context, java.util.Random random) {
+        GridModel grid = context.getGrid();
+        List<Integer> types = shuffled(getFeasibleTypes(context), random);
+        types.remove(Integer.valueOf(MultiDiscreteActionSpace.STOP_TYPE_INDEX));
+        int aimChecks = 0;
+
+        for (int type : types) {
+            List<Integer> floors = shuffled(getValidFloors(context, type), random);
+            for (int floor : floors) {
+                List<Integer> tiles = shuffled(getValidTiles(context, type, floor), random);
+                for (int tile : tiles) {
+                    List<Integer> rotations = shuffled(getValidRotations(grid, type, floor, tile), random);
+                    for (int rotation : rotations) {
+                        if (aimChecks++ >= FALLBACK_AIM_CHECK_BUDGET) {
+                            return null;
+                        }
+                        int aim = getFirstValidAimSector(grid, type, floor, tile, rotation);
+                        if (aim >= 0) {
+                            return new MultiDiscreteAction(type, floor, tile, rotation, aim);
+                        }
                     }
                 }
             }
         }
 
-        tilesRejectedByNearStructureRule++;
-        return false;
+        return null;
     }
 
-    private static List<Integer> getBasicFloors(GridModel grid, int typeIndex) {
-        ActionType type = ActionSpace.decodeType(typeIndex);
-        if (type == null) return Collections.singletonList(0);
-
-        if (isFoundationType(type)) return Collections.singletonList(0);
-
-        // Pre-scan grid to avoid multiple passes
-        boolean[] hasWallAtFloor = new boolean[MAX_FLOORS];
-        boolean hasAnyBlockAtFloor0 = false;
-
-        for (BuildingBlock b : grid.getAllBlocks()) {
-            int z = b.getZ();
-            if (z >= 0 && z < MAX_FLOORS) {
-                if (z == 0) hasAnyBlockAtFloor0 = true;
-                BuildingType bt = b.getType();
-                if (bt == BuildingType.WALL || bt == BuildingType.DOORWAY || bt == BuildingType.WINDOW_FRAME) {
-                    hasWallAtFloor[z] = true;
-                }
-            }
+    private static List<Integer> shuffled(List<Integer> values, java.util.Random random) {
+        List<Integer> copy = new ArrayList<>(values);
+        if (random != null && copy.size() > 1) {
+            Collections.shuffle(copy, random);
         }
+        return copy;
+    }
+
+    private static final int[] SECTOR_OPTIMIZED_ORDER = {
+        5, 6, 9, 10, // Central 2x2 sectors
+        1, 2, 4, 7, 8, 11, 13, 14, // Edge-adjacent sectors
+        0, 3, 12, 15 // Corners
+    };
+
+    // --- Private Helpers ---
+
+    private static List<Integer> getBasicFloors(MultiDiscretePhaseContext context, int typeIndex) {
+        ActionType type = MultiDiscreteActionSpace.decodeType(typeIndex);
+        if (type == null) return FLOOR_ZERO;
+
+        if (isFoundationType(type)) return FLOOR_ZERO;
 
         List<Integer> valid = new ArrayList<>();
-        // Floor 0 is always base floor
-        if (!isCeilingType(type) && hasAnyBlockAtFloor0) {
-            valid.add(0);
-        }
-        // Higher floors allowed if there's a wall below
-        for (int f = 1; f < MAX_FLOORS; f++) {
-            if (hasWallAtFloor[f - 1]) valid.add(f);
+
+        if (isCeilingType(type)) {
+            for (int f = 1; f < MAX_FLOORS; f++) {
+                if (context.hasWallAtFloor(f - 1)) {
+                    valid.add(f);
+                }
+            }
+            return valid;
         }
 
-        if (valid.isEmpty()) valid.add(0);
+        if (isWallLikeType(type)) {
+            for (int f = 0; f < MAX_FLOORS; f++) {
+                if (context.hasHorizontalAtFloor(f)
+                        || (f > 0 && context.hasWallAtFloor(f - 1))) {
+                    valid.add(f);
+                }
+            }
+            return valid;
+        }
+
+        if (isFurnitureType(type)) {
+            for (int f = 0; f < MAX_FLOORS; f++) {
+                if (context.hasHorizontalAtFloor(f)) {
+                    valid.add(f);
+                }
+            }
+            return valid;
+        }
+
         return valid;
     }
 
@@ -283,15 +327,30 @@ public class HeuristicMaskingUtils {
                type == ActionType.TRIANGLE_FLOOR;
     }
 
+    private static boolean isWallLikeType(ActionType type) {
+        return type == ActionType.WALL ||
+               type == ActionType.DOORWAY ||
+               type == ActionType.WINDOW_FRAME;
+    }
+
+    private static boolean isFurnitureType(ActionType type) {
+        return type == ActionType.TC ||
+               type == ActionType.WORKBENCH ||
+               type == ActionType.LOOT_ROOM;
+    }
+
     private static boolean isRotationInvariant(ActionType type) {
         // These types either have 4-fold symmetry or their placement engine 
         // ignores the input rotationIndex in favor of internal snapping/centering.
         return type == ActionType.FOUNDATION || 
-               type == ActionType.TRIANGLE_FOUNDATION ||
                type == ActionType.FLOOR ||
-               type == ActionType.TRIANGLE_FLOOR ||
                type == ActionType.TC ||
                type == ActionType.WORKBENCH ||
                type == ActionType.LOOT_ROOM;
+    }
+
+    private static boolean isTriangleType(ActionType type) {
+        return type == ActionType.TRIANGLE_FOUNDATION ||
+               type == ActionType.TRIANGLE_FLOOR;
     }
 }

@@ -171,6 +171,14 @@ public abstract class BuildingBlock {
         invalidateGeometryCache();
     }
 
+    public void setTransform(double x, double y, int z, double rotation) {
+        this.x = x;
+        this.y = y;
+        this.z = z;
+        this.rotation = rotation;
+        invalidateGeometryCache();
+    }
+
     public double getUpkeepCost() {
         double base = 0;
         switch (getTier()) {

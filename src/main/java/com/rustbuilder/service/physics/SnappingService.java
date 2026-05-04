@@ -45,7 +45,7 @@ public class SnappingService {
 
         Socket closestSocket = null;
         BuildingBlock closestBlock = null;
-        double minDist = GameConstants.SNAP_RADIUS;
+        double minDistSq = GameConstants.SNAP_RADIUS * GameConstants.SNAP_RADIUS;
 
         double searchRadius = GameConstants.TILE_SIZE * 2.5;
         List<BuildingBlock> localBlocks = gridModel.getNearbyBlocks(mouseX, mouseY, currentFloor, searchRadius);
@@ -72,14 +72,16 @@ public class SnappingService {
                     continue;
                 }
 
-                double dist = Math.hypot(socket.getX() - mouseX, socket.getY() - mouseY);
-                if (dist < minDist) {
-                    minDist = dist;
+                double dx = socket.getX() - mouseX;
+                double dy = socket.getY() - mouseY;
+                double distSq = dx * dx + dy * dy;
+                if (distSq < minDistSq) {
+                    minDistSq = distSq;
                     closestSocket = socket;
                     closestBlock = block;
-                } else if (Math.abs(dist - minDist) < 0.001) {
+                } else if (Math.abs(distSq - minDistSq) < 0.001) {
                     if (closestBlock != null && isWallType(block.getType()) && !isWallType(closestBlock.getType())) {
-                        minDist = dist;
+                        minDistSq = distSq;
                         closestSocket = socket;
                         closestBlock = block;
                     }
@@ -198,9 +200,9 @@ public class SnappingService {
                         double ay = worldVerts[edgePairs[e][0]][1];
                         double bx = worldVerts[edgePairs[e][1]][0];
                         double by = worldVerts[edgePairs[e][1]][1];
-                        double d = pointToSegmentDist(mouseX, mouseY, ax, ay, bx, by);
-                        if (d < minEdgeDist) {
-                            minEdgeDist = d;
+                        double dSq = pointToSegmentDistSq(mouseX, mouseY, ax, ay, bx, by);
+                        if (dSq < minEdgeDist) {
+                            minEdgeDist = dSq;
                             bestSide = edgeSides[e];
                         }
                     }
@@ -277,17 +279,21 @@ public class SnappingService {
         }
     }
     
-    private double pointToSegmentDist(double px, double py, double ax, double ay, double bx, double by) {
+    private double pointToSegmentDistSq(double px, double py, double ax, double ay, double bx, double by) {
         double dx = bx - ax;
         double dy = by - ay;
         double lengthSq = dx * dx + dy * dy;
         if (lengthSq < 0.0001) {
-            return Math.hypot(px - ax, py - ay);
+            double pointDx = px - ax;
+            double pointDy = py - ay;
+            return pointDx * pointDx + pointDy * pointDy;
         }
         double t = ((px - ax) * dx + (py - ay) * dy) / lengthSq;
         t = Math.max(0, Math.min(1, t));
         double closestX = ax + t * dx;
         double closestY = ay + t * dy;
-        return Math.hypot(px - closestX, py - closestY);
+        double pointDx = px - closestX;
+        double pointDy = py - closestY;
+        return pointDx * pointDx + pointDy * pointDy;
     }
 }

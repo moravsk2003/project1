@@ -19,6 +19,9 @@ public class ProvidedPhaseMultiDiscretePolicy implements MultiDiscretePhasePolic
     @Override
     public MultiDiscreteAction chooseAction(MultiDiscretePhaseContext context, MultiDiscreteStateObserver observer) {
         MultiDiscretePhaseDecision d = provider.provideDecision(context);
+        if (d == null) {
+            return null;
+        }
         
         if (observer != null) {
             observer.observePhase(context, "TYPE", 0, d.getTypeIndex());

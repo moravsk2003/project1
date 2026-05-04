@@ -7,8 +7,8 @@ package com.rustbuilder.ai.rl.multidiscrete;
  * 1. typeIndex     (0..11)
  * 2. floorIndex    (0..7)
  * 3. tileIndex     (0..63)
- * 4. rotationIndex (0..3) - 90 degree steps
- * 5. aimSector     (0..24) - 5x5 grid center=12
+ * 4. rotationIndex (0..5) - 60 degree steps for triangle-capable placement
+ * 5. aimSector     (0..15) - 4x4 grid
  */
 public class MultiDiscreteAction {
     private final int typeIndex;

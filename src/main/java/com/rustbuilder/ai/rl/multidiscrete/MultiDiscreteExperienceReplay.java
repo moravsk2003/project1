@@ -1,6 +1,6 @@
 package com.rustbuilder.ai.rl.multidiscrete;
 
-import org.nd4j.linalg.api.ndarray.INDArray;
+import com.rustbuilder.ai.rl.env.state.EncodedState;
 import java.util.ArrayList;
 import java.util.LinkedList;
 import java.util.List;
@@ -15,10 +15,10 @@ import com.rustbuilder.model.GridModel;
 public class MultiDiscreteExperienceReplay {
 
     public static class Transition {
-        public INDArray state;
+        public EncodedState state;
         public MultiDiscreteAction action;
         public double reward;
-        public INDArray nextState;
+        public EncodedState nextState;
         public boolean isDone;
         public int step; 
         
@@ -26,10 +26,18 @@ public class MultiDiscreteExperienceReplay {
         public GridModel grid;
         public GridModel nextGrid;
         public boolean isSuccess;
+        public double[] headRewardMultipliers;
 
-        public Transition(INDArray state, MultiDiscreteAction action, double reward, 
-                          INDArray nextState, boolean isDone, int step,
+        public Transition(EncodedState state, MultiDiscreteAction action, double reward, 
+                          EncodedState nextState, boolean isDone, int step,
                           GridModel grid, GridModel nextGrid, boolean isSuccess) {
+            this(state, action, reward, nextState, isDone, step, grid, nextGrid, isSuccess, null);
+        }
+
+        public Transition(EncodedState state, MultiDiscreteAction action, double reward,
+                          EncodedState nextState, boolean isDone, int step,
+                          GridModel grid, GridModel nextGrid, boolean isSuccess,
+                          double[] headRewardMultipliers) {
             this.state = state;
             this.action = action;
             this.reward = reward;
@@ -39,6 +47,7 @@ public class MultiDiscreteExperienceReplay {
             this.grid = grid;
             this.nextGrid = nextGrid;
             this.isSuccess = isSuccess;
+            this.headRewardMultipliers = headRewardMultipliers;
         }
 
         public void close() {

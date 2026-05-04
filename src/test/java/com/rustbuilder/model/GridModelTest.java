@@ -10,6 +10,9 @@ import com.rustbuilder.model.structure.Wall;
 import com.rustbuilder.model.structure.Floor;
 import com.rustbuilder.model.structure.TriangleFloor;
 import com.rustbuilder.model.core.Orientation;
+import com.rustbuilder.ai.ea.BaseGenome.BuildAction;
+import com.rustbuilder.config.GameConstants;
+import com.rustbuilder.util.GridPlacementUtils;
 
 public class GridModelTest {
 
@@ -184,5 +187,31 @@ public class GridModelTest {
         Wall wall2 = new Wall(0, -60, 0, Orientation.NORTH);
         
         assertFalse(gridModel.canPlace(wall2), "Should NOT allow placing wall next to another wall without foundation");
+    }
+
+    @Test
+    void aiPlacementRejectsSameFloorWallAsWallTarget() {
+        double x = GameConstants.GRID_ORIGIN_X - GameConstants.HALF_TILE;
+        double y = GameConstants.GRID_ORIGIN_Y - GameConstants.HALF_TILE;
+        gridModel.addBlockSilent(new Wall(x, y, 0, Orientation.NORTH));
+
+        BuildAction action = new BuildAction(BuildAction.ActionType.WALL, 0, 0, 0, 1, 2, 0, 12);
+
+        GridPlacementUtils.Placement placement = GridPlacementUtils.calculatePlacement(gridModel, action);
+
+        assertFalse(placement.valid, "AI should not place a same-floor wall by targeting another wall");
+    }
+
+    @Test
+    void aiPlacementAllowsWallStackingOnlyFromWallBelow() {
+        double x = GameConstants.GRID_ORIGIN_X - GameConstants.HALF_TILE;
+        double y = GameConstants.GRID_ORIGIN_Y - GameConstants.HALF_TILE;
+        gridModel.addBlockSilent(new Wall(x, y, 0, Orientation.NORTH));
+
+        BuildAction action = new BuildAction(BuildAction.ActionType.WALL, 0, 0, 1, 1, 2, 0, 12);
+
+        GridPlacementUtils.Placement placement = GridPlacementUtils.calculatePlacement(gridModel, action);
+
+        assertTrue(placement.valid, "AI should allow vertical wall stacking from a wall one floor below");
     }
 }

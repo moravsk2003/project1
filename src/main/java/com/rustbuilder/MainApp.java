@@ -212,9 +212,12 @@ public class MainApp extends Application {
                     null,
                     rlTrainingService,
                     gridModel,
-                    () -> Platform.runLater(gameCanvas::draw)
+                    () -> Platform.runLater(() -> {
+                        gameCanvas.invalidateCache();
+                        gameCanvas.draw();
+                    }),
+                    gameCanvas
                 );
-                gameCanvas.draw();
             });
 
             // === Stability Tool ===

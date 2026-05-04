@@ -1,6 +1,5 @@
 package com.rustbuilder.ai.rl.multidiscrete;
 
-import com.rustbuilder.ai.rl.legacy.*;
 import com.rustbuilder.ai.ea.BaseGenome.BuildAction;
 
 /**
@@ -20,7 +19,7 @@ public class MultiDiscreteActionMapper {
     public static MultiDiscreteAction toMultiDiscrete(BuildAction legacyAction) {
         if (legacyAction == null) return null;
 
-        int typeIdx = ActionSpace.encodeType(legacyAction.actionType);
+        int typeIdx = MultiDiscreteActionSpace.encodeType(legacyAction.actionType);
         int floorIdx = legacyAction.floor;
         
         // Combine grid coordinates into a singular tileIndex (0..63)
@@ -42,7 +41,7 @@ public class MultiDiscreteActionMapper {
      * MAPPING STRATEGY (Legacy Mode):
      * - typeIndex -> BuildingType (via ActionSpace)
      * - gridX, gridY, floorIndex -> 1:1 mapping
-     * - rotationIndex (0..3) -> orientation (0..3): 1:1 mapping.
+     * - rotationIndex -> orientation: triangles keep 0..5, cardinal pieces use 0..3.
      * - aimSector -> Currently ignored (placeholder for future tile-local refinement).
      * - tier/doorType -> Default values (STONE/SHEET_METAL).
      * 
@@ -52,10 +51,9 @@ public class MultiDiscreteActionMapper {
     public static BuildAction toBuildAction(MultiDiscreteAction multiAction) {
         if (multiAction == null) return null;
 
-        BuildAction.ActionType type = ActionSpace.decodeType(multiAction.getTypeIndex());
+        BuildAction.ActionType type = MultiDiscreteActionSpace.decodeType(multiAction.getTypeIndex());
         
-        // 1:1 mapping: rotation buckets [0..3] -> cards [0..3]
-        int orientation = Math.min(3, Math.max(0, multiAction.getRotationIndex()));
+        int orientation = normalizeRotationForType(type, multiAction.getRotationIndex());
 
         // Use standard tier (STONE) and doorType (SHEET_METAL) for compatibility
         int defaultTier = 2;
@@ -73,6 +71,13 @@ public class MultiDiscreteActionMapper {
         );
     }
 
+    private static int normalizeRotationForType(BuildAction.ActionType type, int rotationIndex) {
+        int maxExclusive = (type == BuildAction.ActionType.TRIANGLE_FOUNDATION ||
+                            type == BuildAction.ActionType.TRIANGLE_FLOOR) ? 6 : 4;
+        int normalized = rotationIndex % maxExclusive;
+        return normalized < 0 ? normalized + maxExclusive : normalized;
+    }
+
     /**
      * Helper to map an orientation back to a 4-bucket rotation index.
      * This is the inverse of the logic in toBuildAction.
@@ -85,11 +90,12 @@ public class MultiDiscreteActionMapper {
     }
 
     /**
-     * Decode an aim sector index (0..24) into a 5x5 grid coordinate.
+     * Decode an aim sector index (0..15) into a 4x4 grid coordinate.
      */
     public static int[] decodeAimSector(int sector) {
-        int x = sector % 5;
-        int y = sector / 5;
+        int clamped = Math.max(0, Math.min(MultiDiscreteActionSpace.AIM_SECTOR_COUNT - 1, sector));
+        int x = clamped % MultiDiscreteActionSpace.AIM_GRID_SIZE;
+        int y = clamped / MultiDiscreteActionSpace.AIM_GRID_SIZE;
         return new int[]{x, y};
     }
 }

@@ -2,9 +2,8 @@ package com.rustbuilder.model;
 
 import com.rustbuilder.model.core.*;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.Arrays;
 import java.util.List;
-import java.util.Map;
 import com.rustbuilder.model.structure.Wall;
 import com.rustbuilder.util.BuildingTypeUtils;
 import com.rustbuilder.config.GameConstants;
@@ -12,7 +11,7 @@ import com.rustbuilder.config.GameConstants;
 public class GridModel {
     private final List<BuildingBlock> blocks = new ArrayList<>();
     // Spatial index: key -> list of blocks in that grid cell
-    private final Map<Long, List<BuildingBlock>> spatialMap = new HashMap<>();
+    private final LongBlockListMap spatialMap = new LongBlockListMap();
 
     // Key generation: Pack quantized coordinates into a long.
     // TILE_SIZE is 60. We use it as the grid cell size.
@@ -31,7 +30,13 @@ public class GridModel {
         // We use a small radius around the new block to find candidates for duplicate check
         List<BuildingBlock> candidates = getNearbyBlocks(block.getX(), block.getY(), block.getZ(), 1.0);
         
-        boolean exists = candidates.stream().anyMatch(b -> isDuplicate(b, block));
+        boolean exists = false;
+        for (BuildingBlock candidate : candidates) {
+            if (isDuplicate(candidate, block)) {
+                exists = true;
+                break;
+            }
+        }
 
         if (!exists) {
             blocks.add(block);
@@ -49,7 +54,13 @@ public class GridModel {
     public boolean addBlockSilent(BuildingBlock block) {
         List<BuildingBlock> candidates = getNearbyBlocks(block.getX(), block.getY(), block.getZ(), 1.0);
 
-        boolean exists = candidates.stream().anyMatch(b -> isDuplicate(b, block));
+        boolean exists = false;
+        for (BuildingBlock candidate : candidates) {
+            if (isDuplicate(candidate, block)) {
+                exists = true;
+                break;
+            }
+        }
 
         if (!exists) {
             blocks.add(block);
@@ -76,7 +87,7 @@ public class GridModel {
 
     private void addToSpatialMap(BuildingBlock block) {
         long key = getSpatialKey(block.getX(), block.getY(), block.getZ());
-        spatialMap.computeIfAbsent(key, k -> new ArrayList<>()).add(block);
+        spatialMap.getOrCreate(key).add(block);
     }
 
     public void removeBlock(BuildingBlock block) {
@@ -132,6 +143,9 @@ public class GridModel {
      * Efficiently get blocks within a certain radius.
      */
     public List<BuildingBlock> getNearbyBlocks(double x, double y, int z, double radius) {
+        if (blocks.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
         List<BuildingBlock> nearby = new ArrayList<>();
         int gxMin = (int) Math.floor((x - radius) / GameConstants.TILE_SIZE);
         int gxMax = (int) Math.floor((x + radius) / GameConstants.TILE_SIZE);
@@ -226,15 +240,17 @@ public class GridModel {
     }
 
     private boolean checkCollision(BuildingBlock newBlock, BuildingBlock block) {
-        // Vertical separation: if floors are different, check if it's a valid wall-floor support connection
+        // Vertical separation: ceilings may touch walls one floor below only when
+        // an edge socket lines up. Otherwise that lower wall is treated as a
+        // real collision instead of being silently accepted as support.
         if (block.getZ() != newBlock.getZ()) {
-            boolean isNewFloor = newBlock.getType() == BuildingType.FLOOR || newBlock.getType() == BuildingType.TRIANGLE_FLOOR;
-            boolean isBlockBelow = block.getZ() == newBlock.getZ() - 1;
-            if (isNewFloor && isBlockBelow && isWall(block)) {
-                // Walls can exist below floors for support without collision
-            } else {
-                return true; // No collision possible (different Z)
+            if (isCeiling(newBlock) && isWall(block) && block.getZ() == newBlock.getZ() - 1) {
+                return isValidCeilingOverLowerWall(newBlock, block);
             }
+            if (isCeiling(block) && isWall(newBlock) && newBlock.getZ() == block.getZ() - 1) {
+                return isValidCeilingOverLowerWall(block, newBlock);
+            }
+            return true; // No collision possible (different Z)
         }
 
         // Ignore collision between Wall and any horizontal surface (Foundation/Floor)
@@ -335,8 +351,174 @@ public class GridModel {
         return BuildingTypeUtils.isFloor(b.getType());
     }
 
+    private boolean isCeiling(BuildingBlock b) {
+        return b.getType() == BuildingType.FLOOR || b.getType() == BuildingType.TRIANGLE_FLOOR;
+    }
+
+    private boolean isValidCeilingOverLowerWall(BuildingBlock ceiling, BuildingBlock wallBelow) {
+        if (!isCeiling(ceiling) || !isWall(wallBelow) || wallBelow.getZ() != ceiling.getZ() - 1) {
+            return false;
+        }
+
+        for (Socket ceilingSocket : ceiling.getSockets()) {
+            if (ceilingSocket.getSide() == 10) {
+                continue;
+            }
+            for (Socket wallSocket : wallBelow.getSockets()) {
+                if (wallSocket.getSide() == 10) {
+                    continue;
+                }
+                double dx = ceilingSocket.getX() - wallSocket.getX();
+                double dy = ceilingSocket.getY() - wallSocket.getY();
+                if (dx * dx + dy * dy < 1.3) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
     public void clear() {
         blocks.clear();
         spatialMap.clear();
+    }
+
+    private static final class LongBlockListMap {
+        private static final int DEFAULT_CAPACITY = 32;
+        private static final float MAX_LOAD = 0.65f;
+
+        private long[] keys;
+        private List<BuildingBlock>[] values;
+        private byte[] states; // 0 = empty, 1 = occupied, 2 = deleted
+        private int size;
+        private int tombstones;
+        private int resizeThreshold;
+
+        LongBlockListMap() {
+            allocate(DEFAULT_CAPACITY);
+        }
+
+        List<BuildingBlock> get(long key) {
+            int mask = keys.length - 1;
+            int index = mix(key) & mask;
+            while (true) {
+                byte state = states[index];
+                if (state == 0) {
+                    return null;
+                }
+                if (state == 1 && keys[index] == key) {
+                    return values[index];
+                }
+                index = (index + 1) & mask;
+            }
+        }
+
+        List<BuildingBlock> getOrCreate(long key) {
+            if (size + tombstones + 1 > resizeThreshold) {
+                rehash(keys.length * 2);
+            }
+
+            int mask = keys.length - 1;
+            int index = mix(key) & mask;
+            int firstDeleted = -1;
+            while (true) {
+                byte state = states[index];
+                if (state == 0) {
+                    int target = firstDeleted >= 0 ? firstDeleted : index;
+                    if (firstDeleted >= 0) {
+                        tombstones--;
+                    }
+                    keys[target] = key;
+                    states[target] = 1;
+                    values[target] = new ArrayList<>();
+                    size++;
+                    return values[target];
+                }
+                if (state == 1 && keys[index] == key) {
+                    return values[index];
+                }
+                if (state == 2 && firstDeleted < 0) {
+                    firstDeleted = index;
+                }
+                index = (index + 1) & mask;
+            }
+        }
+
+        void remove(long key) {
+            int mask = keys.length - 1;
+            int index = mix(key) & mask;
+            while (true) {
+                byte state = states[index];
+                if (state == 0) {
+                    return;
+                }
+                if (state == 1 && keys[index] == key) {
+                    states[index] = 2;
+                    values[index] = null;
+                    size--;
+                    tombstones++;
+                    if (tombstones > size && keys.length > DEFAULT_CAPACITY) {
+                        rehash(keys.length);
+                    }
+                    return;
+                }
+                index = (index + 1) & mask;
+            }
+        }
+
+        void clear() {
+            Arrays.fill(states, (byte) 0);
+            Arrays.fill(values, null);
+            size = 0;
+            tombstones = 0;
+        }
+
+        private void rehash(int capacity) {
+            long[] oldKeys = keys;
+            List<BuildingBlock>[] oldValues = values;
+            byte[] oldStates = states;
+            allocate(capacity);
+
+            for (int i = 0; i < oldKeys.length; i++) {
+                if (oldStates[i] == 1) {
+                    putRehashed(oldKeys[i], oldValues[i]);
+                }
+            }
+        }
+
+        private void putRehashed(long key, List<BuildingBlock> value) {
+            int mask = keys.length - 1;
+            int index = mix(key) & mask;
+            while (states[index] == 1) {
+                index = (index + 1) & mask;
+            }
+            keys[index] = key;
+            values[index] = value;
+            states[index] = 1;
+            size++;
+        }
+
+        @SuppressWarnings("unchecked")
+        private void allocate(int requestedCapacity) {
+            int capacity = 1;
+            while (capacity < requestedCapacity) {
+                capacity <<= 1;
+            }
+            keys = new long[capacity];
+            values = (List<BuildingBlock>[]) new List[capacity];
+            states = new byte[capacity];
+            size = 0;
+            tombstones = 0;
+            resizeThreshold = Math.max(1, (int) (capacity * MAX_LOAD));
+        }
+
+        private static int mix(long value) {
+            value ^= value >>> 33;
+            value *= 0xff51afd7ed558ccdL;
+            value ^= value >>> 33;
+            value *= 0xc4ceb9fe1a85ec53L;
+            value ^= value >>> 33;
+            return (int) value;
+        }
     }
 }
