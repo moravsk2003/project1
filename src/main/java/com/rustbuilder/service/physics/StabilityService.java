@@ -190,7 +190,7 @@ public class StabilityService {
 
         for (BuildingBlock supporter : potentialSupporters) {
             if (supporter == block) continue;
-            if (getSupportFactor(block, supporter) > 0) {
+            if (supporter.getStability() > 0.0 && getSupportFactor(block, supporter) > 0) {
                 return true;
             }
         }

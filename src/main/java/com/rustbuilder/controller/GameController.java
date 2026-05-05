@@ -125,10 +125,7 @@ public class GameController {
         if (tempBlock != null && (isWallType(selectedTool) || "DOOR".equals(selectedTool))) {
             tempBlock.setRotation(ghostRotation);
         }
-        this.ghostValid = result.valid;
-        if (this.ghostValid && tempBlock != null) {
-            this.ghostValid = gridModel.canPlace(tempBlock);
-        }
+        this.ghostValid = result.valid && tempBlock != null && gridModel.canPlace(tempBlock);
 
         gameCanvas.setGhost(ghostX, ghostY, ghostRotation, selectedTool, ghostValid, ghostOrientation, selectedTier);
         gameCanvas.draw();
@@ -216,7 +213,12 @@ public class GameController {
             }
 
             if (gridModel.canPlace(newBlock)) {
-                gridModel.addBlock(newBlock);
+                boolean added = gridModel.addBlock(newBlock);
+                if (!added) {
+                    gameCanvas.invalidateCache();
+                    gameCanvas.draw();
+                    return false;
+                }
                 
                 Map<ResourceType, Integer> cost = newBlock.getBuildCost();
                 cost.forEach((k, v) -> totalConstructionCost.merge(k, v, (a, b) -> a + b));

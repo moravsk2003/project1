@@ -25,7 +25,7 @@ public class GridModel {
         return (lx) | (ly << 20) | (lz << 40);
     }
 
-    public void addBlock(BuildingBlock block) {
+    public boolean addBlock(BuildingBlock block) {
         // Optimized duplicate check: only check nearby blocks
         // We use a small radius around the new block to find candidates for duplicate check
         List<BuildingBlock> candidates = getNearbyBlocks(block.getX(), block.getY(), block.getZ(), 1.0);
@@ -42,7 +42,9 @@ public class GridModel {
             blocks.add(block);
             addToSpatialMap(block);
             updateStability();
+            return blocks.contains(block);
         }
+        return false;
     }
 
     /**
@@ -195,6 +197,12 @@ public class GridModel {
         // 1. Collision Check: only check nearby blocks
         double checkRadius = GameConstants.TILE_SIZE * 1.5;
         List<BuildingBlock> neighbors = getNearbyBlocks(newBlock.getX(), newBlock.getY(), newBlock.getZ(), checkRadius);
+
+        for (BuildingBlock block : neighbors) {
+            if (block != newBlock && isDuplicate(block, newBlock)) {
+                return false;
+            }
+        }
 
         double[] newPoly = newBlock.getPolygonPoints();
         if (newPoly.length > 0) {

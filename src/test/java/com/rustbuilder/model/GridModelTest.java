@@ -41,6 +41,18 @@ public class GridModelTest {
     }
 
     @Test
+    void canPlaceRejectsDuplicateWallOrientation() {
+        Foundation foundation = new Foundation(0, 0, 0, 0);
+        gridModel.addBlock(foundation);
+
+        Wall wall = new Wall(0, 0, 0, Orientation.NORTH);
+        gridModel.addBlock(wall);
+
+        Wall duplicateWall = new Wall(0, 0, 0, Orientation.NORTH);
+        assertFalse(gridModel.canPlace(duplicateWall), "Should reject duplicate wall at same tile and orientation");
+    }
+
+    @Test
     void testWallFoundationCollision() {
         // Place foundation
         Foundation foundation = new Foundation(0, 0, 0, 0);
