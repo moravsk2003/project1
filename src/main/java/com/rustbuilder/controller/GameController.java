@@ -25,6 +25,8 @@ import com.rustbuilder.config.GameConstants;
 import java.util.HashMap;
 import java.util.Map;
 
+import javafx.geometry.Point2D;
+
 public class GameController {
 
     private final GridModel gridModel;
@@ -107,8 +109,9 @@ public class GameController {
         }
 
         // Convert Screen to World
-        double worldX = gameCanvas.toGridX(mouseX);
-        double worldY = gameCanvas.toGridY(mouseY);
+        Point2D world = gameCanvas.toGrid(mouseX, mouseY);
+        double worldX = world.getX();
+        double worldY = world.getY();
 
         SnapResult result = snappingService.calculateSnap(worldX, worldY, selectedTool, currentFloor);
         this.ghostX = result.x;
@@ -149,7 +152,8 @@ public class GameController {
             } else {
                 if (!placeBlock()) {
                     // Only select block if we didn't place anything
-                    BuildingBlock clicked = findBlockAt(gameCanvas.toGridX(mouseX), gameCanvas.toGridY(mouseY));
+                    Point2D world = gameCanvas.toGrid(mouseX, mouseY);
+                    BuildingBlock clicked = findBlockAt(world.getX(), world.getY());
                     selectedBlock = clicked;
                     gameCanvas.draw();
                 } else {
@@ -186,8 +190,9 @@ public class GameController {
     }
 
     private void deleteBlockAt(double mouseX, double mouseY) {
-        double worldX = gameCanvas.toGridX(mouseX);
-        double worldY = gameCanvas.toGridY(mouseY);
+        Point2D world = gameCanvas.toGrid(mouseX, mouseY);
+        double worldX = world.getX();
+        double worldY = world.getY();
         BuildingBlock toDelete = findBlockAt(worldX, worldY);
         if (toDelete != null) {
             Map<ResourceType, Integer> cost = toDelete.getBuildCost();

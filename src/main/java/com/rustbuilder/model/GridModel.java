@@ -240,27 +240,54 @@ public class GridModel {
     }
 
     private boolean checkCollision(BuildingBlock newBlock, BuildingBlock block) {
-        // Vertical separation: ceilings may touch walls one floor below only when
-        // an edge socket lines up. Otherwise that lower wall is treated as a
-        // real collision instead of being silently accepted as support.
+        // --- Cross-Z collision rules ---
         if (block.getZ() != newBlock.getZ()) {
-            if (isCeiling(newBlock) && isWall(block) && block.getZ() == newBlock.getZ() - 1) {
-                return isValidCeilingOverLowerWall(newBlock, block);
+            int zDiff = newBlock.getZ() - block.getZ();
+
+            // Case A: newBlock is horizontal surface at Z, block is wall at Z-1
+            if (zDiff == 1 && isHorizontalSurface(newBlock) && isWall(block)) {
+                if (hasEdgeSocketConnection(block, newBlock)) {
+                    return true; // Proper socket snap → no collision
+                }
+                // No socket match → fall through to SAT test to block crooked overlaps
             }
-            if (isCeiling(block) && isWall(newBlock) && newBlock.getZ() == block.getZ() - 1) {
-                return isValidCeilingOverLowerWall(block, newBlock);
+            // Case B: block is horizontal surface at Z, newBlock is wall at Z-1
+            else if (zDiff == -1 && isHorizontalSurface(block) && isWall(newBlock)) {
+                if (hasEdgeSocketConnection(newBlock, block)) {
+                    return true; // Proper socket snap → no collision
+                }
+                // No socket match → fall through to SAT test to block crooked overlaps
             }
-            return true; // No collision possible (different Z)
+            else {
+                return true; // Other cross-Z combos (Wall/Wall, Ceiling/Ceiling) don't physically intersect
+            }
         }
 
-        // Ignore collision between Wall and any horizontal surface (Foundation/Floor)
+        // --- Same-Z collision rules ---
         boolean isNewWall = isWall(newBlock);
         boolean isExistingWall = isWall(block);
-        boolean isNewHorizontal = isFoundation(newBlock) || isFloor(newBlock);
-        boolean isExistingHorizontal = isFoundation(block) || isFloor(block);
+        boolean isNewFoundation = isFoundation(newBlock);
+        boolean isExistingFoundation = isFoundation(block);
+        boolean isNewCeiling = isCeiling(newBlock);
+        boolean isExistingCeiling = isCeiling(block);
 
-        if ((isNewWall && isExistingHorizontal) || (isNewHorizontal && isExistingWall)) {
-            return true;
+        // Rule 1: Wall + Foundation (same Z) → always allowed (wall sits on its foundation)
+        if (block.getZ() == newBlock.getZ()) {
+            if ((isNewWall && isExistingFoundation) || (isNewFoundation && isExistingWall)) {
+                return true;
+            }
+        }
+
+        // Rule 2: Wall + Ceiling (same Z) → allowed if connected via edge socket.
+        //         If NOT connected, fall through to SAT polygon test to detect
+        //         actual geometric overlap (crooked intersection = collision).
+        if ((isNewWall && isExistingCeiling) || (isNewCeiling && isExistingWall)) {
+            BuildingBlock wallBlock = isNewWall ? newBlock : block;
+            BuildingBlock ceilingBlock = isNewCeiling ? newBlock : block;
+            if (hasEdgeSocketConnection(wallBlock, ceilingBlock)) {
+                return true; // Proper socket snap → no collision
+            }
+            // No socket match → fall through to SAT polygon test below
         }
 
         boolean isNewDeployable = isDeployable(newBlock);
@@ -355,27 +382,30 @@ public class GridModel {
         return b.getType() == BuildingType.FLOOR || b.getType() == BuildingType.TRIANGLE_FLOOR;
     }
 
-    private boolean isValidCeilingOverLowerWall(BuildingBlock ceiling, BuildingBlock wallBelow) {
-        if (!isCeiling(ceiling) || !isWall(wallBelow) || wallBelow.getZ() != ceiling.getZ() - 1) {
-            return false;
-        }
+    private boolean isHorizontalSurface(BuildingBlock b) {
+        return isFoundation(b) || isFloor(b);
+    }
 
-        for (Socket ceilingSocket : ceiling.getSockets()) {
-            if (ceilingSocket.getSide() == 10) {
-                continue;
-            }
-            for (Socket wallSocket : wallBelow.getSockets()) {
-                if (wallSocket.getSide() == 10) {
-                    continue;
-                }
-                double dx = ceilingSocket.getX() - wallSocket.getX();
-                double dy = ceilingSocket.getY() - wallSocket.getY();
-                if (dx * dx + dy * dy < 1.3) {
-                    return true;
+    /**
+     * Checks if two blocks share a valid edge socket connection.
+     * Side 10 (center) sockets are excluded — only edge sockets (0-6) qualify.
+     * Uses a generous tolerance (9.0 squared distance ≈ 3px radius) to handle
+     * floating-point drift when 3-4 walls surround a single ceiling tile.
+     * Returns true (= no collision) if ANY edge socket pair matches.
+     */
+    private boolean hasEdgeSocketConnection(BuildingBlock a, BuildingBlock b) {
+        for (Socket sa : a.getSockets()) {
+            if (sa.getSide() == 10) continue;
+            for (Socket sb : b.getSockets()) {
+                if (sb.getSide() == 10) continue;
+                double dx = sa.getX() - sb.getX();
+                double dy = sa.getY() - sb.getY();
+                if (dx * dx + dy * dy < 9.0) {
+                    return true; // Valid socket connection → no collision
                 }
             }
         }
-        return false;
+        return false; // No socket match → collision
     }
 
     public void clear() {

@@ -238,13 +238,55 @@ public class MainApp extends Application {
                 }
             });
 
+            Button btnView3D = new Button("3D");
+            HintUtils.attachHint(btnView3D, "Pseudo 3D", "Switch between the top-down editor view and a pseudo-3D preview.");
+            btnView3D.setOnAction(e -> {
+                gameCanvas.toggleRenderMode();
+                if (gameCanvas.isPseudo3D()) {
+                    btnView3D.setText("2D");
+                    btnView3D.setStyle("-fx-background-color: #34495e; -fx-text-fill: white; -fx-font-weight: bold;");
+                } else {
+                    btnView3D.setText("3D");
+                    btnView3D.setStyle("");
+                }
+            });
+
+            final double cameraStep = 48.0;
+            final double cameraRotationStep = 15.0;
+
+            Button btnCamLeft = new Button("Cam <");
+            HintUtils.attachHint(btnCamLeft, "Camera left", "Move the camera left in the current view.");
+            btnCamLeft.setOnAction(e -> gameCanvas.moveCamera(cameraStep, 0));
+
+            Button btnCamForward = new Button("Cam ^");
+            HintUtils.attachHint(btnCamForward, "Camera forward", "Move the camera forward in the current view.");
+            btnCamForward.setOnAction(e -> gameCanvas.moveCamera(0, cameraStep));
+
+            Button btnCamBack = new Button("Cam v");
+            HintUtils.attachHint(btnCamBack, "Camera back", "Move the camera back in the current view.");
+            btnCamBack.setOnAction(e -> gameCanvas.moveCamera(0, -cameraStep));
+
+            Button btnCamRight = new Button("Cam >");
+            HintUtils.attachHint(btnCamRight, "Camera right", "Move the camera right in the current view.");
+            btnCamRight.setOnAction(e -> gameCanvas.moveCamera(-cameraStep, 0));
+
+            Button btnRotateLeft = new Button("Rot -");
+            HintUtils.attachHint(btnRotateLeft, "Rotate left", "Rotate the camera around the vertical axis.");
+            btnRotateLeft.setOnAction(e -> gameCanvas.rotateCamera(-cameraRotationStep));
+
+            Button btnRotateRight = new Button("Rot +");
+            HintUtils.attachHint(btnRotateRight, "Rotate right", "Rotate the camera around the vertical axis.");
+            btnRotateRight.setOnAction(e -> gameCanvas.rotateCamera(cameraRotationStep));
+
             toolBar.getItems().addAll(
                     btnFoundation, btnTriFoundation, btnWall, btnFloor, btnTriFloor,
                     btnDoorFrame, btnDoor, btnWindowFrame,
                     new Separator(),
                     btnToolCupboard, btnWorkbench, btnLootRoom,
                     new Separator(),
-                    btnUp, btnDown, btnDelete, btnClear,
+                    btnUp, btnDown, btnView3D,
+                    btnCamLeft, btnCamForward, btnCamBack, btnCamRight, btnRotateLeft, btnRotateRight,
+                    btnDelete, btnClear,
                     new Separator(),
                     tierBox, doorBox,
                     new Separator(),
@@ -287,6 +329,37 @@ public class MainApp extends Application {
             gameCanvas.heightProperty().addListener(o -> gameCanvas.draw());
 
             Scene scene = new Scene(root, 1000, 700);
+            scene.setOnKeyPressed(e -> {
+                double step = e.isShiftDown() ? cameraStep * 2.0 : cameraStep;
+                double rotationStep = e.isShiftDown() ? cameraRotationStep * 2.0 : cameraRotationStep;
+
+                switch (e.getCode()) {
+                    case LEFT:
+                    case A:
+                        gameCanvas.moveCamera(step, 0);
+                        break;
+                    case RIGHT:
+                    case D:
+                        gameCanvas.moveCamera(-step, 0);
+                        break;
+                    case UP:
+                    case W:
+                        gameCanvas.moveCamera(0, step);
+                        break;
+                    case DOWN:
+                    case S:
+                        gameCanvas.moveCamera(0, -step);
+                        break;
+                    case Q:
+                        gameCanvas.rotateCamera(-rotationStep);
+                        break;
+                    case E:
+                        gameCanvas.rotateCamera(rotationStep);
+                        break;
+                    default:
+                        break;
+                }
+            });
             stage.setTitle("Rust Base Builder");
             stage.setScene(scene);
             stage.show();

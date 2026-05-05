@@ -251,9 +251,17 @@ public class EpisodeRunner {
             result.perfRewardNs += System.nanoTime() - rewardStartNs;
 
             // Determine if this is a terminal step (max steps or stagnation)
+            boolean terminatedByInvalidStreak = consecutiveInvalidSteps >= 5;
             boolean isTerminal = (step == maxStepsPerEpisode - 1)
-                || (consecutiveInvalidSteps >= 15)
+                || terminatedByInvalidStreak
                 || (consecutiveNoGrowthSteps >= 30 && afterBlockCount > 0);
+
+            // Apply harsh penalty for invalid-streak termination so agent prefers STOP over spamming
+            if (terminatedByInvalidStreak) {
+                double invalidStreakPenalty = -1.2;
+                stepReward += invalidStreakPenalty;
+                result.accStepReward += invalidStreakPenalty;
+            }
 
             // Neural learning update for multi-discrete path
             if (multiDiscreteMemory != null && stateEncoded != null) {
@@ -294,7 +302,7 @@ public class EpisodeRunner {
             if (isTerminal) {
                 if (result.stopReason == StopReason.UNKNOWN) {
                     if (step == maxStepsPerEpisode - 1) result.stopReason = StopReason.MAX_STEPS;
-                    else if (consecutiveInvalidSteps >= 15) result.stopReason = StopReason.NO_VALID_ACTIONS;
+                    else if (terminatedByInvalidStreak) result.stopReason = StopReason.NO_VALID_ACTIONS;
                     else result.stopReason = StopReason.STAGNATION; // Fallback for no-growth stall
                 }
                 break;

@@ -29,6 +29,7 @@ public class MultiDiscretePhaseContext {
     private final List<Integer>[] surfaceTilesByFloor;
     private final List<Integer>[] nearSurfaceTilesByFloor;
     private final List<Integer>[] nearWallTilesByFloor;
+    private final List<Integer>[] wallExactTilesByFloor;
     private final List<Integer>[] wallPlacementTilesByFloor;
     private final List<Integer>[] ceilingPlacementTilesByFloor;
 
@@ -88,6 +89,7 @@ public class MultiDiscretePhaseContext {
         this.surfaceTilesByFloor = buildExactTileLists(horizontal);
         this.nearSurfaceTilesByFloor = buildNearTileLists(horizontal);
         this.nearWallTilesByFloor = buildNearTileLists(wall);
+        this.wallExactTilesByFloor = buildExactTileLists(wall);
         this.wallPlacementTilesByFloor = buildWallPlacementTileLists();
         this.ceilingPlacementTilesByFloor = buildCeilingPlacementTileLists();
     }
@@ -215,9 +217,12 @@ public class MultiDiscretePhaseContext {
         List<Integer>[] result = new List[MultiDiscreteActionSpace.FLOOR_COUNT];
         for (int floor = 0; floor < result.length; floor++) {
             boolean[] mask = new boolean[MultiDiscreteActionSpace.TILE_COUNT];
-            addAll(mask, nearSurfaceTilesByFloor[floor]);
+            // Use exact surface tiles (foundation/floor) instead of 3x3 neighborhood
+            // to prevent walls from being placed in mid-air next to support
+            addAll(mask, surfaceTilesByFloor[floor]);
             if (floor > 0) {
-                addAll(mask, nearWallTilesByFloor[floor - 1]);
+                // Use exact wall positions from the floor below for stacking
+                addAll(mask, wallExactTilesByFloor[floor - 1]);
             }
             result[floor] = maskToList(mask);
         }

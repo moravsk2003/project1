@@ -147,12 +147,9 @@ public class EpisodeEvaluator {
                 // terminal reward shaping: distribute a portion of final Eval back to useful steps
                 double shapedTailReward = (result.finalEvalReward - earlyStopPenalty) * 0.25;
                 if (result.episodeTransitions != null && !result.episodeTransitions.isEmpty()) {
-                    int distributeCount = Math.min(result.episodeTransitions.size(), 8);
-                    double rewardPerStep = shapedTailReward / distributeCount;
-                    int startIdx = result.episodeTransitions.size() - distributeCount;
-                    for (int i = startIdx; i < result.episodeTransitions.size(); i++) {
-                        result.episodeTransitions.get(i).reward += rewardPerStep;
-                    }
+                    // Класичний RL підхід: додаємо всю відкладену нагороду до останнього кроку (terminal state).
+                    // Алгоритм DQN сам "протягне" її назад за допомогою параметра дисконтування (gamma).
+                    result.episodeTransitions.get(result.episodeTransitions.size() - 1).reward += shapedTailReward;
                 }
             }
         } else {
