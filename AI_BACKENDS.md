@@ -2,17 +2,24 @@
 
 The project uses DeepLearning4J/ND4J for reinforcement-learning models.
 
-## Default: auto-select GPU when available
+## Default: NVIDIA CUDA
 
-The Maven project auto-selects the backend when it is imported by IntelliJ IDEA
-or run from the command line:
+The Maven project uses the NVIDIA CUDA backend by default. This is important
+for IDE runs, because `com.rustbuilder.Launcher` receives the classpath that
+IntelliJ IDEA or VS Code builds before the JVM starts.
 
-- If `${env.SystemRoot}/System32/nvidia-smi.exe` exists, Maven activates the
-  `cuda` profile.
-- Otherwise Maven keeps the default `cpu` profile active.
+After changing this file or switching branches, reload the Maven project in the
+IDE so the launcher classpath is rebuilt.
 
-After changing GPU drivers or switching machines, reload the Maven project in
-IntelliJ IDEA so the IDE rebuilds the launcher classpath.
+Expected startup log for GPU:
+
+```text
+Loaded [JCublasBackend] backend
+Backend used: [CUDA]
+```
+
+If the log says `Loaded [CpuBackend] backend`, the IDE is still running with the
+CPU dependency on its classpath.
 
 For command-line launch, use:
 
@@ -25,13 +32,10 @@ run.bat
 - If an NVIDIA GPU/driver is detected, it runs the CUDA backend.
 - If no NVIDIA GPU/driver is detected, it runs the CPU backend.
 
-When launching `com.rustbuilder.Launcher` directly from IntelliJ IDEA, the
-selected Maven profile decides which ND4J backend is on the classpath.
-
 ## NVIDIA CUDA
 
-Use CUDA explicitly on a machine with a compatible NVIDIA GPU driver/CUDA
-runtime.
+Use CUDA explicitly from the command line on a machine with a compatible NVIDIA
+GPU driver/CUDA runtime.
 
 ```bat
 mvn -Pcuda clean javafx:run

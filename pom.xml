@@ -65,11 +65,8 @@
     <profiles>
         <profile>
             <id>cpu</id>
-            <activation>
-                <activeByDefault>true</activeByDefault>
-            </activation>
             <dependencies>
-                <!-- Default fallback: IDEA/Maven uses this when no CUDA profile is auto-detected. -->
+                <!-- Manual fallback for machines without a compatible NVIDIA CUDA setup. -->
                 <dependency>
                     <groupId>org.nd4j</groupId>
                     <artifactId>nd4j-native-platform</artifactId>
@@ -81,12 +78,10 @@
         <profile>
             <id>cuda</id>
             <activation>
-                <file>
-                    <exists>${env.SystemRoot}/System32/nvidia-smi.exe</exists>
-                </file>
+                <activeByDefault>true</activeByDefault>
             </activation>
             <dependencies>
-                <!-- Auto-detected GPU backend for NVIDIA CUDA machines. -->
+                <!-- Default backend for IDE launcher runs on NVIDIA CUDA machines. -->
                 <dependency>
                     <groupId>org.nd4j</groupId>
                     <artifactId>nd4j-cuda-11.6-platform</artifactId>
