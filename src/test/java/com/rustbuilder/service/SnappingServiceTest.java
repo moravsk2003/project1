@@ -7,7 +7,9 @@ import org.junit.jupiter.api.Test;
 
 import com.rustbuilder.model.structure.Foundation;
 import com.rustbuilder.model.GridModel;
+import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.core.Orientation;
+import com.rustbuilder.model.structure.TriangleFoundation;
 import com.rustbuilder.model.structure.Wall;
 import com.rustbuilder.service.physics.SnappingService;
 
@@ -116,5 +118,38 @@ public class SnappingServiceTest {
         // Ghost Top-Left (x,y) should be (0, -60).
         assertEquals(0, result.x, 0.01, "Ghost X should be 0");
         assertEquals(-60, result.y, 0.01, "Ghost Y should be -60 (North of wall)");
+    }
+
+    @Test
+    void testDoorIgnoresCloserNonDoorwaySocket() {
+        Foundation leftFoundation = new Foundation(0, 0, 0, 0);
+        Foundation doorwayFoundation = new Foundation(60, 0, 0, 0);
+        gridModel.addBlock(leftFoundation);
+        gridModel.addBlock(doorwayFoundation);
+
+        Wall doorway = new Wall(60, 0, 0, Orientation.NORTH);
+        doorway.setType(BuildingType.DOORWAY);
+        gridModel.addBlock(doorway);
+
+        SnappingService.SnapResult result = snappingService.calculateSnap(50, 30, "DOOR", 0);
+
+        assertTrue(result.valid, "Door should snap to the nearest eligible doorway, not a closer foundation socket");
+        assertEquals(60, result.x, 0.01);
+        assertEquals(0, result.y, 0.01);
+        assertEquals(Orientation.NORTH, result.orientation);
+    }
+
+    @Test
+    void testWallOnTriangleUsesClosestSocketSide() {
+        TriangleFoundation triangle = new TriangleFoundation(0, 0, 0, 0);
+        gridModel.addBlock(triangle);
+
+        double rightSocketX = 45;
+        double rightSocketY = 30 + com.rustbuilder.config.GameConstants.TRIANGLE_OFFSET / 2.0;
+
+        SnappingService.SnapResult result = snappingService.calculateSnap(rightSocketX, rightSocketY, "WALL", 0);
+
+        assertTrue(result.valid);
+        assertEquals(Orientation.TRIANGLE_RIGHT, result.orientation);
     }
 }

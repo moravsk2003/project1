@@ -58,17 +58,7 @@ public class SnappingService {
             }
 
             for (Socket socket : block.getSockets()) {
-                if (socket.getSide() == 10 && ("FOUNDATION".equals(selectedTool) || "TRIANGLE".equals(selectedTool))) {
-                    continue;
-                }
-                if (isWallType(selectedTool) && isWallType(block.getType()) && socket.getSide() != 10) {
-                    continue;
-                }
-                if (isWallType(selectedTool) && (block.getType() == BuildingType.FOUNDATION || 
-                                                 block.getType() == BuildingType.TRIANGLE_FOUNDATION ||
-                                                 block.getType() == BuildingType.FLOOR ||
-                                                 block.getType() == BuildingType.TRIANGLE_FLOOR)
-                                             && socket.getSide() == 10) {
+                if (!isSocketEligibleForTool(block, socket, selectedTool)) {
                     continue;
                 }
 
@@ -167,47 +157,7 @@ public class SnappingService {
                     ghostX = closestBlock.getX();
                     ghostY = closestBlock.getY();
                     ghostRotation = closestBlock.getRotation();
-
-                    double half = GameConstants.HALF_TILE;
-                    double triOffset = GameConstants.TRIANGLE_OFFSET;
-                    double bCx = closestBlock.getX() + half;
-                    double bCy = closestBlock.getY() + half;
-                    double bRot = closestBlock.getRotation();
-
-                    double[][] triVerts = {
-                        { -half, half },
-                        { 0, triOffset - half },
-                        { half, half }
-                    };
-
-                    double cosR = Math.cos(Math.toRadians(bRot));
-                    double sinR = Math.sin(Math.toRadians(bRot));
-                    double[][] worldVerts = new double[3][2];
-                    for (int i = 0; i < 3; i++) {
-                        double vx = triVerts[i][0];
-                        double vy = triVerts[i][1];
-                        worldVerts[i][0] = bCx + vx * cosR - vy * sinR;
-                        worldVerts[i][1] = bCy + vx * sinR + vy * cosR;
-                    }
-
-                    int[][] edgePairs = { {0, 1}, {1, 2}, {2, 0} };
-                    int[] edgeSides = { 4, 5, 6 };
-                    double minEdgeDist = Double.MAX_VALUE;
-                    int bestSide = closestSocket.getSide();
-
-                    for (int e = 0; e < 3; e++) {
-                        double ax = worldVerts[edgePairs[e][0]][0];
-                        double ay = worldVerts[edgePairs[e][0]][1];
-                        double bx = worldVerts[edgePairs[e][1]][0];
-                        double by = worldVerts[edgePairs[e][1]][1];
-                        double dSq = pointToSegmentDistSq(mouseX, mouseY, ax, ay, bx, by);
-                        if (dSq < minEdgeDist) {
-                            minEdgeDist = dSq;
-                            bestSide = edgeSides[e];
-                        }
-                    }
-
-                    ghostOrientation = getOrientationFromSide(bestSide);
+                    ghostOrientation = getOrientationFromSide(closestSocket.getSide());
                 }
             } else if ("TC".equals(selectedTool) || "WORKBENCH".equals(selectedTool) || "LOOT_ROOM".equals(selectedTool)) {
                  if (closestBlock.getType() == BuildingType.FOUNDATION ||
@@ -266,6 +216,49 @@ public class SnappingService {
         return com.rustbuilder.util.BuildingTypeUtils.isWall(type);
     }
 
+    private boolean isHorizontalSurface(BuildingType type) {
+        return com.rustbuilder.util.BuildingTypeUtils.isHorizontalSurface(type);
+    }
+
+    private boolean isSocketEligibleForTool(BuildingBlock block, Socket socket, String selectedTool) {
+        BuildingType blockType = block.getType();
+        int side = socket.getSide();
+
+        if ("DOOR".equals(selectedTool)) {
+            return blockType == BuildingType.DOORWAY && side == 10;
+        }
+
+        if ("TC".equals(selectedTool) || "WORKBENCH".equals(selectedTool) || "LOOT_ROOM".equals(selectedTool)) {
+            return isHorizontalSurface(blockType) && side == 10;
+        }
+
+        if (isWallType(selectedTool)) {
+            if (isWallType(blockType)) {
+                return side == 10;
+            }
+            if (isHorizontalSurface(blockType)) {
+                return side != 10;
+            }
+            return false;
+        }
+
+        if ("FOUNDATION".equals(selectedTool) || "TRIANGLE".equals(selectedTool)) {
+            return isHorizontalSurface(blockType) && side != 10;
+        }
+
+        if ("FLOOR".equals(selectedTool) || "TRIANGLE_FLOOR".equals(selectedTool)) {
+            if (isWallType(blockType)) {
+                return true;
+            }
+            if (isHorizontalSurface(blockType)) {
+                return side != 10;
+            }
+            return false;
+        }
+
+        return side != 10;
+    }
+
     private Orientation getOrientationFromSide(int side) {
         switch (side) {
             case 0: return Orientation.NORTH;
@@ -279,21 +272,4 @@ public class SnappingService {
         }
     }
     
-    private double pointToSegmentDistSq(double px, double py, double ax, double ay, double bx, double by) {
-        double dx = bx - ax;
-        double dy = by - ay;
-        double lengthSq = dx * dx + dy * dy;
-        if (lengthSq < 0.0001) {
-            double pointDx = px - ax;
-            double pointDy = py - ay;
-            return pointDx * pointDx + pointDy * pointDy;
-        }
-        double t = ((px - ax) * dx + (py - ay) * dy) / lengthSq;
-        t = Math.max(0, Math.min(1, t));
-        double closestX = ax + t * dx;
-        double closestY = ay + t * dy;
-        double pointDx = px - closestX;
-        double pointDy = py - closestY;
-        return pointDx * pointDx + pointDy * pointDy;
-    }
 }
