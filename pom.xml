@@ -87,6 +87,12 @@
                     <artifactId>nd4j-cuda-11.6-platform</artifactId>
                     <version>${dl4j.version}</version>
                 </dependency>
+                <!-- Fallback backend if CUDA native libraries cannot be loaded. -->
+                <dependency>
+                    <groupId>org.nd4j</groupId>
+                    <artifactId>nd4j-native-platform</artifactId>
+                    <version>${dl4j.version}</version>
+                </dependency>
             </dependencies>
         </profile>
     </profiles>

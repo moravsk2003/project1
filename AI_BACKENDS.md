@@ -21,6 +21,19 @@ Backend used: [CUDA]
 If the log says `Loaded [CpuBackend] backend`, the IDE is still running with the
 CPU dependency on its classpath.
 
+If the log says:
+
+```text
+Skipped [JCublasBackend] backend (unavailable)
+jnicudart.dll: Can't find dependent libraries
+```
+
+then the CUDA dependency is on the classpath, but Windows cannot load one of
+the required native CUDA/NVIDIA/Visual C++ DLLs. Check that `nvidia-smi` works,
+the NVIDIA driver is installed, and the Microsoft Visual C++ Redistributable is
+available. The `cuda` profile also includes `nd4j-native-platform` as a fallback
+so the application can still start on CPU if CUDA native loading fails.
+
 For command-line launch, use:
 
 ```bat
@@ -51,6 +64,7 @@ The `cuda` profile uses:
 
 ```xml
 org.nd4j:nd4j-cuda-11.6-platform
+org.nd4j:nd4j-native-platform
 ```
 
 ## CPU fallback
