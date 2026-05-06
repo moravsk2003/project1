@@ -10,9 +10,9 @@ import com.rustbuilder.model.structure.Wall;
 import com.rustbuilder.model.structure.Floor;
 import com.rustbuilder.model.structure.TriangleFloor;
 import com.rustbuilder.model.core.Orientation;
-import com.rustbuilder.ai.ea.BaseGenome.BuildAction;
+import com.rustbuilder.core.action.BuildAction;
 import com.rustbuilder.config.GameConstants;
-import com.rustbuilder.util.GridPlacementUtils;
+import com.rustbuilder.service.physics.PlacementService;
 
 public class GridModelTest {
 
@@ -168,6 +168,34 @@ public class GridModelTest {
     }
 
     @Test
+    void triangleFloorCannotUseWallCenterSocketAsSupport() {
+        Foundation foundation = new Foundation(0, 0, 0, 0);
+        gridModel.addBlock(foundation);
+
+        Wall wall = new Wall(0, 0, 0, Orientation.NORTH);
+        gridModel.addBlock(wall);
+
+        TriangleFloor floor = new TriangleFloor(0, 0, 1, 0);
+
+        assertFalse(gridModel.canPlace(floor), "Triangle floor should not be supported by a wall center socket");
+    }
+
+    @Test
+    void triangleFloorRejectsNonParallelWallEdgeSocket() {
+        Foundation foundation = new Foundation(0, 0, 0, 0);
+        gridModel.addBlock(foundation);
+
+        Wall wall = new Wall(0, 0, 0, Orientation.NORTH);
+        gridModel.addBlock(wall);
+
+        double x = GameConstants.HALF_TILE / 2.0;
+        double y = -GameConstants.HALF_TILE - GameConstants.TRIANGLE_OFFSET / 2.0;
+        TriangleFloor floor = new TriangleFloor(x, y, 1, 0);
+
+        assertFalse(gridModel.canPlace(floor), "Triangle floor should reject a close but non-parallel wall edge socket");
+    }
+
+    @Test
     void testFloatingWallRejected() {
         // Try to place a wall in the air (no foundation, no support)
         Wall wall = new Wall(0, 0, 0, Orientation.NORTH);
@@ -209,7 +237,7 @@ public class GridModelTest {
 
         BuildAction action = new BuildAction(BuildAction.ActionType.WALL, 0, 0, 0, 1, 2, 0, 12);
 
-        GridPlacementUtils.Placement placement = GridPlacementUtils.calculatePlacement(gridModel, action);
+        PlacementService.Placement placement = PlacementService.calculatePlacement(gridModel, action);
 
         assertFalse(placement.valid, "AI should not place a same-floor wall by targeting another wall");
     }
@@ -222,7 +250,7 @@ public class GridModelTest {
 
         BuildAction action = new BuildAction(BuildAction.ActionType.WALL, 0, 0, 1, 1, 2, 0, 12);
 
-        GridPlacementUtils.Placement placement = GridPlacementUtils.calculatePlacement(gridModel, action);
+        PlacementService.Placement placement = PlacementService.calculatePlacement(gridModel, action);
 
         assertTrue(placement.valid, "AI should allow vertical wall stacking from a wall one floor below");
     }

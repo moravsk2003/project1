@@ -1,6 +1,6 @@
 package com.rustbuilder.ai.rl.env.state;
 
-import com.rustbuilder.ai.ea.BaseGenome.BuildAction.ActionType;
+import com.rustbuilder.core.action.BuildAction.ActionType;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.GridModel;

@@ -1,0 +1,1 @@
+timestamp,run_id,epoch,episode,step,state_encoder_version,fail_reason,action_type,floor,tileX,tileY,rotation,aimSector,minDist,socketDist,mask_allowed,physics_allowed

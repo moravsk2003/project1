@@ -40,6 +40,7 @@ public class RLModelManager {
         public final double costWeight;
         public final double raidWeight;
         public final double workingAreaWeight;
+        public final double safeZoneWeight;
         public RLRewardConfig rewardConfig; 
 
         // Compatibility metadata
@@ -63,6 +64,7 @@ public class RLModelManager {
         public RLModel(String name, int episodesTrained,
                        double bestScore, double epsilon,
                        double logisticsWeight, double costWeight, double raidWeight, double workingAreaWeight,
+                       double safeZoneWeight,
                        RLRewardConfig rewardConfig) {
             this.name = name;
             this.episodesTrained = episodesTrained;
@@ -72,6 +74,7 @@ public class RLModelManager {
             this.costWeight = costWeight;
             this.raidWeight = raidWeight;
             this.workingAreaWeight = workingAreaWeight;
+            this.safeZoneWeight = safeZoneWeight;
             this.rewardConfig = rewardConfig;
         }
 
@@ -150,7 +153,7 @@ public class RLModelManager {
     }
 
     public static RLModel createSnapshot(String name, RLTrainingService rlService,
-                                        double logW, double costW, double raidW, double workingAreaW) {
+                                        double logW, double costW, double raidW, double workingAreaW, double safeZoneW) {
         RLRewardConfig cfg = rlService.getRewardConfig();
         if (cfg == null) {
             cfg = RLRewardConfig.createDefault();
@@ -158,7 +161,7 @@ public class RLModelManager {
 
         RLModel model = new RLModel(name, rlService.getEpisodesTrained(),
                            rlService.getBestScore(), rlService.getEpsilon(),
-                           logW, costW, raidW, workingAreaW,
+                           logW, costW, raidW, workingAreaW, safeZoneW,
                            cfg.clone());
                            
         com.rustbuilder.ai.rl.env.spec.EncodingRuntimeConfig config = rlService.getRuntimeConfig();

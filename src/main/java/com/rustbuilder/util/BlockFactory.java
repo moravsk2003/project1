@@ -1,6 +1,6 @@
 package com.rustbuilder.util;
 
-import com.rustbuilder.ai.ea.BaseGenome.BuildAction;
+import com.rustbuilder.core.action.BuildAction;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingTier;
 import com.rustbuilder.model.core.BuildingType;

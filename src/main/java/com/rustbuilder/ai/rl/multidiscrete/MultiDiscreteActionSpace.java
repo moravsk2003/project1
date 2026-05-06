@@ -1,7 +1,6 @@
 package com.rustbuilder.ai.rl.multidiscrete;
 
-import com.rustbuilder.ai.ea.BaseGenome.BuildAction;
-import com.rustbuilder.ai.ea.BaseGenome.BuildAction.ActionType;
+import com.rustbuilder.core.action.BuildAction.ActionType;
 import java.util.ArrayList;
 import java.util.List;
 

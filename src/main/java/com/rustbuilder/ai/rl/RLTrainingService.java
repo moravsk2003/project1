@@ -4,7 +4,8 @@ import com.rustbuilder.ai.core.TrainingMetrics;
 import java.util.LinkedList;
 import java.util.Random;
 import java.util.function.Consumer;
-import com.rustbuilder.ai.ea.BaseGenome.BuildAction;
+import com.rustbuilder.core.action.BuildAction;
+import com.rustbuilder.core.placement.PlacementError;
 import com.rustbuilder.ai.rl.multidiscrete.*;
 import com.rustbuilder.ai.rl.env.state.StateRepresentationEncoder;
 import com.rustbuilder.ai.rl.env.state.VoxelV1StateEncoder;
@@ -19,6 +20,7 @@ import com.rustbuilder.model.core.DoorType;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.Orientation;
 import com.rustbuilder.service.evaluator.HouseEvaluator;
+import com.rustbuilder.service.physics.PlacementService;
 
 /**
  * Main service to train the RL Agent using a Deep Q-Network.
@@ -83,6 +85,9 @@ public class RLTrainingService {
     private int bestBaseBlocks = 0;
     private boolean bestBaseHasTC = false;
     private int bestBaseDoors = 0;
+    private double bestBaseStepReward = 0;
+    private double bestBaseFinalReward = 0;
+    private double bestBaseTotalReward = 0;
 
     private RLRewardConfig rewardConfig;
 
@@ -176,6 +181,9 @@ public class RLTrainingService {
         this.bestBaseBlocks = 0;
         this.bestBaseHasTC = false;
         this.bestBaseDoors = 0;
+        this.bestBaseStepReward = 0;
+        this.bestBaseFinalReward = 0;
+        this.bestBaseTotalReward = 0;
         this.logger.init(); // Re-initialize log files for new encoder mode
     }
 
@@ -183,9 +191,9 @@ public class RLTrainingService {
      * Train for a number of epochs, each epoch running 'episodes' training episodes.
      * Progress callback receives a TrainingMetrics object containing current status.
      */
-    public void train(String modelName, int episodes, int maxStepsPerEpisode, double logW, double costW, double raidW, double workingAreaW,
+    public void train(String modelName, int episodes, int maxStepsPerEpisode, double logW, double costW, double raidW, double workingAreaW, double safeZoneW,
                       int epochs, Consumer<TrainingMetrics> progressCallback, Runnable epochCompleteCallback) {
-        evaluator.setWeights(logW, costW, raidW, workingAreaW);
+        evaluator.setWeights(logW, costW, raidW, workingAreaW, safeZoneW);
 
         int totalEpisodesToTrain = epochs * episodes;
         double exploreEpisodes = totalEpisodesToTrain * 0.8;
@@ -233,7 +241,7 @@ public class RLTrainingService {
                 long epochStartMs = System.currentTimeMillis();
 
             EpisodeEvaluator episodeEvaluator = new EpisodeEvaluator(evaluator, rewardConfig);
-            EpisodeRunner runner = new EpisodeRunner(multiDiscreteAgent, multiDiscreteMemory, multiDiscretePolicy, multiDiscreteObserver, random, rewardConfig, logger, this, stateEncoder);
+            EpisodeRunner runner = new EpisodeRunner(multiDiscreteAgent, multiDiscreteMemory, multiDiscretePolicy, multiDiscreteObserver, random, rewardConfig, logger, this, stateEncoder, evaluator);
 
             for (int ep = 0; ep < episodes; ep++) {
                 if (stopRequested) break;
@@ -242,7 +250,7 @@ public class RLTrainingService {
                 if (multiDiscreteNeuralProvider != null) {
                     multiDiscreteNeuralProvider.setEpsilon(epsilon);
                 }
-                result = runner.runExperimentalMultiDiscreteEpisode(maxStepsPerEpisode, episodesTrained);
+                result = runner.runExperimentalMultiDiscreteEpisode(maxStepsPerEpisode, episodesTrained, epoch + 1, ep + 1);
 
                 this.currentMultiAction = runner.getCurrentMultiAction();
                 if (runner.getLastTrainLoss() > 0) {
@@ -316,6 +324,8 @@ public class RLTrainingService {
                         avgReward, invalidRate, result.invalidActions, result.totalActions,
                         bestBaseBlocks, bestBaseHasTC, bestBaseDoors,
                         avgEvalScore, episodeEvalScore, result.accStepReward, result.finalEvalReward,
+                        result.stepRewardBreakdownSummary(), result.finalRewardBreakdownSummary(),
+                        getBestTotalRewardForDisplay(), bestBaseStepReward, bestBaseFinalReward, bestBaseTotalReward,
                         multiDiscreteMemory != null ? multiDiscreteMemory.size() : 0
                     );
                     progressCallback.accept(metrics);
@@ -376,6 +386,9 @@ public class RLTrainingService {
                     if (bk.getType() == BuildingType.TC) bestBaseHasTC = true;
                 }
                 bestBaseDoors = (int) result.grid.getAllBlocks().stream().filter(bl -> bl instanceof Door).count();
+                bestBaseStepReward = result.accStepReward;
+                bestBaseFinalReward = result.finalEvalReward;
+                bestBaseTotalReward = totalReward;
             }
         }
 
@@ -407,7 +420,7 @@ public class RLTrainingService {
 
     public RLTrainingService.PlacementResult placeBlock(GridModel gridModel, BuildAction action) {
         RLTrainingService.PlacementResult res = new RLTrainingService.PlacementResult();
-        com.rustbuilder.util.GridPlacementUtils.Placement placement = com.rustbuilder.util.GridPlacementUtils.calculatePlacement(gridModel, action);
+        PlacementService.Placement placement = PlacementService.calculatePlacement(gridModel, action);
 
         res.minDist = placement.minDist;
         res.socketDist = placement.socketDist;
@@ -521,6 +534,9 @@ public class RLTrainingService {
         this.bestBaseBlocks = 0;
         this.bestBaseHasTC = false;
         this.bestBaseDoors = 0;
+        this.bestBaseStepReward = 0;
+        this.bestBaseFinalReward = 0;
+        this.bestBaseTotalReward = 0;
         this.totalTrainingTimeMs = 0;
 
         if (this.multiDiscreteMemory != null) {
@@ -558,6 +574,9 @@ public class RLTrainingService {
     public int getBestBaseBlocks() { return bestBaseBlocks; }
     public boolean isBestBaseHasTC() { return bestBaseHasTC; }
     public int getBestBaseDoors() { return bestBaseDoors; }
+    private double getBestTotalRewardForDisplay() {
+        return bestTotalReward == -Double.MAX_VALUE ? 0.0 : bestTotalReward;
+    }
 
     public String getFormattedTrainingTime() {
         long total = totalTrainingTimeMs;
@@ -609,7 +628,7 @@ public class RLTrainingService {
     public TrainingMetrics getMetrics() {
         double invalidRate = lastEpisodeTotalActions > 0 ? (double) lastEpisodeInvalidActions / lastEpisodeTotalActions : 0.0;
         int mSize = multiDiscreteMemory != null ? multiDiscreteMemory.size() : 0;
-        return new TrainingMetrics(0, 0, 0, 0, episodesTrained, bestScore, epsilon, lastTrainLoss, avgReward, invalidRate, lastEpisodeInvalidActions, lastEpisodeTotalActions, bestBaseBlocks, bestBaseHasTC, bestBaseDoors, avgEvalScore, 0.0, 0.0, 0.0, mSize);
+        return new TrainingMetrics(0, 0, 0, 0, episodesTrained, bestScore, epsilon, lastTrainLoss, avgReward, invalidRate, lastEpisodeInvalidActions, lastEpisodeTotalActions, bestBaseBlocks, bestBaseHasTC, bestBaseDoors, avgEvalScore, 0.0, 0.0, 0.0, "", "", getBestTotalRewardForDisplay(), bestBaseStepReward, bestBaseFinalReward, bestBaseTotalReward, mSize);
     }
 
     public void requestStop() {

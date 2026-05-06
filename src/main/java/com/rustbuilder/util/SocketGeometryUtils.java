@@ -20,12 +20,12 @@ public class SocketGeometryUtils {
 
         double half = size / 2;
 
-        sockets.add(new Socket(cx + 0 * cos - (-half) * sin, cy + 0 * sin + (-half) * cos, 0, 0));
-        sockets.add(new Socket(cx + half * cos - 0 * sin, cy + half * sin + 0 * cos, 0, 1));
-        sockets.add(new Socket(cx + 0 * cos - half * sin, cy + 0 * sin + half * cos, 0, 2));
-        sockets.add(new Socket(cx + (-half) * cos - 0 * sin, cy + (-half) * sin + 0 * cos, 0, 3));
+        sockets.add(new Socket(cx + 0 * cos - (-half) * sin, cy + 0 * sin + (-half) * cos, rotation, 0));
+        sockets.add(new Socket(cx + half * cos - 0 * sin, cy + half * sin + 0 * cos, rotation, 1));
+        sockets.add(new Socket(cx + 0 * cos - half * sin, cy + 0 * sin + half * cos, rotation, 2));
+        sockets.add(new Socket(cx + (-half) * cos - 0 * sin, cy + (-half) * sin + 0 * cos, rotation, 3));
 
-        sockets.add(new Socket(cx, cy, 0, 10));
+        sockets.add(new Socket(cx, cy, rotation, 10));
 
         return sockets;
     }
@@ -54,10 +54,10 @@ public class SocketGeometryUtils {
             double rx = ox * cos - oy * sin;
             double ry = ox * sin + oy * cos;
 
-            sockets.add(new Socket(cx + rx, cy + ry, 0, side));
+            sockets.add(new Socket(cx + rx, cy + ry, rotation, side));
         }
 
-        sockets.add(new Socket(cx, cy, 0, 10));
+        sockets.add(new Socket(cx, cy, rotation, 10));
 
         return sockets;
     }

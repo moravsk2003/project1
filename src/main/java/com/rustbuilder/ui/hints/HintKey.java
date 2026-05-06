@@ -1,6 +1,7 @@
 package com.rustbuilder.ui.hints;
 
 public enum HintKey {
+    SAFE_ZONE("Safe Zone", "Rewards every closed foundation/floor tile that cannot be reached from outside through open passages. More closed blocks means a larger safe zone."),
     RAID_RESISTANCE("Стійкість до рейду", "Наскільки дорого атакуючому пробитися до важливих точок бази. Вище значення означає, що базу важче зарейдити."),
     LOGISTICS("Логістика", "Наскільки зручно переміщатися всередині бази. Оцінює доступність печей, скринь та загальний потік."),
     RESOURCES("Ресурси", "Вартість бази в ресурсах (камінь, metal, МВК). Нижче значення означає більшу ефективність та економічність."),

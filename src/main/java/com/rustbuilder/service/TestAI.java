@@ -8,7 +8,7 @@ public class TestAI {
         ga.setPopulationSize(50);
         
         for (int i = 0; i < 500; i++) {
-            ga.evolve(1, 0.25, 0.25, 0.25, 0.25, null);
+            ga.evolve(1, 0.22, 0.18, 0.28, 0.22, 0.10, null);
         }
         
         com.rustbuilder.ai.ea.BaseGenome best = ga.getBestGenome();

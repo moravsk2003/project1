@@ -12,6 +12,7 @@ import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.ai.ea.BaseGenome;
+import com.rustbuilder.core.action.BuildAction;
 
 /**
  * Unit tests for BaseGenome.decode().
@@ -23,10 +24,10 @@ class BaseGenomeDecodeTest {
 
     /** Builds an action list that only contains walls (no foundations). */
     private BaseGenome wallsOnlyGenome() {
-        List<BaseGenome.BuildAction> actions = new java.util.ArrayList<>();
+        List<BuildAction> actions = new java.util.ArrayList<>();
         for (int i = 0; i < 5; i++) {
-            actions.add(new BaseGenome.BuildAction(
-                BaseGenome.BuildAction.ActionType.WALL,
+            actions.add(new BuildAction(
+                BuildAction.ActionType.WALL,
                 i, 0, 0, 0, 2, 0
             ));
         }
@@ -35,16 +36,16 @@ class BaseGenomeDecodeTest {
 
     /** Builds a genome with one foundation + walls around it. */
     private BaseGenome foundationPlusWallsGenome() {
-        List<BaseGenome.BuildAction> actions = new java.util.ArrayList<>();
+        List<BuildAction> actions = new java.util.ArrayList<>();
         // One foundation at grid tile (2,2)
-        actions.add(new BaseGenome.BuildAction(
-            BaseGenome.BuildAction.ActionType.FOUNDATION,
+        actions.add(new BuildAction(
+            BuildAction.ActionType.FOUNDATION,
             2, 2, 0, 0, 2, 0
         ));
         // Walls — will attempt to snap to the foundation's edge sockets
         for (int i = 0; i < 4; i++) {
-            actions.add(new BaseGenome.BuildAction(
-                BaseGenome.BuildAction.ActionType.WALL,
+            actions.add(new BuildAction(
+                BuildAction.ActionType.WALL,
                 2 + i, 2, 0, i, 2, 0
             ));
         }

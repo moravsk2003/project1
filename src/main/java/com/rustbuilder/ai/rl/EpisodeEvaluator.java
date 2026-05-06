@@ -2,6 +2,10 @@ package com.rustbuilder.ai.rl;
 
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.BuildingBlock;
+import com.rustbuilder.model.core.BuildingType;
+import com.rustbuilder.model.core.Socket;
+import com.rustbuilder.util.BuildingTypeUtils;
+import com.rustbuilder.util.SocketCompatibilityUtils;
 import com.rustbuilder.ai.rl.log.StopReason;
 import com.rustbuilder.service.evaluator.HouseEvaluator;
 import com.rustbuilder.config.GameConstants;
@@ -22,6 +26,7 @@ public class EpisodeEvaluator {
     }
 
     public void evaluate(EpisodeResult result, int maxStepsPerEpisode, int epoch, int ep, int totalEpisodes, com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteExperienceReplay multiDiscreteMemory) {
+        result.resetFinalRewardBreakdown();
         GridModel grid = result.grid;
         int missedSteps = Math.max(0, maxStepsPerEpisode - result.totalActions);
         double earlyStopPenalty = 0.0;
@@ -32,6 +37,12 @@ public class EpisodeEvaluator {
 
         if (grid.getAllBlocks().size() > 5) {
             result.evaluationResult = evaluator.evaluate(grid);
+            result.evalLogisticsScore = result.evaluationResult.logistics.score;
+            result.evalCostScore = result.evaluationResult.cost.score;
+            result.evalRaidScore = result.evaluationResult.raid.score;
+            result.evalWorkingAreaScore = result.evaluationResult.workingArea.score;
+            result.evalSafeZoneScore = result.evaluationResult.safeZone.score;
+            result.raidSulfurToTC = result.evaluationResult.raid.sulfurToTC;
             
             List<BuildingBlock> allBlocks = grid.getAllBlocks();
             int blockCount = allBlocks.size();
@@ -88,11 +99,12 @@ public class EpisodeEvaluator {
                 }
                 components.add(comp);
             }
+            result.componentCount = components.size();
             
             double connectivityBonus = (components.size() == 1) ? rewardConfig.connectivityBonus : 0.0;
             double fragmentPenalty = 0.0;
+            int mainIdx = 0;
             if (components.size() > 1) {
-                int mainIdx = 0;
                 for (int c = 1; c < components.size(); c++) {
                     if (components.get(c).size() > components.get(mainIdx).size()) mainIdx = c;
                 }
@@ -111,6 +123,7 @@ public class EpisodeEvaluator {
                     fragmentPenalty += rewardConfig.fragmentBasePenalty + minDistTilesSq * rewardConfig.fragmentDistPenaltyMult;
                 }
             }
+            result.mainComponentBlocks = components.isEmpty() ? 0 : components.get(mainIdx).size();
             
             double tcPenalty = 0.0;
             BuildingBlock tcBlock = null;
@@ -131,6 +144,7 @@ public class EpisodeEvaluator {
                     tcPenalty += distToTC * rewardConfig.tcDistancePenaltyMult;
                 }
             }
+            result.finalRewardHasTC = tcBlock != null;
             
             double rawScore = result.evaluationResult.finalScore * rewardConfig.finalScoreMultiplier;
             double logisticsBonus = rewardConfig.logisticsBonus * result.evaluationResult.logistics.score;
@@ -138,6 +152,14 @@ public class EpisodeEvaluator {
             double tcEnclosedBonus = (tcBlock != null && result.evaluationResult.raid.sulfurToTC > 0)
                     ? rewardConfig.tcEnclosedBonus
                     : 0.0;
+            result.finalRewardRawScore = rawScore;
+            result.finalRewardLogisticsBonus = logisticsBonus;
+            result.finalRewardRaidBonus = raidBonus;
+            result.finalRewardConnectivityBonus = connectivityBonus;
+            result.finalRewardTcEnclosedBonus = tcEnclosedBonus;
+            result.finalRewardFragmentPenalty = fragmentPenalty;
+            result.finalRewardTcPenalty = tcPenalty;
+            result.finalRewardTcEnclosed = tcEnclosedBonus > 0.0;
             
             result.finalEvalReward = rawScore + logisticsBonus + raidBonus + connectivityBonus
                         + tcEnclosedBonus + earlyStopPenalty + fragmentPenalty + tcPenalty;
@@ -154,16 +176,73 @@ public class EpisodeEvaluator {
             }
         } else {
             result.finalEvalReward = rewardConfig.totalFailurePenalty + earlyStopPenalty;
+            result.finalRewardFailurePenalty = rewardConfig.totalFailurePenalty;
         }
     }
 
     private boolean areBlocksConnected(BuildingBlock b1, BuildingBlock b2) {
+        if (b1 == null || b2 == null || b1 == b2) return false;
+        if (Math.abs(b1.getX() - b2.getX()) > GameConstants.TILE_SIZE * 2.5 ||
+            Math.abs(b1.getY() - b2.getY()) > GameConstants.TILE_SIZE * 2.5) {
+            return false;
+        }
+
+        if (isFurnitureOnBase(b1, b2) || isFurnitureOnBase(b2, b1)) {
+            return true;
+        }
+        if (isDoorInDoorway(b1, b2) || isDoorInDoorway(b2, b1)) {
+            return true;
+        }
+
+        boolean allowCenterConnection = b1.getZ() == b2.getZ()
+                && (BuildingTypeUtils.isFoundation(b1.getType()) || BuildingTypeUtils.isFoundation(b2.getType()));
+        if (Math.abs(b1.getZ() - b2.getZ()) <= 1 && areSocketsConnected(b1, b2, allowCenterConnection)) {
+            return true;
+        }
+
         if (b1.getZ() != b2.getZ()) return false;
         double dx = b1.getX() - b2.getX();
         double dy = b1.getY() - b2.getY();
         double distSq = dx * dx + dy * dy;
         double threshold = GameConstants.TILE_SIZE * 1.5;
         return distSq <= threshold * threshold;
+    }
+
+    private boolean isFurnitureOnBase(BuildingBlock furniture, BuildingBlock base) {
+        return BuildingTypeUtils.isFurniture(furniture.getType())
+                && BuildingTypeUtils.isHorizontalSurface(base.getType())
+                && furniture.getZ() == base.getZ()
+                && sameTilePosition(furniture, base);
+    }
+
+    private boolean isDoorInDoorway(BuildingBlock door, BuildingBlock doorway) {
+        return door.getType() == BuildingType.DOOR
+                && doorway.getType() == BuildingType.DOORWAY
+                && door.getZ() == doorway.getZ()
+                && sameTilePosition(door, doorway);
+    }
+
+    private boolean sameTilePosition(BuildingBlock a, BuildingBlock b) {
+        return Math.abs(a.getX() - b.getX()) < 1.0
+                && Math.abs(a.getY() - b.getY()) < 1.0;
+    }
+
+    private boolean areSocketsConnected(BuildingBlock b1, BuildingBlock b2, boolean allowCenterConnection) {
+        for (Socket s1 : b1.getSockets()) {
+            for (Socket s2 : b2.getSockets()) {
+                if (SocketCompatibilityUtils.areEdgeSocketsConnected(s1, s2, 1.3)) {
+                    return true;
+                }
+                if (allowCenterConnection && s1.getSide() == 10 && s2.getSide() == 10) {
+                    double dx = s1.getX() - s2.getX();
+                    double dy = s1.getY() - s2.getY();
+                    if (dx * dx + dy * dy < 1.3) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
     }
 
     private int indexOfIdentity(List<BuildingBlock> blocks, BuildingBlock target) {

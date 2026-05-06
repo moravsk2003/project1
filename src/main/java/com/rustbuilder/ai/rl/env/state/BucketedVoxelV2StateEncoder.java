@@ -1,6 +1,6 @@
 package com.rustbuilder.ai.rl.env.state;
 
-import com.rustbuilder.ai.ea.BaseGenome.BuildAction.ActionType;
+import com.rustbuilder.core.action.BuildAction.ActionType;
 import com.rustbuilder.ai.rl.env.spec.CoordinateEncodingMode;
 import com.rustbuilder.ai.rl.env.spec.EncodingRuntimeConfig;
 import com.rustbuilder.config.GameConstants;

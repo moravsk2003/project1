@@ -101,6 +101,8 @@ class HouseEvaluatorTest {
             "One protected tile over four perimeter edges should have raw score 0.25");
         assertEquals(0.2, result.workingArea.score, 0.001,
             "Working-area normalization should not turn a single enclosed tile into 0.5");
+        assertEquals(1, result.safeZone.closedBlocks,
+            "A fully enclosed 1x1 room should count as one closed safe-zone tile");
     }
 
     @Test
@@ -118,6 +120,10 @@ class HouseEvaluatorTest {
             "A walled TC without a roof should be reachable from outside through the open top");
         assertEquals(0.0, result.raid.score, 0.001,
             "Open-roof TC should not receive raid-resistance score from side-wall coverage");
+        assertEquals(0, result.safeZone.closedBlocks,
+            "A walled TC without a roof should not count as a closed safe-zone tile");
+        assertEquals(0, result.workingArea.protectedTiles,
+            "A walled room without a roof should not count as protected working area");
     }
 
     @Test
@@ -134,6 +140,8 @@ class HouseEvaluatorTest {
 
         assertEquals(true, result.raid.sulfurToTC > 0,
             "A TC enclosed by walls and roof should require raid cost");
+        assertEquals(1, result.safeZone.closedBlocks,
+            "A TC enclosed by walls and roof should count as one closed safe-zone tile");
     }
 
     /**

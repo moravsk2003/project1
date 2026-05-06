@@ -61,11 +61,13 @@ public class RLGeneratorDialog {
     private Slider costSlider;
     private Slider raidSlider;
     private Slider workingAreaSlider;
+    private Slider safeZoneSlider;
     
     private Label logLabel;
     private Label costLabel;
     private Label raidLabel;
     private Label workingAreaLabel;
+    private Label safeZoneLabel;
     
     private Spinner<Integer> episodesSpinner;
     private Spinner<Integer> stepsSpinner;
@@ -232,10 +234,16 @@ public class RLGeneratorDialog {
         workingAreaSlider = buildSlider(0, 2, 1.0, 0.5);
         workingAreaSlider.valueProperty().addListener((o, ov, nv) -> workingAreaLabel.setText(String.format("Working Area: %.2f", nv)));
 
+        safeZoneLabel = valueLabel("Safe Zone: 0.50");
+        HintUtils.attachHint(safeZoneLabel, HintKey.SAFE_ZONE);
+        safeZoneSlider = buildSlider(0, 2, 0.5, 0.5);
+        safeZoneSlider.valueProperty().addListener((o, ov, nv) -> safeZoneLabel.setText(String.format("Safe Zone: %.2f", nv)));
+
         grid.add(logLabel, 0, 0); grid.add(logisticsSlider, 1, 0);
         grid.add(costLabel, 0, 1); grid.add(costSlider, 1, 1);
         grid.add(raidLabel, 0, 2); grid.add(raidSlider, 1, 2);
         grid.add(workingAreaLabel, 0, 3); grid.add(workingAreaSlider, 1, 3);
+        grid.add(safeZoneLabel, 0, 4); grid.add(safeZoneSlider, 1, 4);
 
         box.getChildren().add(grid);
         return box;
@@ -432,11 +440,12 @@ public class RLGeneratorDialog {
         double cw = costSlider.getValue();
         double rw = raidSlider.getValue();
         double ww = workingAreaSlider.getValue();
+        double safeZoneW = safeZoneSlider.getValue();
         
         final String finalModelName = modelName;
         Thread trainingThread = new Thread(() -> {
             try {
-                rlService.train(finalModelName, ep, steps, lw, cw, rw, ww, epochs,
+                rlService.train(finalModelName, ep, steps, lw, cw, rw, ww, safeZoneW, epochs,
                     this::onTrainingProgress, 
                     () -> Platform.runLater(() -> statusLabel.setText("Status: Epoch Complete")));
                 
@@ -480,15 +489,26 @@ public class RLGeneratorDialog {
             sb.append(String.format("[%02d:%02d:%02d] EPOCH %d/%d EP %d/%d\n", 
                 java.time.LocalTime.now().getHour(), java.time.LocalTime.now().getMinute(), java.time.LocalTime.now().getSecond(),
                 m.currentEpoch, m.totalEpochs, m.currentEpisodeInEpoch, m.totalEpisodesPerEpoch));
-            sb.append(String.format("  Best Score: %.4f | Avg Eval: %.4f\n", m.bestScore, m.avgEvalScore));
+            double totalReward = m.currentEpisodeStepReward + m.currentEpisodeFinalReward;
+            sb.append(String.format("  Best Score: %.4f | Avg Eval Score: %.4f\n", m.bestScore, m.avgEvalScore));
+            sb.append(String.format("  Eval Score:  %.4f | Total Reward: %.2f\n", m.currentEpisodeEvalScore, totalReward));
             sb.append(String.format("  Epsilon:    %.4f | Loss:     %.6f\n", m.epsilon, m.lastTrainLoss));
-            sb.append(String.format("  Reward Sum: %.2f | Invalid:  %.1f%%\n", m.currentEpisodeStepReward, m.invalidActionRate * 100));
+            sb.append(String.format("  Step Reward: %.2f | Final Reward: %.2f\n", m.currentEpisodeStepReward, m.currentEpisodeFinalReward));
+            if (m.currentEpisodeStepRewardBreakdown != null && !m.currentEpisodeStepRewardBreakdown.isEmpty()) {
+                sb.append("  Step By:    ").append(m.currentEpisodeStepRewardBreakdown).append("\n");
+            }
+            if (m.currentEpisodeFinalRewardBreakdown != null && !m.currentEpisodeFinalRewardBreakdown.isEmpty()) {
+                sb.append("  Final By:   ").append(m.currentEpisodeFinalRewardBreakdown).append("\n");
+            }
+            sb.append(String.format("  Invalid:    %d/%d (%.1f%%)\n", m.lastEpisodeInvalidActions, m.lastEpisodeTotalActions, m.invalidActionRate * 100));
             sb.append(String.format("  Best Base:  Blocks %d, TC %s, Doors %d\n", m.bestBaseBlocks, m.bestBaseHasTC ? "YES" : "NO", m.bestBaseDoors));
+            sb.append(String.format("  Best Reward: total %.2f | best-base step %.2f final %.2f total %.2f\n",
+                m.bestTotalReward, m.bestBaseStepReward, m.bestBaseFinalReward, m.bestBaseTotalReward));
             sb.append("------------------------------------------\n");
             
             diagnosticLogArea.setText(sb.toString() + diagnosticLogArea.getText());
             
-            updateSummaryUI();
+            updateSummaryUI(m);
         });
     }
 
@@ -512,6 +532,33 @@ public class RLGeneratorDialog {
         
         ramUsageLbl.setText(rlService.getRamUsage());
         timerLbl.setText(rlService.getFormattedTrainingTime());
+    }
+
+    private void updateSummaryUI(TrainingMetrics m) {
+        if (m == null) {
+            updateSummaryUI();
+            return;
+        }
+
+        bestScoreLbl.setText(String.format("%.4f", m.bestScore));
+        avgEvalScoreLbl.setText(String.format("%.4f", m.avgEvalScore));
+        avgStepRewardLbl.setText(String.format("%.4f", m.avgReward));
+        invalidRateLbl.setText(String.format("%.1f%%", m.invalidActionRate * 100));
+        memorySizeLbl.setText(String.valueOf(m.memorySize));
+        episodesLbl.setText(String.valueOf(m.totalEpisodesTrained));
+        epsilonLbl.setText(String.format("%.4f", m.epsilon));
+        lossLbl.setText(String.format("%.6f", m.lastTrainLoss));
+
+        String bestBase = String.format("B: %d, TC: %s, D: %d",
+            m.bestBaseBlocks,
+            m.bestBaseHasTC ? "Yes" : "No",
+            m.bestBaseDoors);
+        bestBaseLbl.setText(bestBase);
+
+        if (rlService != null) {
+            ramUsageLbl.setText(rlService.getRamUsage());
+            timerLbl.setText(rlService.getFormattedTrainingTime());
+        }
     }
 
     private void stopTraining() {
@@ -595,7 +642,7 @@ public class RLGeneratorDialog {
                     return;
                 }
                 
-                com.rustbuilder.ai.ea.BaseGenome.BuildAction bAction = 
+                com.rustbuilder.core.action.BuildAction bAction =
                     com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteActionMapper.toBuildAction(action);
                 
                 Platform.runLater(() -> {
@@ -666,8 +713,9 @@ public class RLGeneratorDialog {
             double cw = costSlider.getValue();
             double rw = raidSlider.getValue();
             double ww = workingAreaSlider.getValue();
+            double sw = safeZoneSlider.getValue();
             
-            RLModel snapshot = RLModelManager.createSnapshot(name, rlService, lw, cw, rw, ww);
+            RLModel snapshot = RLModelManager.createSnapshot(name, rlService, lw, cw, rw, ww, sw);
             RLModelManager.saveModel(snapshot, rlService);
             refreshModelList();
             appendStatus("Model '" + name + "' saved successfully.");
@@ -693,6 +741,7 @@ public class RLGeneratorDialog {
             costSlider.setValue(meta.costWeight);
             raidSlider.setValue(meta.raidWeight);
             workingAreaSlider.setValue(meta.workingAreaWeight);
+            safeZoneSlider.setValue(meta.safeZoneWeight);
             
             if (meta.rewardConfig != null) {
                 rlService.setRewardConfig(meta.rewardConfig.clone());
@@ -878,6 +927,7 @@ public class RLGeneratorDialog {
     private GridPane createEvalRewardsGrid() {
         GridPane grid = rewardGrid();
         int row = 0;
+        addRewardRow(grid, row++, "Покрокова дельта оцінки", "stepEvalDeltaMultiplier", "Множник покрокової зміни HouseEvaluator: логістика, ресурси, рейдостійкість, робочий простір, safe-zone.");
         addRewardRow(grid, row++, "Множник рахунку", "finalScoreMultiplier", "Множник для базової оцінки HouseEvaluator.");
         addRewardRow(grid, row++, "Бонус логістики", "logisticsBonus", "Бонус, якщо база має хорошу логістику (скрині/печі).");
         addRewardRow(grid, row++, "Бонус рейду", "raidBonusMultiplier", "Множник для оцінки стійкості до рейду.");
@@ -935,6 +985,7 @@ public class RLGeneratorDialog {
         updateSpinner("penaltyGenericInvalid", config.penaltyGenericInvalid);
         updateSpinner("stopUnbuiltBlockPenalty", config.stopUnbuiltBlockPenalty);
 
+        updateSpinner("stepEvalDeltaMultiplier", config.stepEvalDeltaMultiplier);
         updateSpinner("finalScoreMultiplier", config.finalScoreMultiplier);
         updateSpinner("logisticsBonus", config.logisticsBonus);
         updateSpinner("raidBonusMultiplier", config.raidBonusMultiplier);
@@ -972,6 +1023,7 @@ public class RLGeneratorDialog {
         config.penaltyGenericInvalid = rewardSpinners.get("penaltyGenericInvalid").getValue();
         config.stopUnbuiltBlockPenalty = rewardSpinners.get("stopUnbuiltBlockPenalty").getValue();
 
+        config.stepEvalDeltaMultiplier = rewardSpinners.get("stepEvalDeltaMultiplier").getValue();
         config.finalScoreMultiplier = rewardSpinners.get("finalScoreMultiplier").getValue();
         config.logisticsBonus = rewardSpinners.get("logisticsBonus").getValue();
         config.raidBonusMultiplier = rewardSpinners.get("raidBonusMultiplier").getValue();

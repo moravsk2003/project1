@@ -1,0 +1,33 @@
+{
+  "run_id": "run_1778060708817",
+  "model_name": "4",
+  "timestamp_start": "2026-05-06 12:45:56",
+
+  "state_encoder_name": "HYBRID_V3_VOXEL_GLOBAL",
+  "state_encoder_version": "v3",
+  "requested_state_encoder_version": "v3",
+  "actual_state_encoder_version": "v3",
+  "voxel_channels": 16,
+
+  "has_global_vector": true,
+  "global_feature_count": 32,
+
+  "grid_width": 8,
+  "grid_height": 8,
+  "grid_floors": 8,
+
+  "action_type_count": 11,
+  "action_floor_count": 8,
+  "action_tile_count": 64,
+  "action_rotation_count": 6,
+  "action_aim_count": 16,
+  "tile_indexing_mode": "LEGACY_X_MAJOR",
+
+  "reward_config_name": "default_config",
+  "training_config_name": "default_training",
+  "episode_log_policy": "first_100_then_every_10",
+  "performance_log_policy": "first_50_then_every_25",
+  "invalid_action_log_policy": "first_50_then_every_25_max_3_rows_per_episode",
+  "logs_output_dir": "models_rl",
+  "model_output_dir": "models_rl"
+}

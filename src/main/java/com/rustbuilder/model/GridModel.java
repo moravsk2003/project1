@@ -406,9 +406,7 @@ public class GridModel {
             if (sa.getSide() == 10) continue;
             for (Socket sb : b.getSockets()) {
                 if (sb.getSide() == 10) continue;
-                double dx = sa.getX() - sb.getX();
-                double dy = sa.getY() - sb.getY();
-                if (dx * dx + dy * dy < 9.0) {
+                if (com.rustbuilder.util.SocketCompatibilityUtils.areEdgeSocketsConnected(sa, sb, 9.0)) {
                     return true; // Valid socket connection → no collision
                 }
             }

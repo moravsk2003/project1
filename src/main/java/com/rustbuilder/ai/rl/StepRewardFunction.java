@@ -1,7 +1,8 @@
 package com.rustbuilder.ai.rl;
 
 import java.util.List;
-import com.rustbuilder.ai.ea.BaseGenome.BuildAction;
+import com.rustbuilder.core.action.BuildAction;
+import com.rustbuilder.core.placement.PlacementError;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.GridModel;
@@ -17,6 +18,32 @@ import com.rustbuilder.service.graph.HouseGraph.TileNode;
  */
 public class StepRewardFunction {
     private static final int SPATIAL_REWARD_SEARCH_THRESHOLD = 96;
+
+    public static class Breakdown {
+        public double invalidPenalty = 0;
+        public double basePlacement = 0;
+        public double socketConnection = 0;
+        public double disconnectedPenalty = 0;
+        public double stabilityReward = 0;
+        public double floatingPenalty = 0;
+        public double typeBonus = 0;
+        public double foundationBonus = 0;
+        public double spatialCompactness = 0;
+        public double spatialScatteredPenalty = 0;
+
+        public double total() {
+            return invalidPenalty
+                + basePlacement
+                + socketConnection
+                + disconnectedPenalty
+                + stabilityReward
+                + floatingPenalty
+                + typeBonus
+                + foundationBonus
+                + spatialCompactness
+                + spatialScatteredPenalty;
+        }
+    }
 
     public static double calculate(GridModel gridModel,
                                    BuildAction action,
@@ -37,23 +64,31 @@ public class StepRewardFunction {
 
     public static double calculate(GridModel gridModel, BuildAction action, boolean inserted, boolean survived, 
                                  BuildingBlock placed, PlacementError error, RLRewardConfig config) {
+        return calculateBreakdown(gridModel, action, inserted, survived, placed, error, config).total();
+    }
+
+    public static Breakdown calculateBreakdown(GridModel gridModel, BuildAction action, boolean inserted, boolean survived,
+                                               BuildingBlock placed, PlacementError error, RLRewardConfig config) {
+        Breakdown breakdown = new Breakdown();
         if (!inserted || error != PlacementError.NONE) {
-            return switch (error) {
+            breakdown.invalidPenalty = switch (error) {
                 case NO_SUPPORT -> config.penaltyNoSupport;
                 case BAD_SOCKET_IS_FIRST, BAD_SOCKET_NO_TARGET, BAD_SOCKET_WRONG_TARGET_TYPE, BAD_SOCKET_NO_SOCKET_ALIGNMENT, BAD_SOCKET_CENTERDIST_REJECT -> config.penaltyBadSocket;
                 case COLLISION -> config.penaltyCollision;
                 case FLOOR_CONSTRAINT -> config.penaltyFloorConstraint;
                 default -> config.penaltyGenericInvalid;
             };
+            return breakdown;
         }
         if (!survived || placed == null) {
-            return config.penaltyNoSupport;
+            breakdown.invalidPenalty = config.penaltyNoSupport;
+            return breakdown;
         }
 
-        double reward = config.basePlacementReward;
+        breakdown.basePlacement = config.basePlacementReward;
 
         List<BuildingBlock> blocks = gridModel.getAllBlocks();
-        if (blocks.isEmpty()) return reward;
+        if (blocks.isEmpty()) return breakdown;
 
         // ===== 1. Socket Connection Reward =====
         int socketConnections = countSocketConnections(gridModel, placed, blocks);
@@ -62,31 +97,31 @@ public class StepRewardFunction {
                               placed.getType() == BuildingType.LOOT_ROOM;
         
         if (socketConnections > 0) {
-            reward += Math.min(socketConnections * config.socketConnectionReward, config.socketConnectionMax);
+            breakdown.socketConnection = Math.min(socketConnections * config.socketConnectionReward, config.socketConnectionMax);
         } else if (blocks.size() > 1 && !isFurniture) {
-            reward += config.disconnectedSegmentPenalty;
+            breakdown.disconnectedPenalty = config.disconnectedSegmentPenalty;
         }
 
         // ===== 2. Structural Stability Reward =====
         // EpisodeRunner calls GridModel.finalizeLoad() immediately before reward calculation.
         double stability = placed.getStability();
         if (stability > 0) {
-            reward += stability * config.stabilityRewardMult;
+            breakdown.stabilityReward = stability * config.stabilityRewardMult;
         } else if (!isFoundation(placed)) {
-            reward += config.floatingBlockPenalty;
+            breakdown.floatingPenalty = config.floatingBlockPenalty;
         }
 
         // ===== 3. Type-specific bonuses =====
         if (action.actionType == BuildAction.ActionType.TC) {
-            reward += config.tcPlacementBonus;
+            breakdown.typeBonus = config.tcPlacementBonus;
         } else if (action.actionType == BuildAction.ActionType.WORKBENCH) {
             if (countBlocksOfType(blocks, BuildingType.WORKBENCH) == 1 &&
                     countOpenDeployablesOfType(gridModel, "workbench") <= 1) {
-                reward += config.secondaryDeployableBonus;
+                breakdown.typeBonus = config.secondaryDeployableBonus;
             }
         } else if (action.actionType == BuildAction.ActionType.LOOT_ROOM) {
             if (countOpenDeployablesOfType(gridModel, "loot_room") <= 1) {
-                reward += config.secondaryDeployableBonus;
+                breakdown.typeBonus = config.secondaryDeployableBonus;
             }
         }
 
@@ -97,11 +132,11 @@ public class StepRewardFunction {
                 if (isFoundation(b)) foundationCount++;
             }
             switch (foundationCount) {
-                case 1 -> reward += config.foundationCountBonus1;
-                case 2 -> reward += config.foundationCountBonus2;
-                case 3 -> reward += config.foundationCountBonus3;
-                case 4 -> reward += config.foundationCountBonus4;
-                case 5 -> reward += config.foundationCountBonus5;
+                case 1 -> breakdown.foundationBonus = config.foundationCountBonus1;
+                case 2 -> breakdown.foundationBonus = config.foundationCountBonus2;
+                case 3 -> breakdown.foundationBonus = config.foundationCountBonus3;
+                case 4 -> breakdown.foundationBonus = config.foundationCountBonus4;
+                case 5 -> breakdown.foundationBonus = config.foundationCountBonus5;
             }
         }
 
@@ -119,13 +154,13 @@ public class StepRewardFunction {
             }
             double tileSizeSq = tileSize * tileSize;
             if (minDistSq <= tileSizeSq) {
-                reward += config.spatialCompactnessBonus;
+                breakdown.spatialCompactness = config.spatialCompactnessBonus;
             } else if (minDistSq > scatteredThreshold * scatteredThreshold) {
-                reward += config.spatialScatteredPenalty;
+                breakdown.spatialScatteredPenalty = config.spatialScatteredPenalty;
             }
         }
 
-        return reward;
+        return breakdown;
     }
 
     /**
@@ -151,9 +186,7 @@ public class StepRewardFunction {
             boolean connected = false;
             for (Socket s1 : placedSockets) {
                 for (Socket s2 : other.getSockets()) {
-                    double dx = s1.getX() - s2.getX();
-                    double dy = s1.getY() - s2.getY();
-                    if (dx * dx + dy * dy < 1.3) {
+                    if (com.rustbuilder.util.SocketCompatibilityUtils.areEdgeSocketsConnected(s1, s2, 1.3)) {
                         connected = true;
                         break;
                     }

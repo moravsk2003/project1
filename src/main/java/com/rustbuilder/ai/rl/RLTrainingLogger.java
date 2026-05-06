@@ -1,5 +1,6 @@
 package com.rustbuilder.ai.rl;
 
+import com.rustbuilder.core.placement.PlacementError;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.ai.rl.multidiscrete.HeuristicMaskingUtils;
 
@@ -12,6 +13,8 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 
 /**
@@ -42,6 +45,12 @@ public class RLTrainingLogger {
     private static final int INVALID_LOG_FULL_DETAIL_UNTIL = 50;
     private static final int INVALID_LOG_INTERVAL = 25;
     private static final int INVALID_LOG_MAX_ROWS_PER_EPISODE = 3;
+    private static final String FINAL_DETAIL_MARKER = "final_raw_score";
+    private static final int FINAL_DETAIL_INSERT_AFTER_INDEX = 14;
+    private static final int FINAL_DETAIL_INSERTED_COLUMNS = 19;
+    private static final String STEP_DETAIL_MARKER = "step_invalid_penalty";
+    private static final int STEP_DETAIL_INSERT_AFTER_INDEX = 13;
+    private static final int STEP_DETAIL_INSERTED_COLUMNS = 20;
 
     private Path logFilePath;
     private Path invalidLogFilePath;
@@ -97,16 +106,7 @@ public class RLTrainingLogger {
         }
 
         episodeLogFilePath = dir.resolve(modelName + "_episodes.csv");
-        if (!Files.exists(episodeLogFilePath)) {
-            try (PrintWriter pw = new PrintWriter(new FileWriter(episodeLogFilePath.toFile()))) {
-                pw.println("timestamp,run_id,epoch,episode,total_episode_count,state_encoder_version,voxel_channels,has_global_vector,global_feature_count,"
-                         + "total_actions,invalid_actions,invalid_pct,blocks_placed,acc_step_reward,final_eval_reward,total_reward,epsilon,"
-                         + "stop_reason,max_floor,placed_floor_distribution,rejected_total,rejected_no_support,rejected_collision,"
-                         + "rejected_bad_socket,rejected_out_of_bounds,pruned_types,dead_tiles,dead_rotations,rejected_rot_aim,rejected_proximity,"
-                         + "encoder_time_ms,global_encoder_time_ms,global_has_nan,global_has_infinity,"
-                         + "global_feat_cnt,global_feat_mean,global_feat_max,global_feat_nonzero");
-            } catch (IOException ignored) {}
-        }
+        ensureEpisodeLogHeader(episodeLogFilePath, episodeLogHeader());
 
         performanceLogFilePath = dir.resolve(modelName + "_performance_tmp.csv");
         if (!Files.exists(performanceLogFilePath)) {
@@ -117,6 +117,83 @@ public class RLTrainingLogger {
                          + "top_stage,top_stage_ms,rejected_proximity,rejected_rot_aim,dead_tiles,dead_rotations,pruned_types");
             } catch (IOException ignored) {}
         }
+    }
+
+    private String episodeLogHeader() {
+        return "timestamp,run_id,epoch,episode,total_episode_count,state_encoder_version,voxel_channels,has_global_vector,global_feature_count,"
+             + "total_actions,invalid_actions,invalid_pct,blocks_placed,acc_step_reward,"
+             + "step_invalid_penalty,step_base_placement,step_socket_connection,step_disconnected_penalty,"
+             + "step_stability_reward,step_floating_penalty,step_type_bonus,step_foundation_bonus,"
+             + "step_spatial_compactness,step_spatial_scattered_penalty,step_growth_reward,step_growth_streak_bonus,"
+             + "step_eval_delta_reward,step_no_growth_penalty,step_invalid_streak_penalty,step_stop_transition_reward,"
+             + "step_stop_early_penalty,step_stop_unbuilt_penalty,step_stop_underbuild_penalty,step_stop_clamp_adjustment,"
+             + "final_eval_reward,"
+             + "final_raw_score,final_logistics_bonus,final_raid_bonus,final_connectivity_bonus,final_tc_enclosed_bonus,"
+             + "final_early_stop_penalty,final_fragment_penalty,final_tc_penalty,final_failure_penalty,"
+             + "eval_logistics_score,eval_cost_score,eval_raid_score,eval_working_area_score,eval_safe_zone_score,"
+             + "raid_sulfur_to_tc,component_count,main_component_blocks,tc_present,tc_enclosed,total_reward,epsilon,"
+             + "stop_reason,max_floor,placed_floor_distribution,rejected_total,rejected_no_support,rejected_collision,"
+             + "rejected_bad_socket,rejected_out_of_bounds,pruned_types,dead_tiles,dead_rotations,rejected_rot_aim,rejected_proximity,"
+             + "encoder_time_ms,global_encoder_time_ms,global_has_nan,global_has_infinity,"
+             + "global_feat_cnt,global_feat_mean,global_feat_max,global_feat_nonzero";
+    }
+
+    private void ensureEpisodeLogHeader(Path path, String header) {
+        try {
+            if (!Files.exists(path) || Files.size(path) == 0) {
+                Files.write(path, java.util.Collections.singletonList(header));
+                return;
+            }
+
+            List<String> lines = Files.readAllLines(path);
+            if (lines.isEmpty()) {
+                Files.write(path, java.util.Collections.singletonList(header));
+                return;
+            }
+
+            String currentHeader = lines.get(0);
+            boolean hasFinalDetail = currentHeader.contains(FINAL_DETAIL_MARKER);
+            boolean hasStepDetail = currentHeader.contains(STEP_DETAIL_MARKER);
+            if (hasFinalDetail && hasStepDetail) {
+                return;
+            }
+
+            List<String> upgraded = new ArrayList<>(lines.size());
+            upgraded.add(header);
+            for (int i = 1; i < lines.size(); i++) {
+                String upgradedLine = lines.get(i);
+                if (!hasFinalDetail) {
+                    int finalInsertIndex = hasStepDetail
+                        ? FINAL_DETAIL_INSERT_AFTER_INDEX + STEP_DETAIL_INSERTED_COLUMNS
+                        : FINAL_DETAIL_INSERT_AFTER_INDEX;
+                    upgradedLine = insertEmptyColumns(upgradedLine, finalInsertIndex, FINAL_DETAIL_INSERTED_COLUMNS);
+                }
+                if (!hasStepDetail) {
+                    upgradedLine = insertEmptyColumns(upgradedLine, STEP_DETAIL_INSERT_AFTER_INDEX, STEP_DETAIL_INSERTED_COLUMNS);
+                }
+                upgraded.add(upgradedLine);
+            }
+            Files.write(path, upgraded);
+        } catch (IOException ignored) {}
+    }
+
+    private String insertEmptyColumns(String line, int insertAfterIndex, int insertedColumns) {
+        String[] fields = line.split(",", -1);
+        if (fields.length <= insertAfterIndex) {
+            return line;
+        }
+
+        StringBuilder sb = new StringBuilder(line.length() + insertedColumns);
+        for (int i = 0; i < fields.length; i++) {
+            if (i > 0) sb.append(",");
+            sb.append(fields[i]);
+            if (i == insertAfterIndex) {
+                for (int c = 0; c < insertedColumns; c++) {
+                    sb.append(",");
+                }
+            }
+        }
+        return sb.toString();
     }
 
     public void setRunContext(String runId, String encoderVersion, int voxelChannels, boolean hasGlobal, int globalCount) {
@@ -326,11 +403,31 @@ public class RLTrainingLogger {
         boolean gInf = gDiag != null && gDiag.hasInfinity;
 
         episodeLogWriter.printf(Locale.US,
-            "%s,%s,%d,%d,%d,%s,%d,%b,%d,%d,%d,%.1f,%d,%.4f,%.4f,%.4f,%.5f,%s,%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%b,%b,%d,%.4f,%.4f,%d%n",
+            "%s,%s,%d,%d,%d,%s,%d,%b,%d,%d,%d,%.1f,%d,%.4f,"
+            + "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
+            + "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
+            + "%.4f,"
+            + "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
+            + "%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%b,%b,"
+            + "%.4f,%.5f,%s,%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%b,%b,%d,%.4f,%.4f,%d%n",
             ts, currentRunId, epoch, epochEpisode, totalEpisode,
             currentEncoderVersion, currentVoxelChannels, currentHasGlobal, currentGlobalCount,
             result.totalActions, result.invalidActions, invalidPct,
-            result.blocksPlaced, result.accStepReward, result.finalEvalReward, totalReward, epsilon,
+            result.blocksPlaced, result.accStepReward,
+            result.stepRewardInvalidPenalty, result.stepRewardBasePlacement, result.stepRewardSocketConnection,
+            result.stepRewardDisconnectedPenalty, result.stepRewardStability, result.stepRewardFloatingPenalty,
+            result.stepRewardTypeBonus, result.stepRewardFoundationBonus, result.stepRewardSpatialCompactness,
+            result.stepRewardSpatialScatteredPenalty, result.stepRewardGrowth, result.stepRewardGrowthStreak,
+            result.stepRewardEvalDelta, result.stepRewardNoGrowthPenalty, result.stepRewardInvalidStreakPenalty,
+            result.stopTransitionReward, result.stopTransitionEarlyPenalty, result.stopTransitionUnbuiltPenalty,
+            result.stopTransitionUnderbuildPenalty, result.stopTransitionClampAdjustment,
+            result.finalEvalReward,
+            result.finalRewardRawScore, result.finalRewardLogisticsBonus, result.finalRewardRaidBonus,
+            result.finalRewardConnectivityBonus, result.finalRewardTcEnclosedBonus, result.earlyStopPenalty,
+            result.finalRewardFragmentPenalty, result.finalRewardTcPenalty, result.finalRewardFailurePenalty,
+            result.evalLogisticsScore, result.evalCostScore, result.evalRaidScore, result.evalWorkingAreaScore,
+            result.evalSafeZoneScore, result.raidSulfurToTC, result.componentCount, result.mainComponentBlocks,
+            result.finalRewardHasTC, result.finalRewardTcEnclosed, totalReward, epsilon,
             result.stopReason.name(), maxFloor, floorDist.toString(),
             rejectedTotal, rejectedNoSupport, rejectedCollision, rejectedBadSocket, rejectedOutOfBounds,
             prunedTypes, deadTiles, deadRots, rejectedRotAim, rejectedProx,

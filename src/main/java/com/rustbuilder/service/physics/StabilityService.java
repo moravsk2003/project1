@@ -108,35 +108,35 @@ public class StabilityService {
 
         // 1. Wall on Foundation (Vertical)
         if (isWall(supported) && isFoundation(supporter)) {
-            if (zDiff == 0 && areSocketsConnected(supported, supporter)) {
+            if (zDiff == 0 && areSocketsConnected(supported, supporter, true)) {
                 return 1.0;
             }
         }
 
         // 2. Wall on Wall (Vertical Stack)
         if (isWall(supported) && isWall(supporter)) {
-            if (zDiff == 1 && areSocketsConnected(supported, supporter)) {
+            if (zDiff == 1 && areSocketsConnected(supported, supporter, false)) {
                 return 0.9;
             }
         }
 
         // 3. Floor on Wall (Ceiling)
         if (isFloor(supported) && isWall(supporter)) {
-            if (zDiff == 1 && areSocketsConnected(supported, supporter)) {
+            if (zDiff == 1 && areSocketsConnected(supported, supporter, false)) {
                 return 0.8;
             }
         }
 
         // 4. Floor on Floor (Horizontal Side Connection)
         if (isFloor(supported) && isFloor(supporter)) {
-            if (zDiff == 0 && areSocketsConnected(supported, supporter)) {
+            if (zDiff == 0 && areSocketsConnected(supported, supporter, false)) {
                 return 0.5; // Side connection
             }
         }
 
         // 5. Wall on Floor (Vertical)
         if (isWall(supported) && isFloor(supporter)) {
-            if (zDiff == 0 && areSocketsConnected(supported, supporter)) {
+            if (zDiff == 0 && areSocketsConnected(supported, supporter, false)) {
                 return 0.9;
             }
         }
@@ -161,7 +161,7 @@ public class StabilityService {
         return 0.0;
     }
     
-    private static boolean areSocketsConnected(BuildingBlock b1, BuildingBlock b2) {
+    private static boolean areSocketsConnected(BuildingBlock b1, BuildingBlock b2, boolean allowCenterConnection) {
         List<Socket> sockets1 = b1.getSockets();
         List<Socket> sockets2 = b2.getSockets();
         
@@ -172,11 +172,16 @@ public class StabilityService {
 
         for (Socket s1 : sockets1) {
             for (Socket s2 : sockets2) {
-                double dx = s1.getX() - s2.getX();
-                double dy = s1.getY() - s2.getY();
                 // Increased tolerance by ~10% for easier floating-point snapping
-                if (dx * dx + dy * dy < 1.3) {
+                if (com.rustbuilder.util.SocketCompatibilityUtils.areEdgeSocketsConnected(s1, s2, 1.3)) {
                     return true;
+                }
+                if (allowCenterConnection && s1.getSide() == 10 && s2.getSide() == 10) {
+                    double dx = s1.getX() - s2.getX();
+                    double dy = s1.getY() - s2.getY();
+                    if (dx * dx + dy * dy < 1.3) {
+                        return true;
+                    }
                 }
             }
         }

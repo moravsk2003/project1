@@ -4,10 +4,10 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
-import com.rustbuilder.ai.ea.BaseGenome.BuildAction;
-import com.rustbuilder.ai.ea.BaseGenome.BuildAction.ActionType;
+import com.rustbuilder.core.action.BuildAction;
+import com.rustbuilder.core.action.BuildAction.ActionType;
 import com.rustbuilder.model.GridModel;
-import com.rustbuilder.util.GridPlacementUtils;
+import com.rustbuilder.service.physics.PlacementService;
 
 /**
  * Provides CHEAP heuristic masking to prune obviously invalid actions during multi-discrete selection.
@@ -205,7 +205,7 @@ public class HeuristicMaskingUtils {
             BuildAction trial = 
                 new BuildAction(type, tx, ty, floorIndex, rotationIndex, 2, 0, sector);
             
-            if (GridPlacementUtils.isActionActuallyFeasible(grid, trial)) {
+            if (PlacementService.isActionActuallyFeasible(grid, trial)) {
                 valid.add(sector);
             }
         }
@@ -222,7 +222,7 @@ public class HeuristicMaskingUtils {
 
         for (int sector : SECTOR_OPTIMIZED_ORDER) {
             BuildAction trial = new BuildAction(type, tx, ty, floorIndex, rotationIndex, 2, 0, sector);
-            if (GridPlacementUtils.isActionActuallyFeasible(grid, trial)) {
+            if (PlacementService.isActionActuallyFeasible(grid, trial)) {
                 return sector;
             }
         }

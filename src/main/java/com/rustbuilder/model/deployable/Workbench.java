@@ -14,8 +14,8 @@ public class Workbench extends BuildingBlock {
     @Override
     protected void updateCost() {
         java.util.Map<ResourceType, Integer> cost = new java.util.HashMap<>();
-        cost.put(ResourceType.WOOD, 500);
-        cost.put(ResourceType.METAL, 100);
+        cost.put(ResourceType.WOOD, 2500);
+        cost.put(ResourceType.METAL, 500);
         this.buildCost = java.util.Collections.unmodifiableMap(cost);
     }
 

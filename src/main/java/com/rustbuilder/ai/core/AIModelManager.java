@@ -40,10 +40,12 @@ public class AIModelManager {
         public final double costWeight;
         public final double raidWeight;
         public final double workingAreaWeight;
+        public final double safeZoneWeight;
 
         public AIModel(String name, List<BaseGenome> population, int generation,
                        double bestFitness, BaseGenome bestGenome,
-                       double logisticsWeight, double costWeight, double raidWeight, double workingAreaWeight) {
+                       double logisticsWeight, double costWeight, double raidWeight, double workingAreaWeight,
+                       double safeZoneWeight) {
             this.name = name;
             this.population = population;
             this.generation = generation;
@@ -53,6 +55,7 @@ public class AIModelManager {
             this.costWeight = costWeight;
             this.raidWeight = raidWeight;
             this.workingAreaWeight = workingAreaWeight;
+            this.safeZoneWeight = safeZoneWeight;
         }
 
         @Override
@@ -130,10 +133,11 @@ public class AIModelManager {
      * Create an AIModel snapshot from the current GA state.
      */
     public static AIModel createSnapshot(String name, GeneticAlgorithmService ga,
-                                          double logW, double costW, double raidW, double workingAreaW) {
+                                          double logW, double costW, double raidW, double workingAreaW,
+                                          double safeZoneW) {
         return new AIModel(name, ga.getPopulation(), ga.getGeneration(),
                            ga.getBestFitness(), ga.getBestGenome(),
-                           logW, costW, raidW, workingAreaW);
+                           logW, costW, raidW, workingAreaW, safeZoneW);
     }
 
     /**

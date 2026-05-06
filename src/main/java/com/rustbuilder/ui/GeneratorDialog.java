@@ -53,10 +53,12 @@ public class GeneratorDialog {
     private Slider costSlider;
     private Slider raidSlider;
     private Slider workingAreaSlider;
+    private Slider safeZoneSlider;
     private Label logLabel;
     private Label costLabel;
     private Label raidLabel;
     private Label workingAreaLabel;
+    private Label safeZoneLabel;
     private Spinner<Integer> genSpinner;
     private Slider epochSlider;
     private Label epochLabel;
@@ -83,6 +85,7 @@ public class GeneratorDialog {
     private final Label costStatsLabel     = new Label("Build Cost: —");
     private final Label logisticsStatsLabel = new Label("Logistics: —");
     private final Label workingAreaStatsLabel = new Label("Working Area: —");
+    private final Label safeZoneStatsLabel = new Label("Safe Zone: —");
 
     // ── Shared styles ──────────────────────────────────────────────────────────
     private static final String CARD_STYLE =
@@ -183,51 +186,59 @@ public class GeneratorDialog {
         VBox box = card();
         Label title = sectionTitle("⚖  Priorities");
 
-        logLabel        = valueLabel("Logistics:        25%");
+        logLabel        = valueLabel("Logistics:        22%");
         HintUtils.attachHint(logLabel, HintKey.LOGISTICS);
-        logisticsSlider = buildSlider(0, 1, 0.25, 0.25);
+        logisticsSlider = buildSlider(0, 1, 0.22, 0.25);
         logisticsSlider.valueProperty().addListener((o, ov, nv) -> updateSliderLabels());
 
-        costLabel  = valueLabel("Resources:        20%");
+        costLabel  = valueLabel("Resources:        18%");
         HintUtils.attachHint(costLabel, HintKey.RESOURCES);
-        costSlider = buildSlider(0, 1, 0.20, 0.20);
+        costSlider = buildSlider(0, 1, 0.18, 0.20);
         costSlider.valueProperty().addListener((o, ov, nv) -> updateSliderLabels());
 
-        raidLabel  = valueLabel("Raid Resistance:  30%");
+        raidLabel  = valueLabel("Raid Resistance:  28%");
         HintUtils.attachHint(raidLabel, HintKey.RAID_RESISTANCE);
-        raidSlider = buildSlider(0, 1, 0.30, 0.30);
+        raidSlider = buildSlider(0, 1, 0.28, 0.30);
         raidSlider.valueProperty().addListener((o, ov, nv) -> updateSliderLabels());
 
-        workingAreaLabel = valueLabel("Working Area:     25%");
+        workingAreaLabel = valueLabel("Working Area:     22%");
         HintUtils.attachHint(workingAreaLabel, HintKey.WORKING_AREA);
-        workingAreaSlider = buildSlider(0, 1, 0.25, 0.25);
+        workingAreaSlider = buildSlider(0, 1, 0.22, 0.25);
         workingAreaSlider.valueProperty().addListener((o, ov, nv) -> updateSliderLabels());
+
+        safeZoneLabel = valueLabel("Safe Zone:        10%");
+        HintUtils.attachHint(safeZoneLabel, HintKey.SAFE_ZONE);
+        safeZoneSlider = buildSlider(0, 1, 0.10, 0.10);
+        safeZoneSlider.valueProperty().addListener((o, ov, nv) -> updateSliderLabels());
 
         box.getChildren().addAll(title,
             logLabel, logisticsSlider,
             costLabel, costSlider,
             raidLabel, raidSlider,
-            workingAreaLabel, workingAreaSlider);
+            workingAreaLabel, workingAreaSlider,
+            safeZoneLabel, safeZoneSlider);
         return box;
     }
 
     private void updateSliderLabels() {
-        double sum = logisticsSlider.getValue() + costSlider.getValue() + raidSlider.getValue() + workingAreaSlider.getValue();
+        double sum = logisticsSlider.getValue() + costSlider.getValue() + raidSlider.getValue() + workingAreaSlider.getValue() + safeZoneSlider.getValue();
         if (sum < 0.001) sum = 1.0;
         logLabel .setText(String.format("Logistics:        %3.0f%%", logisticsSlider.getValue() / sum * 100));
         costLabel.setText(String.format("Resources:        %3.0f%%", costSlider.getValue()       / sum * 100));
         raidLabel.setText(String.format("Raid Resistance:  %3.0f%%", raidSlider.getValue()       / sum * 100));
         workingAreaLabel.setText(String.format("Working Area:     %3.0f%%", workingAreaSlider.getValue() / sum * 100));
+        safeZoneLabel.setText(String.format("Safe Zone:        %3.0f%%", safeZoneSlider.getValue() / sum * 100));
     }
 
     private double[] getNormalizedWeights() {
-        double sum = logisticsSlider.getValue() + costSlider.getValue() + raidSlider.getValue() + workingAreaSlider.getValue();
-        if (sum < 0.001) return new double[]{0.25, 0.20, 0.30, 0.25};
+        double sum = logisticsSlider.getValue() + costSlider.getValue() + raidSlider.getValue() + workingAreaSlider.getValue() + safeZoneSlider.getValue();
+        if (sum < 0.001) return new double[]{0.22, 0.18, 0.28, 0.22, 0.10};
         return new double[]{
             logisticsSlider.getValue() / sum,
             costSlider.getValue() / sum,
             raidSlider.getValue() / sum,
-            workingAreaSlider.getValue() / sum
+            workingAreaSlider.getValue() / sum,
+            safeZoneSlider.getValue() / sum
         };
     }
 
@@ -350,7 +361,9 @@ public class GeneratorDialog {
         HintUtils.attachHint(logisticsStatsLabel, HintKey.LOGISTICS);
         workingAreaStatsLabel.setStyle(VALUE_LABEL);
         HintUtils.attachHint(workingAreaStatsLabel, HintKey.WORKING_AREA);
-        box.getChildren().addAll(title, raidStatsLabel, costStatsLabel, logisticsStatsLabel, workingAreaStatsLabel);
+        safeZoneStatsLabel.setStyle(VALUE_LABEL);
+        HintUtils.attachHint(safeZoneStatsLabel, HintKey.SAFE_ZONE);
+        box.getChildren().addAll(title, raidStatsLabel, costStatsLabel, logisticsStatsLabel, workingAreaStatsLabel, safeZoneStatsLabel);
         return box;
     }
 
@@ -415,22 +428,26 @@ public class GeneratorDialog {
             double cw = model.costWeight;
             double rw = model.raidWeight;
             double ww = model.workingAreaWeight;
-            double sum = lw + cw + rw + ww;
+            double sw = model.safeZoneWeight;
+            double sum = lw + cw + rw + ww + sw;
             if (sum < 0.0001) {
-                lw = 0.25;
-                cw = 0.25;
-                rw = 0.25;
-                ww = 0.25;
+                lw = 0.22;
+                cw = 0.18;
+                rw = 0.28;
+                ww = 0.22;
+                sw = 0.10;
             } else {
                 lw /= sum;
                 cw /= sum;
                 rw /= sum;
                 ww /= sum;
+                sw /= sum;
             }
             logisticsSlider.setValue(lw);
             costSlider.setValue(cw);
             raidSlider.setValue(rw);
             workingAreaSlider.setValue(ww);
+            safeZoneSlider.setValue(sw);
             updateSliderLabels();
             generateButton.setDisable(gaService.getBestGenome() == null);
             setStatus(String.format("📂 Loaded '%s' — Gen %d, Best: %.4f",
@@ -458,7 +475,7 @@ public class GeneratorDialog {
         if (currentModelName == null) { showAlert("No model active. Create or load a model first."); return; }
         try {
             double[] w = getNormalizedWeights();
-            AIModel model = AIModelManager.createSnapshot(currentModelName, gaService, w[0], w[1], w[2], w[3]);
+            AIModel model = AIModelManager.createSnapshot(currentModelName, gaService, w[0], w[1], w[2], w[3], w[4]);
             AIModelManager.saveModel(model);
             setStatus("💾 Model '" + currentModelName + "' saved.", "#aaa");
         } catch (Exception ex) {
@@ -480,7 +497,7 @@ public class GeneratorDialog {
         progressBar.setProgress(0);
         setStatus("⏳ Training…", "#e67e22");
 
-        final double logW = w[0], costW = w[1], raidW = w[2], workingAreaW = w[3];
+        final double logW = w[0], costW = w[1], raidW = w[2], workingAreaW = w[3], safeZoneW = w[4];
 
         gaService.setMutationRate(mutationSlider.getValue());
         gaService.setPopulationSize(popSizeSpinner.getValue());
@@ -497,7 +514,7 @@ public class GeneratorDialog {
         Thread trainThread = new Thread(() -> {
             for (int epoch = 0; epoch < epochs; epoch++) {
                 final int currentEpoch = epoch + 1;
-                gaService.evolve(generations, logW, costW, raidW, workingAreaW, progress -> {
+                gaService.evolve(generations, logW, costW, raidW, workingAreaW, safeZoneW, progress -> {
                     double absGen    = progress[0];
                     double best      = progress[1];
                     double mutRate   = progress[2];
@@ -517,7 +534,7 @@ public class GeneratorDialog {
 
                 final int ep = currentEpoch;
                 try {
-                    AIModel snapshot = AIModelManager.createSnapshot(currentModelName, gaService, logW, costW, raidW, workingAreaW);
+                    AIModel snapshot = AIModelManager.createSnapshot(currentModelName, gaService, logW, costW, raidW, workingAreaW, safeZoneW);
                     AIModelManager.saveModel(snapshot);
                     Platform.runLater(() -> {
                         setStatus(String.format("💾 Epoch %d/%d saved — Best: %.4f", ep, epochs, snapshot.bestFitness), "#aaa");
@@ -580,6 +597,8 @@ public class GeneratorDialog {
             dist == Double.MAX_VALUE ? 0 : dist));
         workingAreaStatsLabel.setText(String.format("🟩 Working Area:  area %.2f  perim %d  score %.3f",
             result.workingArea.protectedArea, result.workingArea.openEdgePerimeter, result.workingArea.score));
+        safeZoneStatsLabel.setText(String.format("🛡 Safe Zone: closed %d  score %.3f",
+            result.safeZone.closedBlocks, result.safeZone.score));
     }
 
     public void show() { dialogStage.showAndWait(); }

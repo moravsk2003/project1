@@ -225,6 +225,9 @@ public class WorkingAreaEvaluator {
             for (TileEdge edge : graph.getEdges(tile)) {
                 TileNode next = edge.to;
                 if ("tile".equals(next.type)) {
+                    if (next.z != tile.z) {
+                        continue;
+                    }
                     String key = next.id.toString();
                     if (!seenBoundaryTargets.add(key)) {
                         continue;

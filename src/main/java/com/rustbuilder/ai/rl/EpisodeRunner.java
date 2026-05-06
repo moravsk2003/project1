@@ -1,6 +1,7 @@
 package com.rustbuilder.ai.rl;
 
-import com.rustbuilder.ai.ea.BaseGenome.BuildAction;
+import com.rustbuilder.core.action.BuildAction;
+import com.rustbuilder.core.placement.PlacementError;
 import com.rustbuilder.ai.rl.env.state.EncodedState;
 import com.rustbuilder.ai.rl.env.state.StateRepresentationEncoder;
 import com.rustbuilder.ai.rl.log.StopReason;
@@ -8,6 +9,8 @@ import com.rustbuilder.ai.rl.multidiscrete.*;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingType;
+import com.rustbuilder.service.evaluator.HouseEvaluator;
+import com.rustbuilder.service.physics.PlacementService;
 import java.util.List;
 import java.util.Random;
 
@@ -16,6 +19,7 @@ public class EpisodeRunner {
     private static final int TRAIN_START_MEMORY = 48;
     private static final int TRAIN_BATCH_SIZE = 32;
     private static final int TRAIN_EVERY_STEPS = 4;
+    private static final double GROWTH_STREAK_BONUS_MAX = 3.0;
 
     private final MultiDiscreteDQNAgent multiDiscreteAgent;
     private final MultiDiscreteExperienceReplay multiDiscreteMemory;
@@ -26,6 +30,7 @@ public class EpisodeRunner {
     private final RLTrainingLogger logger;
     private final RLTrainingService rlService;
     private final StateRepresentationEncoder stateEncoder;
+    private final HouseEvaluator evaluator;
 
     // Output state
     private double lastTrainLoss = 0;
@@ -35,7 +40,7 @@ public class EpisodeRunner {
                          MultiDiscreteExperienceReplay multiDiscreteMemory, MultiDiscretePhasePolicy multiDiscretePolicy,
                          MultiDiscreteStateObserver multiDiscreteObserver, Random random, RLRewardConfig rewardConfig,
                          RLTrainingLogger logger, RLTrainingService rlService,
-                         StateRepresentationEncoder stateEncoder) {
+                         StateRepresentationEncoder stateEncoder, HouseEvaluator evaluator) {
         this.multiDiscreteAgent = multiDiscreteAgent;
         this.multiDiscreteMemory = multiDiscreteMemory;
         this.multiDiscretePolicy = multiDiscretePolicy;
@@ -45,6 +50,7 @@ public class EpisodeRunner {
         this.logger = logger;
         this.rlService = rlService;
         this.stateEncoder = stateEncoder;
+        this.evaluator = evaluator;
     }
 
     public double getLastTrainLoss() {
@@ -55,10 +61,11 @@ public class EpisodeRunner {
         return currentMultiAction;
     }
 
-    public EpisodeResult runExperimentalMultiDiscreteEpisode(int maxStepsPerEpisode, int episodesTrained) {
+    public EpisodeResult runExperimentalMultiDiscreteEpisode(int maxStepsPerEpisode, int episodesTrained, int currentEpoch, int currentEpochEpisode) {
         long episodeStartNs = System.nanoTime();
         EpisodeResult result = new EpisodeResult();
         result.grid = new GridModel();
+        int totalEpisode = episodesTrained + 1;
 
         // Reset masking counters for the new episode
         HeuristicMaskingUtils.prunedTypeCount = 0;
@@ -74,6 +81,7 @@ public class EpisodeRunner {
         int consecutiveNoGrowthSteps = 0;
         int lastBlockCount = 0;
         int consecutiveGrowthSteps = 0;
+        double previousStepEvalScore = 0.0;
 
         try {
             for (int step = 0; step < maxStepsPerEpisode; step++) {
@@ -131,19 +139,29 @@ public class EpisodeRunner {
                     }
 
                     int missedSteps = Math.max(0, maxStepsPerEpisode - result.totalActions);
-                    double stopReward = -Math.pow(Math.abs(missedSteps * rewardConfig.earlyStopPenaltyMult), 1.2);
+                    double stopEarlyPenalty = -Math.pow(Math.abs(missedSteps * rewardConfig.earlyStopPenaltyMult), 1.2);
+                    double stopReward = stopEarlyPenalty;
 
                     int blocksPlaced = result.grid.getAllBlocks().size();
                     int unbuiltBlocks = maxStepsPerEpisode - blocksPlaced;
-                    stopReward += unbuiltBlocks * rewardConfig.stopUnbuiltBlockPenalty;
+                    double stopUnbuiltPenalty = unbuiltBlocks * rewardConfig.stopUnbuiltBlockPenalty;
+                    stopReward += stopUnbuiltPenalty;
 
+                    double stopUnderbuildPenalty = 0.0;
                     if (blocksPlaced < 5) {
-                        stopReward += rewardConfig.stopUnderbuildPenaltyHigh;
+                        stopUnderbuildPenalty = rewardConfig.stopUnderbuildPenaltyHigh;
                     } else if (blocksPlaced < 8) {
-                        stopReward += rewardConfig.stopUnderbuildPenaltyLow;
+                        stopUnderbuildPenalty = rewardConfig.stopUnderbuildPenaltyLow;
                     }
+                    stopReward += stopUnderbuildPenalty;
 
+                    double stopBeforeClamp = stopReward;
                     stopReward = Math.max(stopReward, rewardConfig.stopRewardClampMin);
+                    result.stopTransitionEarlyPenalty += stopEarlyPenalty;
+                    result.stopTransitionUnbuiltPenalty += stopUnbuiltPenalty;
+                    result.stopTransitionUnderbuildPenalty += stopUnderbuildPenalty;
+                    result.stopTransitionClampAdjustment += stopReward - stopBeforeClamp;
+                    result.stopTransitionReward += stopReward;
 
                     com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteExperienceReplay.Transition trans = new com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteExperienceReplay.Transition(
                         stateEncoded, multiAction, stopReward, nextStateEncoded, true, step,
@@ -190,7 +208,7 @@ public class EpisodeRunner {
                 result.typeStats.merge(legacyAction.actionType, 1, Integer::sum);
 
                 // Sample invalid action details to keep long training runs lightweight.
-                if (logger != null && logger.shouldWriteInvalidActionLog(episodesTrained, step)) {
+                if (logger != null && logger.shouldWriteInvalidActionLog(totalEpisode, step)) {
                     long invalidLogStartNs = System.nanoTime();
                     boolean maskAllowed = HeuristicMaskingUtils
                         .getValidAimSectors(
@@ -201,10 +219,10 @@ public class EpisodeRunner {
                             multiAction.getRotationIndex()
                         )
                         .contains(multiAction.getAimSector());
-                    boolean physicsAllowed = com.rustbuilder.util.GridPlacementUtils.isActionActuallyFeasible(result.grid, legacyAction);
+                    boolean physicsAllowed = PlacementService.isActionActuallyFeasible(result.grid, legacyAction);
                     logger.writeInvalidActionLog(
-                        0,
-                        episodesTrained,
+                        currentEpoch,
+                        currentEpochEpisode,
                         step,
                         pResult.error.name(),
                         legacyAction.actionType.name(), multiAction.getFloorIndex(),
@@ -231,20 +249,38 @@ public class EpisodeRunner {
                 result.typeStats.merge(legacyAction.actionType, 1, Integer::sum);
             }
             long rewardStartNs = System.nanoTime();
-            double stepReward = StepRewardFunction.calculate(result.grid, legacyAction, pResult.inserted, pResult.survived, pResult.placedBlock, pResult.error, rewardConfig);
+            StepRewardFunction.Breakdown stepBreakdown = StepRewardFunction.calculateBreakdown(
+                result.grid, legacyAction, pResult.inserted, pResult.survived, pResult.placedBlock, pResult.error, rewardConfig);
+            double stepReward = stepBreakdown.total();
+            result.addStepRewardBreakdown(stepBreakdown);
             double[] headRewardMultipliers = MultiDiscreteCreditAssignment.forPlacement(pResult.survived, pResult.error);
 
             int afterBlockCount = result.grid.getAllBlocks().size();
             int growth = afterBlockCount - beforeBlockCount;
             if (growth > 0) {
-                stepReward += growth * rewardConfig.blockGrowthReward;
+                double growthReward = growth * rewardConfig.blockGrowthReward;
+                stepReward += growthReward;
+                result.stepRewardGrowth += growthReward;
                 consecutiveGrowthSteps++;
-                stepReward += consecutiveGrowthSteps * rewardConfig.growthStreakBonus;
+                double growthStreakReward = Math.min(
+                    consecutiveGrowthSteps * rewardConfig.growthStreakBonus,
+                    GROWTH_STREAK_BONUS_MAX
+                );
+                stepReward += growthStreakReward;
+                result.stepRewardGrowthStreak += growthStreakReward;
                 consecutiveNoGrowthSteps = 0;
+
+                double currentStepEvalScore = calculateStepEvalScore(result.grid, previousStepEvalScore);
+                double stepEvalDelta = currentStepEvalScore - previousStepEvalScore;
+                double stepEvalDeltaReward = stepEvalDelta * rewardConfig.stepEvalDeltaMultiplier;
+                stepReward += stepEvalDeltaReward;
+                result.stepRewardEvalDelta += stepEvalDeltaReward;
+                previousStepEvalScore = currentStepEvalScore;
             } else {
                 consecutiveGrowthSteps = 0;
                 consecutiveNoGrowthSteps++;
                 stepReward += rewardConfig.noGrowthPenalty;
+                result.stepRewardNoGrowthPenalty += rewardConfig.noGrowthPenalty;
             }
 
             result.accStepReward += stepReward;
@@ -261,6 +297,7 @@ public class EpisodeRunner {
                 double invalidStreakPenalty = -1.2;
                 stepReward += invalidStreakPenalty;
                 result.accStepReward += invalidStreakPenalty;
+                result.stepRewardInvalidStreakPenalty += invalidStreakPenalty;
             }
 
             // Neural learning update for multi-discrete path
@@ -322,6 +359,17 @@ public class EpisodeRunner {
 
     private boolean isFoundation(BuildingBlock block) {
         return block.getType() == BuildingType.FOUNDATION || block.getType() == BuildingType.TRIANGLE_FOUNDATION;
+    }
+
+    private double calculateStepEvalScore(GridModel grid, double fallbackScore) {
+        if (evaluator == null || rewardConfig.stepEvalDeltaMultiplier == 0.0) {
+            return fallbackScore;
+        }
+        try {
+            return evaluator.evaluate(grid).finalScore;
+        } catch (Exception ignored) {
+            return fallbackScore;
+        }
     }
 
     private boolean shouldTrainAtStep(int step) {

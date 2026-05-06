@@ -28,6 +28,12 @@ public class TrainingMetrics {
     public final double currentEpisodeEvalScore;
     public final double currentEpisodeStepReward;
     public final double currentEpisodeFinalReward;
+    public final String currentEpisodeStepRewardBreakdown;
+    public final String currentEpisodeFinalRewardBreakdown;
+    public final double bestTotalReward;
+    public final double bestBaseStepReward;
+    public final double bestBaseFinalReward;
+    public final double bestBaseTotalReward;
     
     public final int memorySize;
 
@@ -37,6 +43,38 @@ public class TrainingMetrics {
             double avgReward, double invalidActionRate, int lastEpisodeInvalidActions, int lastEpisodeTotalActions,
             int bestBaseBlocks, boolean bestBaseHasTC, int bestBaseDoors,
             double avgEvalScore, double currentEpisodeEvalScore, double currentEpisodeStepReward, double currentEpisodeFinalReward,
+            int memorySize) {
+        this(currentEpoch, totalEpochs, currentEpisodeInEpoch, totalEpisodesPerEpoch,
+            totalEpisodesTrained, bestScore, epsilon, lastTrainLoss,
+            avgReward, invalidActionRate, lastEpisodeInvalidActions, lastEpisodeTotalActions,
+            bestBaseBlocks, bestBaseHasTC, bestBaseDoors,
+            avgEvalScore, currentEpisodeEvalScore, currentEpisodeStepReward, currentEpisodeFinalReward,
+            "", "", 0.0, 0.0, bestScore, bestScore, memorySize);
+    }
+
+    public TrainingMetrics(
+            int currentEpoch, int totalEpochs, int currentEpisodeInEpoch, int totalEpisodesPerEpoch,
+            int totalEpisodesTrained, double bestScore, double epsilon, double lastTrainLoss,
+            double avgReward, double invalidActionRate, int lastEpisodeInvalidActions, int lastEpisodeTotalActions,
+            int bestBaseBlocks, boolean bestBaseHasTC, int bestBaseDoors,
+            double avgEvalScore, double currentEpisodeEvalScore, double currentEpisodeStepReward, double currentEpisodeFinalReward,
+            String currentEpisodeFinalRewardBreakdown, int memorySize) {
+        this(currentEpoch, totalEpochs, currentEpisodeInEpoch, totalEpisodesPerEpoch,
+            totalEpisodesTrained, bestScore, epsilon, lastTrainLoss,
+            avgReward, invalidActionRate, lastEpisodeInvalidActions, lastEpisodeTotalActions,
+            bestBaseBlocks, bestBaseHasTC, bestBaseDoors,
+            avgEvalScore, currentEpisodeEvalScore, currentEpisodeStepReward, currentEpisodeFinalReward,
+            "", currentEpisodeFinalRewardBreakdown, 0.0, 0.0, bestScore, bestScore, memorySize);
+    }
+
+    public TrainingMetrics(
+            int currentEpoch, int totalEpochs, int currentEpisodeInEpoch, int totalEpisodesPerEpoch,
+            int totalEpisodesTrained, double bestScore, double epsilon, double lastTrainLoss,
+            double avgReward, double invalidActionRate, int lastEpisodeInvalidActions, int lastEpisodeTotalActions,
+            int bestBaseBlocks, boolean bestBaseHasTC, int bestBaseDoors,
+            double avgEvalScore, double currentEpisodeEvalScore, double currentEpisodeStepReward, double currentEpisodeFinalReward,
+            String currentEpisodeStepRewardBreakdown, String currentEpisodeFinalRewardBreakdown,
+            double bestTotalReward, double bestBaseStepReward, double bestBaseFinalReward, double bestBaseTotalReward,
             int memorySize) {
         
         this.currentEpoch = currentEpoch;
@@ -62,6 +100,12 @@ public class TrainingMetrics {
         this.currentEpisodeEvalScore = currentEpisodeEvalScore;
         this.currentEpisodeStepReward = currentEpisodeStepReward;
         this.currentEpisodeFinalReward = currentEpisodeFinalReward;
+        this.currentEpisodeStepRewardBreakdown = currentEpisodeStepRewardBreakdown != null ? currentEpisodeStepRewardBreakdown : "";
+        this.currentEpisodeFinalRewardBreakdown = currentEpisodeFinalRewardBreakdown != null ? currentEpisodeFinalRewardBreakdown : "";
+        this.bestTotalReward = bestTotalReward;
+        this.bestBaseStepReward = bestBaseStepReward;
+        this.bestBaseFinalReward = bestBaseFinalReward;
+        this.bestBaseTotalReward = bestBaseTotalReward;
         
         this.memorySize = memorySize;
     }

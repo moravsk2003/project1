@@ -92,8 +92,8 @@ public class GeneticAlgorithmService {
 
     // ── Evaluation ────────────────────────────────────────────────────────────
 
-    private void evaluatePopulation(double logW, double costW, double raidW, double workingAreaW) {
-        int currentWeightsHash = Objects.hash(logW, costW, raidW, workingAreaW);
+    private void evaluatePopulation(double logW, double costW, double raidW, double workingAreaW, double safeZoneW) {
+        int currentWeightsHash = Objects.hash(logW, costW, raidW, workingAreaW, safeZoneW);
         if (currentWeightsHash != lastWeightsHash) {
             fitnessCache.clear();
             // BUG FIX: Force re-evaluation of all surviving/elite genomes with the new weights
@@ -103,7 +103,7 @@ public class GeneticAlgorithmService {
             lastWeightsHash = currentWeightsHash;
         }
 
-        evaluator.setWeights(logW, costW, raidW, workingAreaW);
+        evaluator.setWeights(logW, costW, raidW, workingAreaW, safeZoneW);
 
         population.parallelStream().forEach(genome -> {
             if (genome.getFitness() >= 0) return;
@@ -204,16 +204,17 @@ public class GeneticAlgorithmService {
      * @param costW            cost weight
      * @param raidW            raid resistance weight
      * @param workingAreaW     working-area weight
+     * @param safeZoneW        safe-zone weight
      * @param progressCallback called after each generation with (currentGen, bestFitness, currentMutationRate)
      */
-    public void evolve(int generations, double logW, double costW, double raidW, double workingAreaW,
+    public void evolve(int generations, double logW, double costW, double raidW, double workingAreaW, double safeZoneW,
                        Consumer<double[]> progressCallback) {
         if (population.isEmpty()) {
             initializePopulation();
         }
 
         for (int g = 0; g < generations; g++) {
-            evaluatePopulation(logW, costW, raidW, workingAreaW);
+            evaluatePopulation(logW, costW, raidW, workingAreaW, safeZoneW);
 
             population.sort(Comparator.comparingDouble(BaseGenome::getFitness).reversed());
 
@@ -285,7 +286,7 @@ public class GeneticAlgorithmService {
         }
 
         // Final evaluation
-        evaluatePopulation(logW, costW, raidW, workingAreaW);
+        evaluatePopulation(logW, costW, raidW, workingAreaW, safeZoneW);
         population.sort(Comparator.comparingDouble(BaseGenome::getFitness).reversed());
         if (population.get(0).getFitness() > bestFitness) {
             bestFitness = population.get(0).getFitness();

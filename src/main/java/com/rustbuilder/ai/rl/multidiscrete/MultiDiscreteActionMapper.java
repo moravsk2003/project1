@@ -1,6 +1,6 @@
 package com.rustbuilder.ai.rl.multidiscrete;
 
-import com.rustbuilder.ai.ea.BaseGenome.BuildAction;
+import com.rustbuilder.core.action.BuildAction;
 
 /**
  * [RL REDESIGN]
@@ -46,7 +46,7 @@ public class MultiDiscreteActionMapper {
      * - tier/doorType -> Default values (STONE/SHEET_METAL).
      * 
      * @param multiAction The multi-discrete action to convert
-     * @return A legacy BuildAction compatible with current GridPlacementUtils
+     * @return A BuildAction compatible with the placement service
      */
     public static BuildAction toBuildAction(MultiDiscreteAction multiAction) {
         if (multiAction == null) return null;

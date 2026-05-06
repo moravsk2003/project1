@@ -4,7 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 
 import org.junit.jupiter.api.Test;
 
-import com.rustbuilder.ai.rl.PlacementError;
+import com.rustbuilder.core.placement.PlacementError;
 
 class MultiDiscreteCreditAssignmentTest {
 

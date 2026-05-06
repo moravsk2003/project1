@@ -1,6 +1,6 @@
 package com.rustbuilder.ai.rl.multidiscrete;
 
-import com.rustbuilder.ai.rl.PlacementError;
+import com.rustbuilder.core.placement.PlacementError;
 
 /**
  * Assigns invalid-action blame only to the action heads that could have caused

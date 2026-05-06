@@ -39,9 +39,10 @@ public class RLRewardConfig implements Serializable, Cloneable {
     public double penaltyGenericInvalid = -0.20;
 
     // --- Growth Bonuses (Multi-Discrete Flow) ---
-    public double blockGrowthReward = 0.15;
+    public double blockGrowthReward = 0.11;
     public double growthStreakBonus = 0.03;
     public double noGrowthPenalty = -0.04;
+    public double stepEvalDeltaMultiplier = 3.0;
     public double stopUnderbuildPenaltyLow = -0.5;
     public double stopUnderbuildPenaltyHigh = -1.0;
     public double stopRewardClampMin = -4.0;

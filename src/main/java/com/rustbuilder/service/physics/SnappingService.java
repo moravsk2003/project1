@@ -343,7 +343,7 @@ public class SnappingService {
 
         if ("FLOOR".equals(selectedTool) || "TRIANGLE_FLOOR".equals(selectedTool)) {
             if (isWallType(blockType)) {
-                return true;
+                return side != 10;
             }
             if (isHorizontalSurface(blockType)) {
                 return side != 10;
