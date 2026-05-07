@@ -57,7 +57,9 @@ public class MultiDiscretePhaseContext {
                     if (z == 0) {
                         anyBlockAtFloor0 = true;
                     }
-                    int tile = worldToTileIndex(block.getX(), block.getY());
+                    int tile = worldToTileIndex(
+                            block.getX() + GameConstants.HALF_TILE,
+                            block.getY() + GameConstants.HALF_TILE);
                     if (tile >= 0) {
                         occupied[z][tile] = true;
                     }

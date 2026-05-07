@@ -36,7 +36,7 @@ public final class SocketCompatibilityUtils {
     }
 
     public static boolean isEdgeSocket(Socket socket) {
-        return socket != null && socket.getSide() != 10;
+        return socket != null && !socket.isCenter();
     }
 
     private static double tangentAngleDegrees(Socket socket) {

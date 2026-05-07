@@ -1,10 +1,12 @@
 package com.rustbuilder.model.core;
 
 public class Socket {
+    public static final int CENTER_SIDE = 10;
+
     private double x;
     private double y;
     private double rotation; // The rotation a block attaching here should take
-    private int side; // 0=North, 1=East, 2=South, 3=West
+    private int side; // 0=North, 1=East, 2=South, 3=West, CENTER_SIDE=center
 
     public Socket(double x, double y, double rotation, int side) {
         this.x = x;
@@ -27,5 +29,9 @@ public class Socket {
 
     public int getSide() {
         return side;
+    }
+
+    public boolean isCenter() {
+        return side == CENTER_SIDE;
     }
 }

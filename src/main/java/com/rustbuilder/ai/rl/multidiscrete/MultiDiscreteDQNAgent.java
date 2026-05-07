@@ -168,6 +168,8 @@ public class MultiDiscreteDQNAgent {
 
     public INDArray encodeStateFeatures(INDArray stateBatch, INDArray globalBatch) {
         int m = (int) stateBatch.size(0);
+        List<INDArray> dummyArrays = new ArrayList<>();
+        try {
         if (stateSpec.hasGlobalVector) {
             INDArray[] dummyInputs = new INDArray[6];
             dummyInputs[0] = stateBatch;
@@ -176,6 +178,10 @@ public class MultiDiscreteDQNAgent {
             dummyInputs[3] = Nd4j.zeros(m, actionSpec.floorCount);
             dummyInputs[4] = Nd4j.zeros(m, actionSpec.tileCount);
             dummyInputs[5] = Nd4j.zeros(m, actionSpec.rotationCount);
+            dummyArrays.add(dummyInputs[2]);
+            dummyArrays.add(dummyInputs[3]);
+            dummyArrays.add(dummyInputs[4]);
+            dummyArrays.add(dummyInputs[5]);
             return mainNet.feedForward(dummyInputs, false).get("dense_shared2");
         } else {
             INDArray[] dummyInputs = new INDArray[5];
@@ -184,7 +190,14 @@ public class MultiDiscreteDQNAgent {
             dummyInputs[2] = Nd4j.zeros(m, actionSpec.floorCount);
             dummyInputs[3] = Nd4j.zeros(m, actionSpec.tileCount);
             dummyInputs[4] = Nd4j.zeros(m, actionSpec.rotationCount);
+            dummyArrays.add(dummyInputs[1]);
+            dummyArrays.add(dummyInputs[2]);
+            dummyArrays.add(dummyInputs[3]);
+            dummyArrays.add(dummyInputs[4]);
             return mainNet.feedForward(dummyInputs, false).get("dense_shared2");
+        }
+        } finally {
+            closeAll(dummyArrays);
         }
     }
 
@@ -418,6 +431,9 @@ public class MultiDiscreteDQNAgent {
                 double multiplier = (headMultipliers != null && h < headMultipliers.length)
                     ? headMultipliers[h]
                     : 1.0;
+                if (multiplier == 0.0) {
+                    continue;
+                }
                 double baseR = r * multiplier;
 
                 double targetQ_h = baseR;

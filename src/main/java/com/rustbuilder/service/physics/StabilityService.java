@@ -176,7 +176,7 @@ public class StabilityService {
                 if (com.rustbuilder.util.SocketCompatibilityUtils.areEdgeSocketsConnected(s1, s2, 1.3)) {
                     return true;
                 }
-                if (allowCenterConnection && s1.getSide() == 10 && s2.getSide() == 10) {
+                if (allowCenterConnection && s1.isCenter() && s2.isCenter()) {
                     double dx = s1.getX() - s2.getX();
                     double dy = s1.getY() - s2.getY();
                     if (dx * dx + dy * dy < 1.3) {

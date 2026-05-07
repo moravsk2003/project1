@@ -30,6 +30,11 @@ public class LootRoom extends BuildingBlock {
     }
 
     @Override
+    protected BuildingBlock copyBlock() {
+        return new LootRoom(getX(), getY(), getZ(), getRotation());
+    }
+
+    @Override
     protected List<Socket> computeSockets() {
         return Collections.emptyList();
     }

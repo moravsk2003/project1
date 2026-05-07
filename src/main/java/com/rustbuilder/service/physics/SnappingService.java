@@ -9,15 +9,9 @@ import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.core.DoorType;
 import com.rustbuilder.model.core.Orientation;
 import com.rustbuilder.model.core.Socket;
-import com.rustbuilder.model.deployable.LootRoom;
-import com.rustbuilder.model.deployable.ToolCupboard;
-import com.rustbuilder.model.deployable.Workbench;
-import com.rustbuilder.model.structure.Door;
-import com.rustbuilder.model.structure.Floor;
-import com.rustbuilder.model.structure.Foundation;
-import com.rustbuilder.model.structure.TriangleFloor;
-import com.rustbuilder.model.structure.TriangleFoundation;
 import com.rustbuilder.model.structure.Wall;
+import com.rustbuilder.util.BlockFactory;
+import com.rustbuilder.util.BuildingTypeUtils;
 import com.rustbuilder.util.SocketGeometryUtils;
 
 public class SnappingService {
@@ -134,7 +128,7 @@ public class SnappingService {
             boolean isGhostSquare = "FOUNDATION".equals(selectedTool) || "FLOOR".equals(selectedTool);
             boolean isGhostTriangle = "TRIANGLE".equals(selectedTool) || "TRIANGLE_FLOOR".equals(selectedTool);
 
-            if (side == 10) {
+            if (side == Socket.CENTER_SIDE) {
                 ghostX = closestBlock.getX();
                 ghostY = closestBlock.getY();
                 
@@ -173,7 +167,15 @@ public class SnappingService {
                     // Align the ghost block so its Side 0 (initially North) faces the center of the target
                     ghostRotation = (normalAngle + 270 + 360) % 360; 
                     List<Socket> mockSockets = SocketGeometryUtils.getSquareSockets(0, 0, ghostRotation);
-                    Socket matchSocket = mockSockets.get(0); // Use Side 0 for consistent snapping
+                    int matchSide = 0;
+                    if (isWallType(closestBlock.getType())) {
+                        double normalRad = Math.toRadians(normalAngle);
+                        double normalX = Math.cos(normalRad);
+                        double normalY = Math.sin(normalRad);
+                        double mouseSide = (mouseX - sx) * normalX + (mouseY - sy) * normalY;
+                        matchSide = mouseSide < 0 ? 2 : 0;
+                    }
+                    Socket matchSocket = findSocketBySide(mockSockets, matchSide);
                     ghostX = sx - matchSocket.getX();
                     ghostY = sy - matchSocket.getY();
                 } else if (isGhostTriangle) {
@@ -252,6 +254,15 @@ public class SnappingService {
         return new SnapResult(ghostX, ghostY, ghostRotation, ghostOrientation, currentValid);
     }
 
+    private Socket findSocketBySide(List<Socket> sockets, int side) {
+        for (Socket socket : sockets) {
+            if (socket.getSide() == side) {
+                return socket;
+            }
+        }
+        return sockets.get(0);
+    }
+
     private boolean isPlaceableSnap(SnapResult result, String selectedTool, int currentFloor) {
         if (result == null || !result.valid) {
             return false;
@@ -264,38 +275,12 @@ public class SnappingService {
 
     private BuildingBlock createBlockForValidation(double x, double y, int z, double rotation,
             Orientation orientation, String tool) {
-        if (z > 0 && ("FOUNDATION".equals(tool) || "TRIANGLE".equals(tool))) {
+        BuildingType type = BuildingTypeUtils.fromToolId(tool);
+        if (z > 0 && BuildingTypeUtils.isFoundation(type)) {
             return null;
         }
 
-        BuildingBlock block = null;
-        if ("FOUNDATION".equals(tool)) {
-            block = new Foundation(x, y, z, rotation);
-        } else if ("TRIANGLE".equals(tool)) {
-            block = new TriangleFoundation(x, y, z, rotation);
-        } else if ("WALL".equals(tool)) {
-            block = new Wall(x, y, z, orientation);
-        } else if ("DOOR_FRAME".equals(tool)) {
-            Wall doorWall = new Wall(x, y, z, orientation);
-            doorWall.setType(BuildingType.DOORWAY);
-            doorWall.setDoorType(DoorType.SHEET_METAL);
-            block = doorWall;
-        } else if ("WINDOW_FRAME".equals(tool)) {
-            block = new Wall(x, y, z, orientation);
-            block.setType(BuildingType.WINDOW_FRAME);
-        } else if ("FLOOR".equals(tool)) {
-            block = new Floor(x, y, z, rotation);
-        } else if ("TRIANGLE_FLOOR".equals(tool)) {
-            block = new TriangleFloor(x, y, z, rotation);
-        } else if ("TC".equals(tool)) {
-            block = new ToolCupboard(x, y, z, rotation);
-        } else if ("WORKBENCH".equals(tool)) {
-            block = new Workbench(x, y, z, rotation);
-        } else if ("LOOT_ROOM".equals(tool)) {
-            block = new LootRoom(x, y, z, rotation);
-        } else if ("DOOR".equals(tool)) {
-            block = new Door(x, y, z, orientation, DoorType.SHEET_METAL);
-        }
+        BuildingBlock block = BlockFactory.create(type, x, y, z, rotation, orientation, DoorType.SHEET_METAL);
 
         if (block != null && (isWallType(tool) || "DOOR".equals(tool))) {
             block.setRotation(rotation);
@@ -320,38 +305,38 @@ public class SnappingService {
         int side = socket.getSide();
 
         if ("DOOR".equals(selectedTool)) {
-            return blockType == BuildingType.DOORWAY && side == 10;
+            return blockType == BuildingType.DOORWAY && side == Socket.CENTER_SIDE;
         }
 
         if ("TC".equals(selectedTool) || "WORKBENCH".equals(selectedTool) || "LOOT_ROOM".equals(selectedTool)) {
-            return isHorizontalSurface(blockType) && side == 10;
+            return isHorizontalSurface(blockType) && side == Socket.CENTER_SIDE;
         }
 
         if (isWallType(selectedTool)) {
             if (isWallType(blockType)) {
-                return side == 10;
+                return side == Socket.CENTER_SIDE;
             }
             if (isHorizontalSurface(blockType)) {
-                return side != 10;
+                return side != Socket.CENTER_SIDE;
             }
             return false;
         }
 
         if ("FOUNDATION".equals(selectedTool) || "TRIANGLE".equals(selectedTool)) {
-            return isHorizontalSurface(blockType) && side != 10;
+            return isHorizontalSurface(blockType) && side != Socket.CENTER_SIDE;
         }
 
         if ("FLOOR".equals(selectedTool) || "TRIANGLE_FLOOR".equals(selectedTool)) {
             if (isWallType(blockType)) {
-                return side != 10;
+                return side != Socket.CENTER_SIDE;
             }
             if (isHorizontalSurface(blockType)) {
-                return side != 10;
+                return side != Socket.CENTER_SIDE;
             }
             return false;
         }
 
-        return side != 10;
+        return side != Socket.CENTER_SIDE;
     }
 
     private Orientation getOrientationFromSide(int side) {

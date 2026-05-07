@@ -45,6 +45,22 @@ public abstract class BuildingBlock {
         this.stability = stability;
     }
 
+    /**
+     * Prototype-style clone. Subclasses only provide the constructor-specific
+     * copy; shared block state is copied here in one place.
+     */
+    @Override
+    public final BuildingBlock clone() {
+        BuildingBlock clone = copyBlock();
+        clone.setType(getType());
+        clone.setTier(getTier());
+        clone.setTransform(getX(), getY(), getZ(), getRotation());
+        clone.setStability(getStability());
+        return clone;
+    }
+
+    protected abstract BuildingBlock copyBlock();
+
     public String getId() {
         return id;
     }

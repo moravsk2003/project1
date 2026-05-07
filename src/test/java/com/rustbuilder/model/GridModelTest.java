@@ -1,6 +1,7 @@
 package com.rustbuilder.model;
 
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -253,5 +254,23 @@ public class GridModelTest {
         PlacementService.Placement placement = PlacementService.calculatePlacement(gridModel, action);
 
         assertTrue(placement.valid, "AI should allow vertical wall stacking from a wall one floor below");
+    }
+
+    @Test
+    void aiPlacementAllowsCeilingInsideWallTile() {
+        double x = GameConstants.GRID_ORIGIN_X - GameConstants.HALF_TILE;
+        double y = GameConstants.GRID_ORIGIN_Y - GameConstants.HALF_TILE;
+        gridModel.addBlock(new Foundation(x, y, 0, 0));
+        gridModel.addBlock(new Wall(x, y, 0, Orientation.NORTH));
+
+        BuildAction action = new BuildAction(BuildAction.ActionType.FLOOR, 0, 0, 1, 0, 2, 0, 5);
+
+        PlacementService.Placement placement = PlacementService.calculatePlacement(gridModel, action);
+
+        assertTrue(placement.valid, "AI should allow a ceiling on the inside side of the wall");
+        assertEquals(x, placement.x, 0.01);
+        assertEquals(y, placement.y, 0.01);
+        assertTrue(PlacementService.isActionActuallyFeasible(gridModel, action),
+                "RL feasibility mask should see the inside ceiling as a valid action");
     }
 }

@@ -13,6 +13,11 @@ public class TriangleFloor extends BuildingBlock {
     // Removed override getUpkeepCost and getHealth
 
     @Override
+    protected BuildingBlock copyBlock() {
+        return new TriangleFloor(getX(), getY(), getZ(), getRotation());
+    }
+
+    @Override
     protected double[] computePolygonPoints() {
         double size = com.rustbuilder.config.GameConstants.TILE_SIZE;
         double cx = getX() + size / 2;

@@ -68,6 +68,21 @@ public class SnappingServiceTest {
     }
 
     @Test
+    void testSnapCeilingInsideWallOnFoundation() {
+        Foundation foundation = new Foundation(0, 0, 0, 0);
+        gridModel.addBlock(foundation);
+
+        Wall wall = new Wall(0, 0, 0, Orientation.NORTH);
+        gridModel.addBlock(wall);
+
+        SnappingService.SnapResult result = snappingService.calculateSnap(30, 30, "FLOOR", 1);
+
+        assertTrue(result.valid, "Should find a valid snap for inside ceiling");
+        assertEquals(0, result.x, 0.01, "Ghost X should stay inside the wall tile");
+        assertEquals(0, result.y, 0.01, "Ghost Y should stay inside the wall tile");
+    }
+
+    @Test
     void testSnapFloorToEastWall() {
         // Place a foundation so the wall has support
         Foundation foundation = new Foundation(0, 0, 0, 0);

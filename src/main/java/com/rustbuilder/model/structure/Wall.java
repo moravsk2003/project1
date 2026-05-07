@@ -33,6 +33,14 @@ public class Wall extends BuildingBlock {
 
     // Removed override getUpkeepCost and getHealth
 
+    @Override
+    protected BuildingBlock copyBlock() {
+        Wall copy = new Wall(getX(), getY(), getZ(), orientation);
+        copy.setType(getType());
+        copy.setDoorType(doorType);
+        return copy;
+    }
+
     private double[] calculatePoints(boolean isCollision) {
         double size = com.rustbuilder.config.GameConstants.TILE_SIZE;
         double thickness = com.rustbuilder.config.GameConstants.WALL_THICKNESS;
@@ -128,7 +136,7 @@ public class Wall extends BuildingBlock {
         // Previously we moved this to the edge, but that conflicts with the specific Edge Sockets
         // Now Side 10 is strictly Center (Inside), and Edge Sockets are for Outside.
 
-        sockets.add(new Socket(sx, sy, getRotation(), 10));
+        sockets.add(new Socket(sx, sy, getRotation(), Socket.CENTER_SIDE));
 
         // Add edge sockets for "Outside" placement (Ceilings/Walls)
         // These sockets are located at the "outer" edge of the wall

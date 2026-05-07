@@ -43,12 +43,51 @@ public final class BuildingTypeUtils {
     }
 
     /**
+     * Converts UI tool identifiers to their model type. Some older UI labels are
+     * aliases for enum values and are normalized here.
+     */
+    public static BuildingType fromToolId(String toolId) {
+        if (toolId == null) {
+            return null;
+        }
+
+        switch (toolId) {
+            case "TRIANGLE":
+                return BuildingType.TRIANGLE_FOUNDATION;
+            case "DOOR_FRAME":
+                return BuildingType.DOORWAY;
+            default:
+                try {
+                    return BuildingType.valueOf(toolId);
+                } catch (IllegalArgumentException ex) {
+                    return null;
+                }
+        }
+    }
+
+    /**
+     * Converts a model type back to the currently expected UI/snapping tool id.
+     */
+    public static String toToolId(BuildingType type) {
+        if (type == null) {
+            return null;
+        }
+
+        switch (type) {
+            case TRIANGLE_FOUNDATION:
+                return "TRIANGLE";
+            case DOORWAY:
+                return "DOOR_FRAME";
+            default:
+                return type.name();
+        }
+    }
+
+    /**
      * Returns true if the given tool string represents a wall-type placement.
      * Used for placement logic in GameController and SnappingService.
      */
     public static boolean isWallTool(String tool) {
-        return "WALL".equals(tool)
-            || "DOOR_FRAME".equals(tool)
-            || "WINDOW_FRAME".equals(tool);
+        return isWall(fromToolId(tool));
     }
 }

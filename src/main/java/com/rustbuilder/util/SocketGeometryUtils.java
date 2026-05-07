@@ -25,7 +25,7 @@ public class SocketGeometryUtils {
         sockets.add(new Socket(cx + 0 * cos - half * sin, cy + 0 * sin + half * cos, rotation, 2));
         sockets.add(new Socket(cx + (-half) * cos - 0 * sin, cy + (-half) * sin + 0 * cos, rotation, 3));
 
-        sockets.add(new Socket(cx, cy, rotation, 10));
+        sockets.add(new Socket(cx, cy, rotation, Socket.CENTER_SIDE));
 
         return sockets;
     }
@@ -57,7 +57,7 @@ public class SocketGeometryUtils {
             sockets.add(new Socket(cx + rx, cy + ry, rotation, side));
         }
 
-        sockets.add(new Socket(cx, cy, rotation, 10));
+        sockets.add(new Socket(cx, cy, rotation, Socket.CENTER_SIDE));
 
         return sockets;
     }

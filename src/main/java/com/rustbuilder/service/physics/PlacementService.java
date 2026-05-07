@@ -89,7 +89,7 @@ public class PlacementService {
             double dx = b.getX() + halfTile - rawCenterX;
             double dy = b.getY() + halfTile - rawCenterY;
             double dSq = dx * dx + dy * dy;
-            if (dSq < minDistSq) { 
+            if (dSq < minDistSq || shouldPreferCeilingWallTarget(action.actionType, dSq, minDistSq, b, target)) {
                 minDistSq = dSq; 
                 target = b; 
             }
@@ -143,9 +143,9 @@ public class PlacementService {
                  dummy.setRotation((testRot + 360) % 360);
                  
                  for (Socket tSock : target.getSockets()) {
-                     if (tSock.getSide() == 10) continue; // Skip center socket
+                     if (tSock.isCenter()) continue; // Skip center socket
                      for (Socket dSock : dummy.getSockets()) {
-                         if (dSock.getSide() == 10) continue;
+                         if (dSock.isCenter()) continue;
                          if (!SocketCompatibilityUtils.areEdgesParallel(tSock, dSock)) continue;
                          double dx = tSock.getX() - dSock.getX();
                          double dy = tSock.getY() - dSock.getY();
@@ -175,7 +175,11 @@ public class PlacementService {
                  double centerDistSq = centerDx * centerDx + centerDy * centerDy;
                  
                  double centerThreshold = tileSize * 0.9;
-                 if (centerDistSq >= centerThreshold * centerThreshold) {
+                 boolean allowSameTileCeilingOnWall = isCeilingAction(action.actionType)
+                         && target != null
+                         && BuildingTypeUtils.isWall(target.getType())
+                         && z == target.getZ() + 1;
+                 if (centerDistSq >= centerThreshold * centerThreshold || allowSameTileCeilingOnWall) {
                      Placement p = new Placement(finalSnapX, finalSnapY, bestRot, Orientation.NORTH, true); p.minDist = Math.sqrt(minDistSq); p.socketDist = Math.sqrt(globalMinDistSq); return p;
                  } else {
                      Placement p = new Placement(0,0,0,null,false, PlacementError.BAD_SOCKET_CENTERDIST_REJECT); p.minDist = Math.sqrt(minDistSq); p.socketDist = Math.sqrt(globalMinDistSq); return p;
@@ -190,6 +194,21 @@ public class PlacementService {
     
     private static boolean isWallLike(BuildAction.ActionType type) {
         return type == BuildAction.ActionType.WALL || type == BuildAction.ActionType.DOORWAY || type == BuildAction.ActionType.WINDOW_FRAME;
+    }
+
+    private static boolean shouldPreferCeilingWallTarget(BuildAction.ActionType actionType, double distanceSq,
+            double bestDistanceSq, BuildingBlock candidate, BuildingBlock currentTarget) {
+        if (!isCeilingAction(actionType) || candidate == null || !BuildingTypeUtils.isWall(candidate.getType())) {
+            return false;
+        }
+        if (currentTarget != null && BuildingTypeUtils.isWall(currentTarget.getType())) {
+            return false;
+        }
+        return Math.abs(distanceSq - bestDistanceSq) < 0.001;
+    }
+
+    private static boolean isCeilingAction(BuildAction.ActionType type) {
+        return type == BuildAction.ActionType.FLOOR || type == BuildAction.ActionType.TRIANGLE_FLOOR;
     }
     
     private static boolean isValidBase(BuildingType type, boolean includeWall) {
@@ -265,6 +284,10 @@ public class PlacementService {
     }
 
     public static BuildingBlock createRealBlock(BuildAction action, Placement placement) {
+        return createRealBlock(action, placement, BuildingTier.STONE, DoorType.SHEET_METAL);
+    }
+
+    public static BuildingBlock createRealBlock(BuildAction action, Placement placement, BuildingTier tier, DoorType doorType) {
         double finalX = placement.x;
         double finalY = placement.y;
         double finalRotation = placement.rotation;
@@ -272,13 +295,12 @@ public class PlacementService {
         int z = (action.actionType == BuildAction.ActionType.FOUNDATION || action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION) ? 0 : action.floor;
         if (z < 0) z = 0;
         
-        // Delegate construction to BlockFactory (SHEET_METAL default for doorways in this context)
         BuildingBlock block = BlockFactory.create(
                 action.actionType, finalX, finalY, z,
-                finalRotation, finalOrientation, DoorType.SHEET_METAL);
+                finalRotation, finalOrientation, doorType);
 
         if (block != null) {
-            block.setTier(BuildingTier.STONE);
+            block.setTier(tier != null ? tier : BuildingTier.STONE);
             if (!(block instanceof Wall)) {
                 block.setRotation(finalRotation);
             }

@@ -146,56 +146,67 @@ public final class BlockFactory {
         return block;
     }
 
+    /**
+     * Creates a block directly from the model type used by the manual UI flow.
+     */
+    public static BuildingBlock create(
+            BuildingType type,
+            double x, double y, int z,
+            double rotation,
+            Orientation orientation,
+            DoorType doorType) {
+
+        if (type == null) {
+            return null;
+        }
+
+        switch (type) {
+            case FOUNDATION:
+                return new Foundation(x, y, z, rotation);
+            case TRIANGLE_FOUNDATION:
+                return new TriangleFoundation(x, y, z, rotation);
+            case WALL:
+                return new Wall(x, y, z, orientation);
+            case DOORWAY: {
+                Wall doorWall = new Wall(x, y, z, orientation);
+                doorWall.setType(BuildingType.DOORWAY);
+                doorWall.setDoorType(doorType);
+                return doorWall;
+            }
+            case WINDOW_FRAME: {
+                Wall windowFrame = new Wall(x, y, z, orientation);
+                windowFrame.setType(BuildingType.WINDOW_FRAME);
+                return windowFrame;
+            }
+            case FLOOR:
+                return new Floor(x, y, z, rotation);
+            case TRIANGLE_FLOOR:
+                return new TriangleFloor(x, y, z, rotation);
+            case TC:
+                return new ToolCupboard(x, y, z, rotation);
+            case WORKBENCH:
+                return new Workbench(x, y, z, rotation);
+            case LOOT_ROOM:
+                return new LootRoom(x, y, z, rotation);
+            case DOOR:
+                return new Door(x, y, z, orientation, doorType);
+            default:
+                return null;
+        }
+    }
+
     // -------------------------------------------------------------------------
     // Block cloning
     // -------------------------------------------------------------------------
 
     /**
-     * Deep-clones a {@link BuildingBlock}, preserving rotation and tier.
-     *
-     * <p>This mirrors the instanceof-chain originally in
-     * {@code RLTrainingService.cloneBlock()}.
+     * Deep-clones a {@link BuildingBlock} through the model-level prototype.
      *
      * @param b the block to clone; may be {@code null}
      * @return a new block with the same type, position, rotation and tier,
-     *         or {@code null} if {@code b} is {@code null} or its type is unrecognised
+     *         or {@code null} if {@code b} is {@code null}
      */
     public static BuildingBlock clone(BuildingBlock b) {
-        if (b == null) return null;
-
-        BuildingBlock clone = null;
-
-        if (b instanceof Foundation) {
-            clone = new Foundation(b.getX(), b.getY(), b.getZ());
-        } else if (b instanceof TriangleFoundation) {
-            clone = new TriangleFoundation(b.getX(), b.getY(), b.getZ(), b.getRotation());
-        } else if (b instanceof Wall) {
-            Wall w = (Wall) b;
-            Wall wClone = new Wall(w.getX(), w.getY(), w.getZ(), w.getOrientation());
-            wClone.setType(w.getType());
-            if (w.getType() == BuildingType.DOORWAY) {
-                wClone.setDoorType(w.getDoorType());
-            }
-            clone = wClone;
-        } else if (b instanceof Floor) {
-            clone = new Floor(b.getX(), b.getY(), b.getZ(), b.getRotation());
-        } else if (b instanceof TriangleFloor) {
-            clone = new TriangleFloor(b.getX(), b.getY(), b.getZ(), b.getRotation());
-        } else if (b instanceof Door) {
-            Door d = (Door) b;
-            clone = new Door(d.getX(), d.getY(), d.getZ(), d.getOrientation(), d.getDoorType());
-        } else if (b instanceof ToolCupboard) {
-            clone = new ToolCupboard(b.getX(), b.getY(), b.getZ(), b.getRotation());
-        } else if (b instanceof Workbench) {
-            clone = new Workbench(b.getX(), b.getY(), b.getZ(), b.getRotation());
-        } else if (b instanceof LootRoom) {
-            clone = new LootRoom(b.getX(), b.getY(), b.getZ(), b.getRotation());
-        }
-
-        if (clone != null) {
-            clone.setRotation(b.getRotation());
-            clone.setTier(b.getTier());
-        }
-        return clone;
+        return b == null ? null : b.clone();
     }
 }

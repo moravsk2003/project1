@@ -160,6 +160,7 @@ public class RLTrainingService {
         this.multiDiscreteAgent = new MultiDiscreteDQNAgent(activeConfig.stateEncodingSpec, activeConfig.actionSpaceSpec);
         this.multiDiscreteAgent.setRewardConfig(this.rewardConfig);
         this.multiDiscreteNeuralProvider = new NeuralMultiDiscreteDecisionProvider(this.multiDiscreteAgent, this.stateEncoder);
+        this.multiDiscreteNeuralProvider.setUseAimSectorLearning(this.useAimSectorLearning);
         this.multiDiscretePolicy = new ProvidedPhaseMultiDiscretePolicy(this.multiDiscreteNeuralProvider);
 
         // Reset statistics for fresh run
@@ -431,8 +432,6 @@ public class RLTrainingService {
             return res;
         }
 
-        double finalX = placement.x;
-        double finalY = placement.y;
         double finalRotation = placement.rotation;
         Orientation finalOrientation = placement.orientation;
         int z = (action.actionType == BuildAction.ActionType.FOUNDATION || action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION) ? 0 : action.floor;
@@ -440,12 +439,9 @@ public class RLTrainingService {
 
         BuildingTier tier = com.rustbuilder.util.BlockFactory.tierFromInt(action.tier);
         DoorType doorType = com.rustbuilder.util.BlockFactory.doorTypeFromInt(action.doorType);
-        BuildingBlock block = com.rustbuilder.util.BlockFactory.create(
-                action.actionType, finalX, finalY, z, finalRotation, finalOrientation, doorType);
+        BuildingBlock block = PlacementService.createRealBlock(action, placement, tier, doorType);
 
         if (block != null) {
-            block.setRotation(finalRotation);
-            block.setTier(tier);
             res.placedBlock = block;
 
             boolean isFurniture = action.actionType == BuildAction.ActionType.TC || action.actionType == BuildAction.ActionType.WORKBENCH || action.actionType == BuildAction.ActionType.LOOT_ROOM;
@@ -482,7 +478,7 @@ public class RLTrainingService {
                 if (gridModel.canPlace(block)) {
                     gridModel.addBlockSilent(block);
                     if (action.actionType == BuildAction.ActionType.DOORWAY) {
-                        Door d = new Door(finalX, finalY, z, finalOrientation, doorType);
+                        Door d = new Door(block.getX(), block.getY(), z, finalOrientation, doorType);
                         d.setTier(tier);
                         d.setRotation(finalRotation);
                         if (gridModel.canPlace(d)) {

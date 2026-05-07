@@ -669,32 +669,7 @@ public class RLGeneratorDialog {
     }
 
     private BuildingBlock cloneBlock(BuildingBlock b) {
-        BuildingBlock clone = null;
-        double x = b.getX();
-        double y = b.getY();
-        int z = b.getZ();
-        double rot = b.getRotation();
-        
-        if (b instanceof com.rustbuilder.model.structure.Foundation) clone = new com.rustbuilder.model.structure.Foundation(x, y, z);
-        else if (b instanceof com.rustbuilder.model.structure.TriangleFoundation) clone = new com.rustbuilder.model.structure.TriangleFoundation(x, y, z, rot);
-        else if (b instanceof com.rustbuilder.model.structure.Wall) {
-            com.rustbuilder.model.structure.Wall w = (com.rustbuilder.model.structure.Wall)b;
-            clone = new com.rustbuilder.model.structure.Wall(x, y, z, w.getOrientation());
-            ((com.rustbuilder.model.structure.Wall)clone).setType(w.getType());
-            if (w.getType() == com.rustbuilder.model.core.BuildingType.DOORWAY) ((com.rustbuilder.model.structure.Wall)clone).setDoorType(w.getDoorType());
-        }
-        else if (b instanceof com.rustbuilder.model.structure.Floor) clone = new com.rustbuilder.model.structure.Floor(x, y, z, rot);
-        else if (b instanceof com.rustbuilder.model.structure.TriangleFloor) clone = new com.rustbuilder.model.structure.TriangleFloor(x, y, z, rot);
-        else if (b instanceof com.rustbuilder.model.structure.Door) clone = new com.rustbuilder.model.structure.Door(x, y, z, ((com.rustbuilder.model.structure.Door)b).getOrientation(), ((com.rustbuilder.model.structure.Door)b).getDoorType());
-        else if (b instanceof com.rustbuilder.model.deployable.ToolCupboard) clone = new com.rustbuilder.model.deployable.ToolCupboard(x, y, z, rot);
-        else if (b instanceof com.rustbuilder.model.deployable.Workbench) clone = new com.rustbuilder.model.deployable.Workbench(x, y, z, rot);
-        else if (b instanceof com.rustbuilder.model.deployable.LootRoom) clone = new com.rustbuilder.model.deployable.LootRoom(x, y, z, rot);
-
-        if (clone != null) {
-            clone.setRotation(rot);
-            clone.setTier(b.getTier());
-        }
-        return clone;
+        return b == null ? null : b.clone();
     }
 
     private void refreshModelList() {

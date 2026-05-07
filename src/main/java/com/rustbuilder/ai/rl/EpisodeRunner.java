@@ -7,15 +7,16 @@ import com.rustbuilder.ai.rl.env.state.StateRepresentationEncoder;
 import com.rustbuilder.ai.rl.log.StopReason;
 import com.rustbuilder.ai.rl.multidiscrete.*;
 import com.rustbuilder.model.GridModel;
-import com.rustbuilder.model.core.BuildingBlock;
-import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.service.evaluator.HouseEvaluator;
 import com.rustbuilder.service.physics.PlacementService;
 import java.util.List;
 import java.util.Random;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class EpisodeRunner {
 
+    private static final Logger LOGGER = Logger.getLogger(EpisodeRunner.class.getName());
     private static final int TRAIN_START_MEMORY = 48;
     private static final int TRAIN_BATCH_SIZE = 32;
     private static final int TRAIN_EVERY_STEPS = 4;
@@ -104,13 +105,6 @@ public class EpisodeRunner {
                 // Global vector encoding time is part of total encoder time for now
             }
 
-            GridModel gridBeforeAction = null;
-            if (multiDiscreteMemory != null) {
-                long cloneStartNs = System.nanoTime();
-                gridBeforeAction = result.grid.clone();
-                result.perfGridCloneNs += System.nanoTime() - cloneStartNs;
-            }
-
             long actionStartNs = System.nanoTime();
             MultiDiscreteAction multiAction = multiDiscretePolicy.chooseAction(context, this.multiDiscreteObserver);
             result.perfActionSelectNs += System.nanoTime() - actionStartNs;
@@ -165,7 +159,7 @@ public class EpisodeRunner {
 
                     com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteExperienceReplay.Transition trans = new com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteExperienceReplay.Transition(
                         stateEncoded, multiAction, stopReward, nextStateEncoded, true, step,
-                        gridBeforeAction, result.grid.clone(), true,
+                        null, cloneGridForReplay(result), true,
                         MultiDiscreteCreditAssignment.forPlacement(true, PlacementError.NONE)
                     );
                     long replayStartNs = System.nanoTime();
@@ -221,6 +215,7 @@ public class EpisodeRunner {
                         .contains(multiAction.getAimSector());
                     boolean physicsAllowed = PlacementService.isActionActuallyFeasible(result.grid, legacyAction);
                     logger.writeInvalidActionLog(
+                        totalEpisode,
                         currentEpoch,
                         currentEpochEpisode,
                         step,
@@ -312,7 +307,7 @@ public class EpisodeRunner {
 
                 com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteExperienceReplay.Transition trans = new com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteExperienceReplay.Transition(
                     stateEncoded, multiAction, stepReward, nextStateEncoded, isTerminal, step,
-                    gridBeforeAction, result.grid.clone(), pResult.survived,
+                    null, cloneGridForReplay(result), pResult.survived,
                     headRewardMultipliers
                 );
 
@@ -357,17 +352,14 @@ public class EpisodeRunner {
         return result;
     }
 
-    private boolean isFoundation(BuildingBlock block) {
-        return block.getType() == BuildingType.FOUNDATION || block.getType() == BuildingType.TRIANGLE_FOUNDATION;
-    }
-
     private double calculateStepEvalScore(GridModel grid, double fallbackScore) {
         if (evaluator == null || rewardConfig.stepEvalDeltaMultiplier == 0.0) {
             return fallbackScore;
         }
         try {
             return evaluator.evaluate(grid).finalScore;
-        } catch (Exception ignored) {
+        } catch (Exception ex) {
+            LOGGER.log(Level.FINE, "Step evaluation failed; keeping previous score.", ex);
             return fallbackScore;
         }
     }
@@ -376,5 +368,14 @@ public class EpisodeRunner {
         return multiDiscreteMemory != null
             && multiDiscreteMemory.size() >= TRAIN_START_MEMORY
             && step % TRAIN_EVERY_STEPS == 0;
+    }
+
+    private GridModel cloneGridForReplay(EpisodeResult result) {
+        long cloneStartNs = System.nanoTime();
+        try {
+            return result.grid.clone();
+        } finally {
+            result.perfGridCloneNs += System.nanoTime() - cloneStartNs;
+        }
     }
 }

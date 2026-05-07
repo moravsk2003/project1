@@ -1,5 +1,0 @@
-timestamp,run_id,epoch,episode,step,state_encoder_version,fail_reason,action_type,floor,tileX,tileY,rotation,aimSector,minDist,socketDist,mask_allowed,physics_allowed
-2026-05-06 12:55:41,run_1778060708817,0,650,6,v3,NO_SUPPORT,WALL,0,2,4,0,5,-1.0000,-1.0000,true,true
-2026-05-06 13:29:20,run_1778060708817,0,2350,17,v3,NO_SUPPORT,WALL,1,5,4,3,9,-1.0000,-1.0000,true,true
-2026-05-06 13:29:20,run_1778060708817,0,2350,25,v3,NO_SUPPORT,DOORWAY,1,5,4,3,9,-1.0000,-1.0000,true,true
-2026-05-06 13:29:20,run_1778060708817,0,2350,30,v3,NO_SUPPORT,DOORWAY,1,5,4,3,9,-1.0000,-1.0000,true,true

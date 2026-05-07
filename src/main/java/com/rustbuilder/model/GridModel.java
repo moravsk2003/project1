@@ -346,34 +346,10 @@ public class GridModel {
     public GridModel clone() {
         GridModel clone = new GridModel();
         for (BuildingBlock block : this.blocks) {
-            BuildingBlock bc = cloneBlock(block);
+            BuildingBlock bc = block.clone();
             if (bc != null) {
                 clone.addBlockSilent(bc);
             }
-        }
-        return clone;
-    }
-
-    private BuildingBlock cloneBlock(BuildingBlock b) {
-        BuildingBlock clone = null;
-        if (b instanceof com.rustbuilder.model.structure.Foundation) clone = new com.rustbuilder.model.structure.Foundation(b.getX(), b.getY(), b.getZ());
-        else if (b instanceof com.rustbuilder.model.structure.TriangleFoundation) clone = new com.rustbuilder.model.structure.TriangleFoundation(b.getX(), b.getY(), b.getZ(), b.getRotation());
-        else if (b instanceof Wall) {
-            Wall w = (Wall)b;
-            clone = new Wall(w.getX(), w.getY(), w.getZ(), w.getOrientation());
-            clone.setType(w.getType());
-            if (w.getType() == BuildingType.DOORWAY) ((Wall)clone).setDoorType(w.getDoorType());
-        }
-        else if (b instanceof com.rustbuilder.model.structure.Floor) clone = new com.rustbuilder.model.structure.Floor(b.getX(), b.getY(), b.getZ(), b.getRotation());
-        else if (b instanceof com.rustbuilder.model.structure.TriangleFloor) clone = new com.rustbuilder.model.structure.TriangleFloor(b.getX(), b.getY(), b.getZ(), b.getRotation());
-        else if (b instanceof com.rustbuilder.model.structure.Door) clone = new com.rustbuilder.model.structure.Door(b.getX(), b.getY(), b.getZ(), ((com.rustbuilder.model.structure.Door)b).getOrientation(), ((com.rustbuilder.model.structure.Door)b).getDoorType());
-        else if (b instanceof com.rustbuilder.model.deployable.ToolCupboard) clone = new com.rustbuilder.model.deployable.ToolCupboard(b.getX(), b.getY(), b.getZ(), b.getRotation());
-        else if (b instanceof com.rustbuilder.model.deployable.Workbench) clone = new com.rustbuilder.model.deployable.Workbench(b.getX(), b.getY(), b.getZ(), b.getRotation());
-        else if (b instanceof com.rustbuilder.model.deployable.LootRoom) clone = new com.rustbuilder.model.deployable.LootRoom(b.getX(), b.getY(), b.getZ(), b.getRotation());
-
-        if (clone != null) {
-            clone.setRotation(b.getRotation());
-            clone.setTier(b.getTier());
         }
         return clone;
     }
@@ -403,9 +379,9 @@ public class GridModel {
      */
     private boolean hasEdgeSocketConnection(BuildingBlock a, BuildingBlock b) {
         for (Socket sa : a.getSockets()) {
-            if (sa.getSide() == 10) continue;
+            if (sa.isCenter()) continue;
             for (Socket sb : b.getSockets()) {
-                if (sb.getSide() == 10) continue;
+                if (sb.isCenter()) continue;
                 if (com.rustbuilder.util.SocketCompatibilityUtils.areEdgeSocketsConnected(sa, sb, 9.0)) {
                     return true; // Valid socket connection → no collision
                 }

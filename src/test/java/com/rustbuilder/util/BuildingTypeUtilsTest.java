@@ -1,6 +1,8 @@
 package com.rustbuilder.util;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.Test;
 
@@ -60,9 +62,29 @@ class BuildingTypeUtilsTest {
     void isWallTool_recognizesWallToolStrings() {
         assertTrue(BuildingTypeUtils.isWallTool("WALL"));
         assertTrue(BuildingTypeUtils.isWallTool("DOOR_FRAME"));
+        assertTrue(BuildingTypeUtils.isWallTool("DOORWAY"));
         assertTrue(BuildingTypeUtils.isWallTool("WINDOW_FRAME"));
         assertFalse(BuildingTypeUtils.isWallTool("FOUNDATION"));
         assertFalse(BuildingTypeUtils.isWallTool(null));
         assertFalse(BuildingTypeUtils.isWallTool(""));
+    }
+
+    @Test
+    void fromToolId_normalizesLegacyToolAliases() {
+        assertEquals(BuildingType.FOUNDATION, BuildingTypeUtils.fromToolId("FOUNDATION"));
+        assertEquals(BuildingType.TRIANGLE_FOUNDATION, BuildingTypeUtils.fromToolId("TRIANGLE"));
+        assertEquals(BuildingType.DOORWAY, BuildingTypeUtils.fromToolId("DOOR_FRAME"));
+        assertEquals(BuildingType.DOOR, BuildingTypeUtils.fromToolId("DOOR"));
+        assertNull(BuildingTypeUtils.fromToolId("DELETE"));
+        assertNull(BuildingTypeUtils.fromToolId(null));
+    }
+
+    @Test
+    void toToolId_preservesCurrentUiAliases() {
+        assertEquals("FOUNDATION", BuildingTypeUtils.toToolId(BuildingType.FOUNDATION));
+        assertEquals("TRIANGLE", BuildingTypeUtils.toToolId(BuildingType.TRIANGLE_FOUNDATION));
+        assertEquals("DOOR_FRAME", BuildingTypeUtils.toToolId(BuildingType.DOORWAY));
+        assertEquals("DOOR", BuildingTypeUtils.toToolId(BuildingType.DOOR));
+        assertNull(BuildingTypeUtils.toToolId(null));
     }
 }

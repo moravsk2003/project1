@@ -31,6 +31,11 @@ public class ToolCupboard extends BuildingBlock {
     }
 
     @Override
+    protected BuildingBlock copyBlock() {
+        return new ToolCupboard(getX(), getY(), getZ(), getRotation());
+    }
+
+    @Override
     protected List<Socket> computeSockets() {
         return Collections.emptyList(); // TC doesn't have sockets for others to snap TO usually
     }

@@ -55,6 +55,11 @@ public class Door extends BuildingBlock {
     }
 
     @Override
+    protected BuildingBlock copyBlock() {
+        return new Door(getX(), getY(), getZ(), orientation, doorType);
+    }
+
+    @Override
     protected void updateCost() {
         Map<ResourceType, Integer> cost = new HashMap<>();
         if (doorType == null) return;

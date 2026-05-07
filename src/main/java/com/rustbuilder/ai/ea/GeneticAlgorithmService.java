@@ -8,6 +8,8 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.service.evaluator.HouseEvaluator;
 
@@ -21,6 +23,7 @@ import com.rustbuilder.service.evaluator.HouseEvaluator;
  */
 public class GeneticAlgorithmService {
 
+    private static final Logger LOGGER = Logger.getLogger(GeneticAlgorithmService.class.getName());
     private static final Random RNG = new Random();
 
     // ── Configurable hyperparameters (with recommended defaults) ──────────────
@@ -228,7 +231,8 @@ public class GeneticAlgorithmService {
                     GridModel tempGrid = new GridModel();
                     bestGenome.decode(tempGrid);
                     lastBestResult = evaluator.evaluate(tempGrid);
-                } catch (Exception ignored) {
+                } catch (Exception e) {
+                    LOGGER.log(Level.FINE, "Best-genome detail evaluation failed.", e);
                     lastBestResult = null;
                 }
             }

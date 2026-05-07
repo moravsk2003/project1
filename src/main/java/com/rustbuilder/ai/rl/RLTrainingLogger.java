@@ -16,6 +16,8 @@ import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Handles all CSV file logging for {@link RLTrainingService}.
@@ -36,6 +38,7 @@ import java.util.Locale;
  */
 public class RLTrainingLogger {
 
+    private static final Logger LOGGER = Logger.getLogger(RLTrainingLogger.class.getName());
     private static final DateTimeFormatter TS_FMT =
             DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
     private static final int EPISODE_LOG_FULL_DETAIL_UNTIL = 100;
@@ -83,7 +86,11 @@ public class RLTrainingLogger {
      */
     public void setLogFile(String modelName, boolean multiDiscrete) {
         Path dir = Paths.get("models_rl");
-        try { Files.createDirectories(dir); } catch (IOException ignored) {}
+        try {
+            Files.createDirectories(dir);
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "Failed to create RL log directory.", e);
+        }
 
         String suffix = multiDiscrete ? "_multi_discrete_training.csv" : "_legacy_training.csv";
         logFilePath = dir.resolve(modelName + suffix);
@@ -95,14 +102,18 @@ public class RLTrainingLogger {
                          + "avg_blocks_placed,avg_rejected_proximity,avg_encoder_time_ms,avg_global_encoder_time_ms,"
                          + "best_reward_all_time,best_ep_reward,epsilon,loss,invalid_rate_pct,total_blocks,ram_mb,"
                          + "best_base_blocks,best_base_tc,best_base_doors,epoch_time_sec");
-            } catch (IOException ignored) {}
+            } catch (IOException e) {
+                LOGGER.log(Level.WARNING, "Failed to create RL epoch log header.", e);
+            }
         }
 
         invalidLogFilePath = dir.resolve(modelName + "_invalid_actions.csv");
         if (!Files.exists(invalidLogFilePath)) {
             try (PrintWriter pw = new PrintWriter(new FileWriter(invalidLogFilePath.toFile()))) {
                 pw.println("timestamp,run_id,epoch,episode,step,state_encoder_version,fail_reason,action_type,floor,tileX,tileY,rotation,aimSector,minDist,socketDist,mask_allowed,physics_allowed");
-            } catch (IOException ignored) {}
+            } catch (IOException e) {
+                LOGGER.log(Level.WARNING, "Failed to create RL invalid-action log header.", e);
+            }
         }
 
         episodeLogFilePath = dir.resolve(modelName + "_episodes.csv");
@@ -115,7 +126,9 @@ public class RLTrainingLogger {
                          + "episode_ms,context_ms,state_encode_ms,next_state_encode_ms,action_select_ms,grid_clone_ms,placement_ms,finalize_ms,"
                          + "reward_ms,replay_ms,train_batch_ms,invalid_log_ms,final_eval_ms,episode_log_ms,update_best_ms,untracked_ms,"
                          + "top_stage,top_stage_ms,rejected_proximity,rejected_rot_aim,dead_tiles,dead_rotations,pruned_types");
-            } catch (IOException ignored) {}
+            } catch (IOException e) {
+                LOGGER.log(Level.WARNING, "Failed to create RL performance log header.", e);
+            }
         }
     }
 
@@ -174,7 +187,9 @@ public class RLTrainingLogger {
                 upgraded.add(upgradedLine);
             }
             Files.write(path, upgraded);
-        } catch (IOException ignored) {}
+        } catch (IOException e) {
+            LOGGER.log(Level.WARNING, "Failed to ensure RL episode log header.", e);
+        }
     }
 
     private String insertEmptyColumns(String line, int insertAfterIndex, int insertedColumns) {
@@ -248,7 +263,7 @@ public class RLTrainingLogger {
             pw.printf(Locale.US, "  \"model_output_dir\": \"%s\"%n", modelsDir);
             pw.println("}");
         } catch (IOException e) {
-            e.printStackTrace();
+            LOGGER.log(Level.WARNING, "Failed to write RL run metadata.", e);
         }
     }
 
@@ -275,7 +290,7 @@ public class RLTrainingLogger {
                 performanceLogWriter = new PrintWriter(new BufferedWriter(new FileWriter(performanceLogFilePath.toFile(), true)));
             }
         } catch (IOException e) {
-            e.printStackTrace();
+            LOGGER.log(Level.WARNING, "Failed to open RL training log writers.", e);
         }
     }
 
@@ -285,20 +300,28 @@ public class RLTrainingLogger {
      */
     public void close() {
         if (epochLogWriter != null) {
-            try { epochLogWriter.close(); } catch (Exception ignored) {}
+            closeWriter(epochLogWriter, "epoch");
             epochLogWriter = null;
         }
         if (invalidLogWriter != null) {
-            try { invalidLogWriter.close(); } catch (Exception ignored) {}
+            closeWriter(invalidLogWriter, "invalid-action");
             invalidLogWriter = null;
         }
         if (episodeLogWriter != null) {
-            try { episodeLogWriter.close(); } catch (Exception ignored) {}
+            closeWriter(episodeLogWriter, "episode");
             episodeLogWriter = null;
         }
         if (performanceLogWriter != null) {
-            try { performanceLogWriter.close(); } catch (Exception ignored) {}
+            closeWriter(performanceLogWriter, "performance");
             performanceLogWriter = null;
+        }
+    }
+
+    private void closeWriter(PrintWriter writer, String name) {
+        try {
+            writer.close();
+        } catch (Exception e) {
+            LOGGER.log(Level.FINE, "Failed to close RL " + name + " log writer.", e);
         }
     }
 
@@ -348,7 +371,16 @@ public class RLTrainingLogger {
                                       int rotation, int aimSector,
                                       double minDist, double socketDist,
                                       boolean maskAllowed, boolean physicsAllowed) {
-        if (!shouldWriteInvalidActionLog(episode, step)) return;
+        writeInvalidActionLog(episode, epoch, episode, step, failReason, actionType, floor,
+            tileX, tileY, rotation, aimSector, minDist, socketDist, maskAllowed, physicsAllowed);
+    }
+
+    public void writeInvalidActionLog(int samplingEpisode, int epoch, int episode, int step, String failReason,
+                                      String actionType, int floor, int tileX, int tileY,
+                                      int rotation, int aimSector,
+                                      double minDist, double socketDist,
+                                      boolean maskAllowed, boolean physicsAllowed) {
+        if (!shouldWriteInvalidActionLog(samplingEpisode, step)) return;
         String ts = LocalDateTime.now().format(TS_FMT);
         invalidLogWriter.printf(Locale.US, "%s,%s,%d,%d,%d,%s,%s,%s,%d,%d,%d,%d,%d,%.4f,%.4f,%b,%b%n",
             ts, currentRunId, epoch, episode, step, currentEncoderVersion, failReason, actionType, floor, tileX, tileY,

@@ -10,6 +10,7 @@ import com.rustbuilder.controller.GameController;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingTier;
+import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.core.DoorType;
 import com.rustbuilder.ui.GameCanvas;
 import com.rustbuilder.ui.hints.HintUtils;
@@ -44,47 +45,47 @@ public class MainApp extends Application {
             ToolBar toolBar = new ToolBar();
 
             Button btnFoundation = new Button("Foundation");
-            btnFoundation.setOnAction(e -> gameController.setSelectedTool("FOUNDATION"));
+            btnFoundation.setOnAction(e -> gameController.setSelectedTool(BuildingType.FOUNDATION));
             HintUtils.attachHint(btnFoundation, "Фундамент", "Квадратний базовий блок для початку будівництва.");
 
             Button btnTriFoundation = new Button("Tri Foundation");
-            btnTriFoundation.setOnAction(e -> gameController.setSelectedTool("TRIANGLE"));
+            btnTriFoundation.setOnAction(e -> gameController.setSelectedTool(BuildingType.TRIANGLE_FOUNDATION));
             HintUtils.attachHint(btnTriFoundation, "Трикутний фундамент", "Трикутний базовий блок для початку будівництва.");
 
             Button btnWall = new Button("Wall");
-            btnWall.setOnAction(e -> gameController.setSelectedTool("WALL"));
+            btnWall.setOnAction(e -> gameController.setSelectedTool(BuildingType.WALL));
             HintUtils.attachHint(btnWall, "Стіна", "Захисний блок. Розміщується на краю фундаменту або підлоги.");
 
             Button btnFloor = new Button("Floor");
-            btnFloor.setOnAction(e -> gameController.setSelectedTool("FLOOR"));
+            btnFloor.setOnAction(e -> gameController.setSelectedTool(BuildingType.FLOOR));
             HintUtils.attachHint(btnFloor, "Підлога / Стеля", "Розміщується на стінах як перекриття.");
 
             Button btnTriFloor = new Button("Tri Floor");
-            btnTriFloor.setOnAction(e -> gameController.setSelectedTool("TRIANGLE_FLOOR"));
+            btnTriFloor.setOnAction(e -> gameController.setSelectedTool(BuildingType.TRIANGLE_FLOOR));
             HintUtils.attachHint(btnTriFloor, "Трикутна підлога", "Розміщується на стінах як трикутне перекриття.");
 
             Button btnDoorFrame = new Button("Door Frame");
-            btnDoorFrame.setOnAction(e -> gameController.setSelectedTool("DOOR_FRAME"));
+            btnDoorFrame.setOnAction(e -> gameController.setSelectedTool(BuildingType.DOORWAY));
             HintUtils.attachHint(btnDoorFrame, "Дверний проріз", "Стіна з отвором для встановлення дверей.");
 
             Button btnWindowFrame = new Button("Window");
-            btnWindowFrame.setOnAction(e -> gameController.setSelectedTool("WINDOW_FRAME"));
+            btnWindowFrame.setOnAction(e -> gameController.setSelectedTool(BuildingType.WINDOW_FRAME));
             HintUtils.attachHint(btnWindowFrame, "Вікно", "Стіна з отвором для вікна.");
 
             Button btnDoor = new Button("Door");
-            btnDoor.setOnAction(e -> gameController.setSelectedTool("DOOR"));
+            btnDoor.setOnAction(e -> gameController.setSelectedTool(BuildingType.DOOR));
             HintUtils.attachHint(btnDoor, "Двері", "Захист входу. Розміщується у дверному прорізі.");
 
             Button btnToolCupboard = new Button("TC");
-            btnToolCupboard.setOnAction(e -> gameController.setSelectedTool("TC"));
+            btnToolCupboard.setOnAction(e -> gameController.setSelectedTool(BuildingType.TC));
             HintUtils.attachHint(btnToolCupboard, "Шафа (TC)", "Запобігає гниттю бази і блокує будівництво іншим гравцям.");
 
             Button btnWorkbench = new Button("Workbench");
-            btnWorkbench.setOnAction(e -> gameController.setSelectedTool("WORKBENCH"));
+            btnWorkbench.setOnAction(e -> gameController.setSelectedTool(BuildingType.WORKBENCH));
             HintUtils.attachHint(btnWorkbench, "Верстак", "Необхідний для створення предметів та проведення досліджень.");
 
             Button btnLootRoom = new Button("Loot Room");
-            btnLootRoom.setOnAction(e -> gameController.setSelectedTool("LOOT_ROOM"));
+            btnLootRoom.setOnAction(e -> gameController.setSelectedTool(BuildingType.LOOT_ROOM));
             HintUtils.attachHint(btnLootRoom, "Скрині (Лутова)", "Зона для зберігання ресурсів та цінностей.");
 
             // === Navigation ===
@@ -97,7 +98,7 @@ public class MainApp extends Application {
             HintUtils.attachHint(btnDown, "Поверх вниз", "Перейти на нижчий рівень.");
 
             Button btnDelete = new Button("Delete");
-            btnDelete.setOnAction(e -> gameController.setSelectedTool("DELETE"));
+            btnDelete.setOnAction(e -> gameController.selectDeleteTool());
             HintUtils.attachHint(btnDelete, "Видалити", "Видалення вибраного блоку з сітки.");
 
             Button btnClear = new Button("Clear");

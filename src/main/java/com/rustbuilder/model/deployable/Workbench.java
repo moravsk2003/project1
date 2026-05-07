@@ -30,6 +30,11 @@ public class Workbench extends BuildingBlock {
     }
 
     @Override
+    protected BuildingBlock copyBlock() {
+        return new Workbench(getX(), getY(), getZ(), getRotation());
+    }
+
+    @Override
     protected List<Socket> computeSockets() {
         return Collections.emptyList();
     }

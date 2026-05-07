@@ -14,9 +14,6 @@ public class VoxelV1StateEncoder implements StateRepresentationEncoder {
     
     private final EncodingRuntimeConfig config;
     
-    private static final double START_X = 200;
-    private static final double START_Y = 200;
-    
     public VoxelV1StateEncoder(EncodingRuntimeConfig config) {
         this.config = config;
     }
@@ -28,12 +25,12 @@ public class VoxelV1StateEncoder implements StateRepresentationEncoder {
         int height = config.gridSpec.height;
         int width = config.gridSpec.width;
         
-        INDArray tensor = Nd4j.zeros(1, channels, floors, height, width);
+        float[] flatTensor = new float[channels * floors * height * width];
 
         List<BuildingBlock> blocks = gridModel.getAllBlocks();
         for (BuildingBlock b : blocks) {
-            int gx = (int) Math.round((b.getX() - START_X) / GameConstants.TILE_SIZE);
-            int gy = (int) Math.round((b.getY() - START_Y) / GameConstants.TILE_SIZE);
+            int gx = (int) Math.round((b.getX() + GameConstants.HALF_TILE - GameConstants.GRID_ORIGIN_X) / GameConstants.TILE_SIZE);
+            int gy = (int) Math.round((b.getY() + GameConstants.HALF_TILE - GameConstants.GRID_ORIGIN_Y) / GameConstants.TILE_SIZE);
             int gz = b.getZ();
             
             gx = Math.max(0, Math.min(width - 1, gx));
@@ -42,15 +39,16 @@ public class VoxelV1StateEncoder implements StateRepresentationEncoder {
             
             int channel = mapTypeToChannel(b.getType());
             if (channel >= 0 && channel < 10) {
-                tensor.putScalar(new int[]{0, channel, gz, gy, gx}, 1.0f);
+                flatTensor[tensorIndex(channel, gz, gy, gx, floors, height, width)] = 1.0f;
             }
         }
 
         if (selectedTypeOrdinal >= 0 && selectedTypeOrdinal <= 9) {
             double phaseValue = encodePhaseValue(1, 2, selectedTypeOrdinal + 1, 11);
-            fillChannel(tensor, 10, phaseValue, floors, height, width);
+            fillChannel(flatTensor, 10, (float) phaseValue, floors, height, width);
         }
 
+        INDArray tensor = Nd4j.create(flatTensor, new int[]{1, channels, floors, height, width}, 'c');
         return new EncodedState(tensor, config.stateEncodingSpec);
     }
 
@@ -59,14 +57,18 @@ public class VoxelV1StateEncoder implements StateRepresentationEncoder {
         return (double) value / (double) maxValue;
     }
 
-    private static void fillChannel(INDArray tensor, int channel, double value, int floors, int height, int width) {
+    private static void fillChannel(float[] flatTensor, int channel, float value, int floors, int height, int width) {
         for (int z = 0; z < floors; z++) {
             for (int y = 0; y < height; y++) {
                 for (int x = 0; x < width; x++) {
-                    tensor.putScalar(new int[]{0, channel, z, y, x}, (float)value);
+                    flatTensor[tensorIndex(channel, z, y, x, floors, height, width)] = value;
                 }
             }
         }
+    }
+
+    private static int tensorIndex(int c, int z, int y, int x, int floors, int height, int width) {
+        return (((c * floors) + z) * height + y) * width + x;
     }
 
     private static int mapTypeToChannel(BuildingType type) {

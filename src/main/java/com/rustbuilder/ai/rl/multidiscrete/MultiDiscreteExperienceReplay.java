@@ -22,7 +22,7 @@ public class MultiDiscreteExperienceReplay {
         public boolean isDone;
         public int step; 
         
-        // Snapshots of the grid at current and next state for real-time masking during trainBatch
+        // nextGrid is needed for real-time masking during trainBatch. grid is optional legacy context.
         public GridModel grid;
         public GridModel nextGrid;
         public boolean isSuccess;

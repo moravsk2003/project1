@@ -1,7 +1,7 @@
 {
-  "run_id": "run_1778011901552",
+  "run_id": "run_1778097755423",
   "model_name": "1",
-  "timestamp_start": "2026-05-05 23:12:12",
+  "timestamp_start": "2026-05-06 23:03:40",
 
   "state_encoder_name": "HYBRID_V3_VOXEL_GLOBAL",
   "state_encoder_version": "v3",

@@ -16,9 +16,6 @@ public class BucketedVoxelV2StateEncoder implements StateRepresentationEncoder {
     private final EncodingRuntimeConfig config;
     private final VoxelAggregationBuffer buffer;
     
-    private static final double START_X = 200;
-    private static final double START_Y = 200;
-    
     public BucketedVoxelV2StateEncoder(EncodingRuntimeConfig config) {
         this.config = config;
         this.buffer = new VoxelAggregationBuffer(
@@ -55,8 +52,8 @@ public class BucketedVoxelV2StateEncoder implements StateRepresentationEncoder {
         boolean hasAnyTc = false;
         
         for (BuildingBlock b : blocks) {
-            int gx = (int) Math.round((b.getX() - START_X) / GameConstants.TILE_SIZE);
-            int gy = (int) Math.round((b.getY() - START_Y) / GameConstants.TILE_SIZE);
+            int gx = (int) Math.round((b.getX() + GameConstants.HALF_TILE - GameConstants.GRID_ORIGIN_X) / GameConstants.TILE_SIZE);
+            int gy = (int) Math.round((b.getY() + GameConstants.HALF_TILE - GameConstants.GRID_ORIGIN_Y) / GameConstants.TILE_SIZE);
             int gz = b.getZ();
             
             if (config.coordinateEncodingMode == CoordinateEncodingMode.SKIP_OUT_OF_BOUNDS) {
@@ -103,7 +100,8 @@ public class BucketedVoxelV2StateEncoder implements StateRepresentationEncoder {
         diagnostics.outOfBoundsRatio = (encodedBlocks + skippedBlocks > 0) ? 
             (float) skippedBlocks / (encodedBlocks + skippedBlocks) : 0f;
             
-        INDArray tensor = Nd4j.zeros(1, 16, gridF, gridH, gridW);
+        int channels = 16;
+        float[] flatTensor = new float[channels * gridF * gridH * gridW];
         
         int maxBlocks = 0;
         int occupiedCount = 0;
@@ -130,30 +128,30 @@ public class BucketedVoxelV2StateEncoder implements StateRepresentationEncoder {
                         
                         for (int c = 0; c < 10; c++) {
                             if ((buffer.typeMasks[idx] & (1 << c)) != 0) {
-                                tensor.putScalar(new int[]{0, c, z, y, x}, 1.0);
+                                flatTensor[tensorIndex(c, z, y, x, gridF, gridH, gridW)] = 1.0f;
                             }
                         }
                         
-                        tensor.putScalar(new int[]{0, 10, z, y, x}, 1.0);
+                        flatTensor[tensorIndex(10, z, y, x, gridF, gridH, gridW)] = 1.0f;
                         diagnostics.occupancyBinaryNonzero++;
                         
                         double density = Math.min(count / 4.0, 1.0);
-                        tensor.putScalar(new int[]{0, 11, z, y, x}, density);
+                        flatTensor[tensorIndex(11, z, y, x, gridF, gridH, gridW)] = (float) density;
                         diagnostics.occupancyDensityNonzero++;
                         
                         if (buffer.structuralStabilityMax[idx] > 0) {
-                            tensor.putScalar(new int[]{0, 12, z, y, x}, buffer.structuralStabilityMax[idx]);
+                            flatTensor[tensorIndex(12, z, y, x, gridF, gridH, gridW)] = buffer.structuralStabilityMax[idx];
                             diagnostics.stabilityNonzero++;
                         }
                     }
                     
                     if (z == 0 || (idx >= gridW * gridH && buffer.blockCounts[idx - gridW * gridH] > 0)) {
-                        tensor.putScalar(new int[]{0, 13, z, y, x}, 1.0);
+                        flatTensor[tensorIndex(13, z, y, x, gridF, gridH, gridW)] = 1.0f;
                         diagnostics.supportBelowNonzero++;
                     }
                     
                     if (isNearStructure(x, y, z, gridW, gridH, gridF)) {
-                        tensor.putScalar(new int[]{0, 14, z, y, x}, 1.0);
+                        flatTensor[tensorIndex(14, z, y, x, gridF, gridH, gridW)] = 1.0f;
                         diagnostics.nearStructureNonzero++;
                     }
                     
@@ -161,7 +159,7 @@ public class BucketedVoxelV2StateEncoder implements StateRepresentationEncoder {
                         double dist = Math.sqrt(Math.pow(x - tcX, 2) + Math.pow(y - tcY, 2) + Math.pow(z - tcZ, 2));
                         double prox = 1.0 - Math.min(dist / maxDist, 1.0);
                         if (prox > 0) {
-                            tensor.putScalar(new int[]{0, 15, z, y, x}, prox);
+                            flatTensor[tensorIndex(15, z, y, x, gridF, gridH, gridW)] = (float) prox;
                             diagnostics.tcProximityNonzero++;
                         }
                     }
@@ -177,7 +175,12 @@ public class BucketedVoxelV2StateEncoder implements StateRepresentationEncoder {
         
         diagnostics.encoderTimeMs = System.currentTimeMillis() - startTime;
         
+        INDArray tensor = Nd4j.create(flatTensor, new int[]{1, channels, gridF, gridH, gridW}, 'c');
         return new EncodedState(tensor, null, null, null, config.stateEncodingSpec, diagnostics);
+    }
+
+    private static int tensorIndex(int c, int z, int y, int x, int floors, int height, int width) {
+        return (((c * floors) + z) * height + y) * width + x;
     }
     
     private boolean isNearStructure(int x, int y, int z, int w, int h, int f) {

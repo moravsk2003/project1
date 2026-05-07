@@ -3,23 +3,15 @@ package com.rustbuilder.controller;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingTier;
 import com.rustbuilder.model.core.BuildingType;
-import com.rustbuilder.model.structure.Door;
 import com.rustbuilder.model.core.DoorType;
-import com.rustbuilder.model.structure.Floor;
-import com.rustbuilder.model.structure.Foundation;
 import com.rustbuilder.model.GridModel;
-import com.rustbuilder.model.deployable.LootRoom;
 import com.rustbuilder.model.core.Orientation;
 import com.rustbuilder.model.core.ResourceType;
-import com.rustbuilder.model.deployable.ToolCupboard;
-import com.rustbuilder.model.structure.TriangleFloor;
-import com.rustbuilder.model.structure.TriangleFoundation;
-import com.rustbuilder.model.structure.Wall;
-import com.rustbuilder.model.deployable.Workbench;
 import com.rustbuilder.service.evaluator.HouseEvaluator;
 import com.rustbuilder.service.physics.SnappingService;
 import com.rustbuilder.service.physics.SnappingService.SnapResult;
 import com.rustbuilder.ui.GameCanvas;
+import com.rustbuilder.util.BlockFactory;
 import com.rustbuilder.util.BuildingTypeUtils;
 import com.rustbuilder.config.GameConstants;
 import java.util.HashMap;
@@ -32,8 +24,10 @@ public class GameController {
     private final GridModel gridModel;
     private final SnappingService snappingService;
     private final GameCanvas gameCanvas;
+    private static final String DELETE_TOOL = "DELETE";
 
-    private String selectedTool = "FOUNDATION";
+    private String selectedTool = BuildingTypeUtils.toToolId(BuildingType.FOUNDATION);
+    private BuildingType selectedBuildingType = BuildingType.FOUNDATION;
     private BuildingTier selectedTier = BuildingTier.STONE;
     private DoorType selectedDoorType = DoorType.SHEET_METAL;
     private final HouseEvaluator houseEvaluator = new HouseEvaluator();
@@ -102,7 +96,7 @@ public class GameController {
     }
 
     public void handleMouseMove(double mouseX, double mouseY) {
-        if ("DELETE".equals(selectedTool)) {
+        if (isDeleteTool()) {
             gameCanvas.setGhost(0, 0, 0, null, false, null, null);
             gameCanvas.draw();
             return;
@@ -120,9 +114,9 @@ public class GameController {
         this.ghostOrientation = result.orientation;
 
         // Check Collision
-        BuildingBlock tempBlock = createBlock(ghostX, ghostY, currentFloor, ghostRotation, ghostOrientation, selectedTool);
+        BuildingBlock tempBlock = createBlock(ghostX, ghostY, currentFloor, ghostRotation, ghostOrientation, selectedBuildingType);
         
-        if (tempBlock != null && (isWallType(selectedTool) || "DOOR".equals(selectedTool))) {
+        if (tempBlock != null && shouldApplyWallRotation(selectedBuildingType)) {
             tempBlock.setRotation(ghostRotation);
         }
         this.ghostValid = result.valid && tempBlock != null && gridModel.canPlace(tempBlock);
@@ -144,7 +138,7 @@ public class GameController {
 
     public void handleMouseClick(double mouseX, double mouseY, boolean isPrimaryButton) {
         if (isPrimaryButton) {
-            if ("DELETE".equals(selectedTool)) {
+            if (isDeleteTool()) {
                 deleteBlockAt(mouseX, mouseY);
             } else {
                 if (!placeBlock()) {
@@ -205,10 +199,10 @@ public class GameController {
         if (!ghostValid) {
             return false;
         }
-        BuildingBlock newBlock = createBlock(ghostX, ghostY, currentFloor, ghostRotation, ghostOrientation, selectedTool);
+        BuildingBlock newBlock = createBlock(ghostX, ghostY, currentFloor, ghostRotation, ghostOrientation, selectedBuildingType);
 
         if (newBlock != null) {
-            if (isWallType(selectedTool) || "DOOR".equals(selectedTool)) {
+            if (shouldApplyWallRotation(selectedBuildingType)) {
                 newBlock.setRotation(ghostRotation);
             }
 
@@ -231,40 +225,17 @@ public class GameController {
         return false;
     }
 
-    private BuildingBlock createBlock(double x, double y, int z, double rotation, Orientation orientation, String tool) {
-        // Prevent foundations on upper floors
-        if (z > 0 && ("FOUNDATION".equals(tool) || "TRIANGLE".equals(tool))) {
+    private BuildingBlock createBlock(double x, double y, int z, double rotation, Orientation orientation, BuildingType type) {
+        if (type == null) {
             return null;
         }
 
-        BuildingBlock block = null;
-        if ("FOUNDATION".equals(tool)) {
-            block = new Foundation(x, y, z, rotation);
-        } else if ("TRIANGLE".equals(tool)) {
-            block = new TriangleFoundation(x, y, z, rotation);
-        } else if ("WALL".equals(tool)) {
-            block = new Wall(x, y, z, orientation);
-        } else if ("DOOR_FRAME".equals(tool)) {
-            Wall doorWall = new Wall(x, y, z, orientation);
-            doorWall.setType(BuildingType.DOORWAY);
-            doorWall.setDoorType(selectedDoorType);
-            block = doorWall;
-        } else if ("WINDOW_FRAME".equals(tool)) {
-            block = new Wall(x, y, z, orientation);
-            block.setType(BuildingType.WINDOW_FRAME);
-        } else if ("FLOOR".equals(tool)) {
-            block = new Floor(x, y, z, rotation);
-        } else if ("TRIANGLE_FLOOR".equals(tool)) {
-            block = new TriangleFloor(x, y, z, rotation);
-        } else if ("TC".equals(tool)) {
-            block = new ToolCupboard(x, y, z, rotation);
-        } else if ("WORKBENCH".equals(tool)) {
-            block = new Workbench(x, y, z, rotation);
-        } else if ("LOOT_ROOM".equals(tool)) {
-            block = new LootRoom(x, y, z, rotation);
-        } else if ("DOOR".equals(tool)) {
-            block = new Door(x, y, z, orientation, selectedDoorType);
+        // Prevent foundations on upper floors
+        if (z > 0 && BuildingTypeUtils.isFoundation(type)) {
+            return null;
         }
+
+        BuildingBlock block = BlockFactory.create(type, x, y, z, rotation, orientation, selectedDoorType);
         
         if (block != null) {
             if (!BuildingTypeUtils.isFurniture(block.getType()) && block.getType() != BuildingType.DOOR) {
@@ -275,12 +246,27 @@ public class GameController {
         return block;
     }
 
-    private boolean isWallType(String tool) {
-        return BuildingTypeUtils.isWallTool(tool);
+    private boolean shouldApplyWallRotation(BuildingType type) {
+        return BuildingTypeUtils.isWall(type) || type == BuildingType.DOOR;
     }
 
     public void setSelectedTool(String tool) {
         this.selectedTool = tool;
+        this.selectedBuildingType = BuildingTypeUtils.fromToolId(tool);
+    }
+
+    public void setSelectedTool(BuildingType type) {
+        this.selectedBuildingType = type;
+        this.selectedTool = BuildingTypeUtils.toToolId(type);
+    }
+
+    public void selectDeleteTool() {
+        this.selectedTool = DELETE_TOOL;
+        this.selectedBuildingType = null;
+    }
+
+    private boolean isDeleteTool() {
+        return DELETE_TOOL.equals(selectedTool);
     }
 
     public void moveFloorUp() {
