@@ -56,8 +56,6 @@ public class RLGeneratorDialog {
     private RLTrainingService rlService;
     private String currentModelName;
     private boolean trainingRunning = false;
-    private String lastShownSupervisorSummary = "";
-    private String lastShownPendingSupervisorSummary = "";
 
     /** API-ключ зберігається в пам'яті до закриття програми. */
     private static String savedApiKey = "";
@@ -84,6 +82,8 @@ public class RLGeneratorDialog {
     private Spinner<Integer> stepsSpinner;
     private Spinner<Integer> epochsSpinner;
     private TextField trainingTimeLimitField;
+    private ComboBox<RLTrainingService.TrainingLoadProfile> loadProfileComboBox;
+    private Label loadProfileLabel;
     private CheckBox supervisorEnabledCheck;
     private Spinner<Integer> supervisorIntervalSpinner;
     private PasswordField supervisorApiKeyField;
@@ -96,6 +96,7 @@ public class RLGeneratorDialog {
     private ProgressBar progressBar;
     private Label statusLabel;
     private TextArea diagnosticLogArea;
+    private TextArea llmLogArea;
     
     private Button trainButton;
     private Button stopButton;
@@ -155,6 +156,8 @@ public class RLGeneratorDialog {
             new Separator(),
             createTrainingSection(),
             new Separator(),
+            createLoadControlSection(),
+            new Separator(),
             createStatsSection(),
             new Separator(),
             createSummarySection(),
@@ -179,7 +182,9 @@ public class RLGeneratorDialog {
         VBox llmBox = new VBox(10);
         llmBox.setPadding(new Insets(14));
         llmBox.getChildren().addAll(
-            createSupervisorSection()
+            createSupervisorSection(),
+            new Separator(),
+            createLlmLogSection()
         );
         llmTab.setContent(new ScrollPane(llmBox));
 
@@ -197,6 +202,7 @@ public class RLGeneratorDialog {
         VBox.setVgrow(tabPane, Priority.ALWAYS);
         Scene scene = new Scene(mainContent, 550, 800);
         dialogStage.setScene(scene);
+        this.rlService.setSupervisorLogCallback(this::appendLlmStatus);
         
         dialogStage.setOnCloseRequest(e -> cleanup());
     }
@@ -339,6 +345,32 @@ public class RLGeneratorDialog {
         return box;
     }
 
+    private VBox createLoadControlSection() {
+        VBox box = card();
+        box.getChildren().add(sectionTitle("Training Load"));
+
+        HBox profileRow = new HBox(8);
+        profileRow.setAlignment(Pos.CENTER_LEFT);
+
+        Label profileLabel = bodyLabel("Load profile:");
+        HintUtils.attachHint(profileLabel, "Training load", "Controls how aggressively RL training uses CPU/GPU time. Can be changed while training is running.");
+
+        loadProfileComboBox = new ComboBox<>();
+        loadProfileComboBox.getItems().setAll(RLTrainingService.TrainingLoadProfile.values());
+        loadProfileComboBox.setValue(rlService.getTrainingLoadProfile());
+        loadProfileComboBox.setPrefWidth(190);
+        HintUtils.attachHint(loadProfileComboBox, "Training load", "Low adds more pauses for games/heavy apps. Maximum removes throttling for overnight training.");
+
+        loadProfileLabel = valueLabel(loadProfileText(loadProfileComboBox.getValue()));
+        HBox.setHgrow(loadProfileLabel, Priority.ALWAYS);
+
+        loadProfileComboBox.setOnAction(e -> applyLoadProfileFromUI(true));
+
+        profileRow.getChildren().addAll(profileLabel, loadProfileComboBox);
+        box.getChildren().addAll(profileRow, loadProfileLabel);
+        return box;
+    }
+
     private VBox createExperimentalSection() {
         VBox box = card();
         box.getChildren().add(sectionTitle("🧪  Experimental Settings"));
@@ -455,7 +487,7 @@ public class RLGeneratorDialog {
         triggerLlmButton.setOnAction(e -> {
             supervisorEnabledCheck.setSelected(true);
             applySupervisorConfigFromUI(currentModelName == null ? "auto_run" : currentModelName);
-            rlService.getLlmOrchestrator().forceCheck(this::appendStatus);
+            rlService.getLlmOrchestrator().forceCheck(this::appendLlmStatus, this::onTrainingProgress);
         });
 
         supervisorApplyPendingButton = styledBtn("Apply Pending", "#16a085");
@@ -466,6 +498,20 @@ public class RLGeneratorDialog {
         llmActionRow.getChildren().addAll(triggerLlmButton, supervisorApplyPendingButton);
 
         box.getChildren().addAll(supervisorEnabledCheck, intervalRow, modeRow, apiKeyRow, commandRow, llmActionRow);
+        return box;
+    }
+
+    private VBox createLlmLogSection() {
+        VBox box = card();
+        box.getChildren().add(sectionTitle("LLM Log"));
+
+        llmLogArea = new TextArea();
+        llmLogArea.setEditable(false);
+        llmLogArea.setWrapText(true);
+        llmLogArea.setPrefHeight(260);
+        llmLogArea.setStyle("-fx-font-family: 'Consolas', monospace; -fx-font-size: 11px; -fx-control-inner-background: #151515; -fx-text-fill: #d4d4d4;");
+
+        box.getChildren().add(llmLogArea);
         return box;
     }
 
@@ -587,6 +633,7 @@ public class RLGeneratorDialog {
         diagnosticButton.setDisable(true);
         statusLabel.setText("Status: Preparing...");
         diagnosticLogArea.clear();
+        applyLoadProfileFromUI(false);
 
         int ep = episodesSpinner.getValue();
         int steps = stepsSpinner.getValue();
@@ -643,6 +690,37 @@ public class RLGeneratorDialog {
         });
         trainingThread.setDaemon(true);
         trainingThread.start();
+    }
+
+    private void applyLoadProfileFromUI(boolean announce) {
+        if (loadProfileComboBox == null) {
+            return;
+        }
+
+        RLTrainingService.TrainingLoadProfile profile = loadProfileComboBox.getValue();
+        if (profile == null) {
+            profile = RLTrainingService.TrainingLoadProfile.MAXIMUM;
+            loadProfileComboBox.setValue(profile);
+        }
+
+        rlService.setTrainingLoadProfile(profile);
+        if (loadProfileLabel != null) {
+            loadProfileLabel.setText(loadProfileText(profile));
+        }
+        if (announce) {
+            appendStatus("Training load profile: " + profile.getDisplayName());
+        }
+    }
+
+    private String loadProfileText(RLTrainingService.TrainingLoadProfile profile) {
+        RLTrainingService.TrainingLoadProfile safeProfile = profile != null
+            ? profile
+            : RLTrainingService.TrainingLoadProfile.MAXIMUM;
+        if (safeProfile == RLTrainingService.TrainingLoadProfile.MAXIMUM) {
+            return "Target: no throttle; best for overnight runs.";
+        }
+        return String.format("Target: about %d%% active training time; pauses between episodes.",
+            safeProfile.getTargetPercent());
     }
 
     private long parseTrainingDurationMs() {
@@ -725,9 +803,9 @@ public class RLGeneratorDialog {
         installSupervisorProvider(config);
 
         if (config.isEnabled()) {
-            appendStatus(String.format("LLM Supervisor enabled: every %d episodes.", config.getCallIntervalEpisodes()));
+            appendLlmStatus(String.format("LLM Supervisor enabled: every %d episodes.", config.getCallIntervalEpisodes()));
         } else {
-            appendStatus(String.format("LLM Supervisor disabled (default interval %d episodes).", config.getCallIntervalEpisodes()));
+            appendLlmStatus(String.format("LLM Supervisor disabled (default interval %d episodes).", config.getCallIntervalEpisodes()));
         }
     }
 
@@ -739,12 +817,12 @@ public class RLGeneratorDialog {
                     config.getExternalCommand(),
                     rlService::getRewardConfig,
                     environmentOverrides));
-                appendStatus(environmentOverrides.isEmpty()
+                appendLlmStatus(environmentOverrides.isEmpty()
                     ? "LLM Supervisor command connected."
                     : "LLM Supervisor command connected with UI API key.");
             } catch (IllegalArgumentException ex) {
                 rlService.setLlmSupervisor(new NoOpLlmSupervisor());
-                appendStatus("LLM Supervisor command rejected: " + ex.getMessage());
+                appendLlmStatus("LLM Supervisor command rejected: " + ex.getMessage());
             }
         } else {
             rlService.setLlmSupervisor(new NoOpLlmSupervisor());
@@ -766,10 +844,10 @@ public class RLGeneratorDialog {
 
     private void applyPendingSupervisorDecision() {
         if (rlService.applyPendingSupervisorDecision()) {
-            appendStatus("Applied pending LLM supervisor decision.");
+            appendLlmStatus("Applied pending LLM supervisor decision.");
             updateSummaryUI();
         } else {
-            appendStatus("No pending LLM supervisor decision to apply.");
+            appendLlmStatus("No pending LLM supervisor decision to apply.");
         }
     }
 
@@ -777,6 +855,9 @@ public class RLGeneratorDialog {
         Platform.runLater(() -> {
             String statusText = String.format("Status: Training Epoch %d/%d, Ep %d/%d",
                 m.currentEpoch, m.totalEpochs, m.currentEpisodeInEpoch, m.totalEpisodesPerEpoch);
+            if (rlService != null && rlService.getTrainingLoadProfile() != null) {
+                statusText += " | Load " + rlService.getTrainingLoadProfile().getTargetPercent() + "%";
+            }
             if (m.trainingTimeLimitEnabled) {
                 statusText += " | Left " + formatDuration(m.trainingRemainingMs);
             }
@@ -817,20 +898,6 @@ public class RLGeneratorDialog {
             
             diagnosticLogArea.setText(sb.toString() + diagnosticLogArea.getText());
 
-            String supervisorSummary = rlService.getLastSupervisorDecisionSummary();
-            if (supervisorSummary != null && !supervisorSummary.isBlank()
-                    && !supervisorSummary.equals(lastShownSupervisorSummary)) {
-                lastShownSupervisorSummary = supervisorSummary;
-                diagnosticLogArea.setText("[SUPERVISOR] " + supervisorSummary + "\n" + diagnosticLogArea.getText());
-            }
-
-            String pendingSummary = rlService.getPendingSupervisorDecisionSummary();
-            if (pendingSummary != null && !pendingSummary.isBlank()
-                    && !pendingSummary.equals(lastShownPendingSupervisorSummary)) {
-                lastShownPendingSupervisorSummary = pendingSummary;
-                diagnosticLogArea.setText("[SUPERVISOR PENDING] " + pendingSummary + "\n" + diagnosticLogArea.getText());
-            }
-            
             updateSummaryUI(m);
         });
     }
@@ -1133,6 +1200,19 @@ public class RLGeneratorDialog {
         });
     }
 
+    public void appendLlmStatus(String text) {
+        Platform.runLater(() -> {
+            if (llmLogArea == null) {
+                return;
+            }
+            llmLogArea.appendText(String.format("[%02d:%02d:%02d] %s%n",
+                java.time.LocalTime.now().getHour(),
+                java.time.LocalTime.now().getMinute(),
+                java.time.LocalTime.now().getSecond(),
+                text));
+        });
+    }
+
     public void reportMode() {
         boolean learnsMD = true;
         
@@ -1143,6 +1223,9 @@ public class RLGeneratorDialog {
     }
 
     public void cleanup() {
+        if (rlService != null) {
+            rlService.setSupervisorLogCallback(null);
+        }
         if (trainingRunning) {
             stopTraining();
         }

@@ -53,6 +53,46 @@ public class RLTrainingService {
     private StateRepresentationEncoder stateEncoder;
     private EncodingRuntimeConfig activeConfig;
     public enum EncoderMode { V1, V2, V3 }
+
+    public enum TrainingLoadProfile {
+        LOW("Low (heavy apps)", 0.25, Thread.MIN_PRIORITY),
+        MEDIUM("Medium (background)", 0.50, Math.max(Thread.MIN_PRIORITY, Thread.NORM_PRIORITY - 2)),
+        HIGH("High (light use)", 0.75, Thread.NORM_PRIORITY),
+        MAXIMUM("Maximum (night)", 1.0, Thread.MAX_PRIORITY);
+
+        private final String displayName;
+        private final double activeRatio;
+        private final int threadPriority;
+
+        TrainingLoadProfile(String displayName, double activeRatio, int threadPriority) {
+            this.displayName = displayName;
+            this.activeRatio = activeRatio;
+            this.threadPriority = threadPriority;
+        }
+
+        public String getDisplayName() {
+            return displayName;
+        }
+
+        public double getActiveRatio() {
+            return activeRatio;
+        }
+
+        public int getTargetPercent() {
+            return (int) Math.round(activeRatio * 100.0);
+        }
+
+        private int getThreadPriority() {
+            return threadPriority;
+        }
+
+        @Override
+        public String toString() {
+            return displayName;
+        }
+    }
+
+    private volatile TrainingLoadProfile trainingLoadProfile = TrainingLoadProfile.MAXIMUM;
     private EncoderMode encoderMode = EncoderMode.V3;
 
     /**
@@ -307,6 +347,8 @@ public class RLTrainingService {
         logger.init();
 
         try {
+            TrainingLoadProfile lastAppliedLoadProfile = null;
+
             for (int epoch = 0; epoch < epochs; epoch++) {
                 if (stopRequested || shouldStopForTrainingTimeLimit()) break;
 
@@ -329,6 +371,13 @@ public class RLTrainingService {
 
             for (int ep = 0; ep < episodes; ep++) {
                 if (stopRequested || shouldStopForTrainingTimeLimit()) break;
+                TrainingLoadProfile activeLoadProfile = trainingLoadProfile;
+                if (activeLoadProfile != lastAppliedLoadProfile) {
+                    applyTrainingThreadPriority(activeLoadProfile);
+                    lastAppliedLoadProfile = activeLoadProfile;
+                }
+
+                long episodeWorkStartNs = System.nanoTime();
                 EpisodeResult result;
                 // Set epsilon BEFORE the episode to ensure correct exploration rate
                 if (multiDiscreteNeuralProvider != null) {
@@ -407,6 +456,7 @@ public class RLTrainingService {
                 }
 
                 if (result.finalEvalReward > epochBestEpScore) epochBestEpScore = result.finalEvalReward;
+                throttleTrainingLoad(System.nanoTime() - episodeWorkStartNs, activeLoadProfile);
                 if (shouldStopForTrainingTimeLimit()) break;
             }
 
@@ -490,6 +540,37 @@ public class RLTrainingService {
         return Math.max(0L, trainingDeadlineMs - System.currentTimeMillis());
     }
 
+    private void applyTrainingThreadPriority(TrainingLoadProfile profile) {
+        TrainingLoadProfile safeProfile = profile != null ? profile : TrainingLoadProfile.MAXIMUM;
+        try {
+            Thread.currentThread().setPriority(safeProfile.getThreadPriority());
+        } catch (SecurityException ignored) {
+            // Some launchers may disallow thread priority changes; throttling still works.
+        }
+    }
+
+    private void throttleTrainingLoad(long activeNs, TrainingLoadProfile profile) {
+        TrainingLoadProfile safeProfile = profile != null ? profile : TrainingLoadProfile.MAXIMUM;
+        double activeRatio = safeProfile.getActiveRatio();
+        if (activeRatio >= 0.999 || activeNs <= 0L) {
+            return;
+        }
+
+        long activeMs = Math.max(1L, java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(activeNs));
+        long sleepMs = Math.round(activeMs * ((1.0 - activeRatio) / activeRatio));
+        while (sleepMs > 0L && !stopRequested && trainingLoadProfile == safeProfile) {
+            long chunkMs = Math.min(sleepMs, 250L);
+            try {
+                Thread.sleep(chunkMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                stopRequested = true;
+                return;
+            }
+            sleepMs -= chunkMs;
+        }
+    }
+
     private void maybeInvokeSupervisor(String modelName, TrainingMetrics metrics, EpisodeResult result) {
         LlmSupervisorConfig config = supervisorConfig;
         if (config == null || !config.isEnabled() || metrics == null) {
@@ -529,6 +610,7 @@ public class RLTrainingService {
                 && isManuallyApplicable(decision)) {
             pendingSupervisorDecision = decision;
             pendingSupervisorDecisionSummary = formatSupervisorDecisionSummary(observation, decision, false, config);
+            emitSupervisorLog("[PENDING] " + pendingSupervisorDecisionSummary);
         } else if (config.getApplyMode() == LlmSupervisorApplyMode.LOG_ONLY) {
             clearPendingSupervisorDecision();
         }
@@ -984,6 +1066,16 @@ public class RLTrainingService {
 
     public boolean isTrainingRunning() {
         return trainingRunning;
+    }
+
+    public TrainingLoadProfile getTrainingLoadProfile() {
+        return trainingLoadProfile;
+    }
+
+    public void setTrainingLoadProfile(TrainingLoadProfile trainingLoadProfile) {
+        this.trainingLoadProfile = trainingLoadProfile != null
+            ? trainingLoadProfile
+            : TrainingLoadProfile.MAXIMUM;
     }
 
     public com.rustbuilder.ai.rl.env.spec.EncodingRuntimeConfig getRuntimeConfig() {
