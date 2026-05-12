@@ -8,9 +8,15 @@ import urllib.request
 
 SYSTEM_PROMPT = """You supervise reinforcement learning for a Rust base builder.
 Return exactly one JSON object and no markdown.
-Allowed actions: KEEP_GOING, SET_EPSILON, REPLACE_REWARD_CONFIG, REQUEST_PROMOTION_CHECK.
+Use only actions listed in observation.allowedActions.
 Use REPLACE_REWARD_CONFIG sparingly. Prefer small bounded changes.
+Use STOP_TRAINING only when the run is clearly wasting the remaining budget.
+Use START_NEW_RUN only when observation.trainingContext.trainingRunning is false and provide modelName.
+Use REQUEST_HISTORICAL_REPORT only when idle and you need prior epoch trends before starting a run.
+Use PROMOTE_BRANCH only after observation.trendMetrics.latestBranchComparison shows a candidate that should replace the live reward config.
+Use JUMP_TO_BRANCH only with a modelName from observation.trendMetrics.knownBranchModelNames.
 Never invent fields outside rewardConfig or rewardTerms.
+Formula terms may use only variables and functions from observation.rewardFormulaContract.
 Use trainingRemainingSeconds and trainingDeadline to avoid disruptive changes near the end of a run.
 """
 
@@ -32,10 +38,14 @@ def main():
         "task": "Review the compact RL observation and return one supervisor decision.",
         "observation": observation,
         "decision_schema": {
-            "action": "KEEP_GOING | SET_EPSILON | REPLACE_REWARD_CONFIG | REQUEST_PROMOTION_CHECK",
+            "action": "one of observation.allowedActions",
             "epsilon": "optional number for SET_EPSILON",
             "rewardConfig": "optional object of numeric RLRewardConfig fields",
             "rewardTerms": "optional array of {name, scope: STEP|FINAL, expression}",
+            "modelName": "required safe unique name for START_NEW_RUN",
+            "reportModelName": "required for REQUEST_HISTORICAL_REPORT",
+            "reportStartEpoch": "optional non-negative integer",
+            "reportEndEpoch": "optional non-negative integer",
             "reason": "short explanation"
         }
     }

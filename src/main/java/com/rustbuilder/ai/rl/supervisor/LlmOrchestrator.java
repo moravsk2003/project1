@@ -15,6 +15,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class LlmOrchestrator {
 
     private final RLTrainingService rlService;
+    private final SupervisorDecisionValidator decisionValidator = new SupervisorDecisionValidator();
     private final AtomicBoolean running = new AtomicBoolean(false);
     private Thread orchestratorThread;
     private volatile java.util.function.Consumer<String> statusCallback;
@@ -67,10 +68,9 @@ public class LlmOrchestrator {
                     cb.accept("Orchestrator: training is already running.");
                     return;
                 }
-                TrainingMetrics metrics = rlService.getMetrics();
-                SupervisorObservation obs = new RLTrainingAnalyzer().summarize("idle_check", metrics, null, rlService.getRewardConfig());
+                SupervisorObservation obs = rlService.createIdleSupervisorObservation("idle_check");
                 SupervisorDecision decision = askLlm(config, obs);
-                processDecision(decision, obs, config, cb);
+                processDecision(decision, obs, config, cb, 0);
             } catch (Exception e) {
                 cb.accept("[ORCHESTRATOR] Error: " + e.getMessage());
             }
@@ -84,18 +84,16 @@ public class LlmOrchestrator {
             try {
                 LlmSupervisorConfig config = rlService.getSupervisorConfig();
                 if (config != null && config.isEnabled()) {
-                    TrainingMetrics metrics = rlService.getMetrics();
-                    
                     // If training is NOT currently running
                     if (!rlService.isTrainingRunning()) {
                         // Create a special observation indicating idle state
-                        SupervisorObservation obs = new RLTrainingAnalyzer().summarize("idle_check", metrics, null, rlService.getRewardConfig());
+                        SupervisorObservation obs = rlService.createIdleSupervisorObservation("idle_check");
                         
                         SupervisorDecision decision = askLlm(config, obs);
                         processDecision(decision, obs, config, msg -> {
                             // RunLoop doesn't have a UI callback, but we can log via the status callback if set
                             if (this.statusCallback != null) this.statusCallback.accept(msg);
-                        });
+                        }, 0);
                     }
                 }
                 
@@ -117,15 +115,22 @@ public class LlmOrchestrator {
 
     private SupervisorDecision askLlm(LlmSupervisorConfig config, SupervisorObservation obs) {
         try {
-            LlmSupervisor supervisor = new ExternalCommandLlmSupervisor(config.getExternalCommand(), () -> rlService.getRewardConfig());
-            return supervisor.review(obs);
+            LlmSupervisor supervisor = new ExternalCommandLlmSupervisor(
+                config.getExternalCommand(),
+                () -> rlService.getRewardConfig(),
+                createSupervisorEnvironmentOverrides(config));
+            return decisionValidator.validate(supervisor.review(obs), config, rlService.getRewardConfig());
         } catch (Exception e) {
             rlService.setLastSupervisorDecision(null, "Orchestrator Error: " + e.getMessage());
             return null;
         }
     }
 
-    private void processDecision(SupervisorDecision decision, SupervisorObservation originalObs, LlmSupervisorConfig config, java.util.function.Consumer<String> cb) {
+    private void processDecision(SupervisorDecision decision,
+                                 SupervisorObservation originalObs,
+                                 LlmSupervisorConfig config,
+                                 java.util.function.Consumer<String> cb,
+                                 int depth) {
         if (decision == null) {
             cb.accept("[ORCHESTRATOR] LLM returned no decision (check API key / command).");
             rlService.setLastSupervisorDecision(null, "Orchestrator: LLM returned no decision or error occurred.");
@@ -136,12 +141,38 @@ public class LlmOrchestrator {
         cb.accept(msg);
         rlService.setLastSupervisorDecision(decision, msg);
 
-        if (decision.getAction() == SupervisorAction.START_NEW_RUN) {
+        if (decision.getAction() == SupervisorAction.START_NEW_RUN || decision.getAction() == SupervisorAction.RESTART_TRAINING) {
+            if (config.getApplyMode() != LlmSupervisorApplyMode.AUTO_APPLY) {
+                cb.accept("[ORCHESTRATOR] Start-run decision recorded but not applied because apply mode is " + config.getApplyMode() + ".");
+                return;
+            }
             String modelName = decision.getProposedModelName();
             if (modelName == null || modelName.isBlank()) modelName = "auto_" + System.currentTimeMillis();
             cb.accept("[ORCHESTRATOR] Starting new run: " + modelName.trim());
             startNewRun(decision);
+        } else if (decision.getAction() == SupervisorAction.PROMOTE_BRANCH) {
+            if (config.getApplyMode() != LlmSupervisorApplyMode.AUTO_APPLY) {
+                cb.accept("[ORCHESTRATOR] Promote-branch decision recorded but not applied because apply mode is " + config.getApplyMode() + ".");
+                return;
+            }
+            boolean promoted = rlService.promoteLatestBranch();
+            cb.accept(promoted
+                ? "[ORCHESTRATOR] Candidate branch promoted."
+                : "[ORCHESTRATOR] No candidate branch available to promote.");
+        } else if (decision.getAction() == SupervisorAction.JUMP_TO_BRANCH) {
+            if (config.getApplyMode() != LlmSupervisorApplyMode.AUTO_APPLY) {
+                cb.accept("[ORCHESTRATOR] Branch-jump decision recorded but not applied because apply mode is " + config.getApplyMode() + ".");
+                return;
+            }
+            boolean jumped = rlService.requestBranchJump(decision.getProposedModelName(), decision.getReason());
+            cb.accept(jumped
+                ? "[ORCHESTRATOR] Branch jump queued/applied: " + decision.getProposedModelName()
+                : "[ORCHESTRATOR] Branch jump rejected: " + decision.getProposedModelName());
         } else if (decision.getAction() == SupervisorAction.REQUEST_HISTORICAL_REPORT) {
+            if (depth >= 1) {
+                cb.accept("[ORCHESTRATOR] Historical report already provided; ignoring repeated report request.");
+                return;
+            }
             cb.accept("[ORCHESTRATOR] LLM requested historical report for " + decision.getReportModelName());
             String report = generateHistoricalReport(decision.getReportModelName(), decision.getReportStartEpoch(), decision.getReportEndEpoch());
             
@@ -157,12 +188,25 @@ public class LlmOrchestrator {
                 originalObs.trainingStartTimeIso, originalObs.currentTimeIso, originalObs.trainingDeadlineIso,
                 originalObs.trainingElapsedMs, originalObs.trainingRemainingMs, originalObs.trainingTimeLimitEnabled,
                 originalObs.trainingTimeLimitReached, originalObs.invalidActionReasons, originalObs.actionTypeCounts,
-                originalObs.currentRewardConfig, report
+                originalObs.currentRewardConfig, originalObs.trainingContext, originalObs.trendMetrics, report
             );
             
             SupervisorDecision nextDecision = askLlm(config, newObs);
-            processDecision(nextDecision, newObs, config, cb);
+            processDecision(nextDecision, newObs, config, cb, depth + 1);
         }
+    }
+
+    private java.util.Map<String, String> createSupervisorEnvironmentOverrides(LlmSupervisorConfig config) {
+        String apiKey = config != null ? config.getApiKey() : "";
+        if (apiKey.isBlank()) {
+            return java.util.Map.of();
+        }
+        java.util.Map<String, String> environment = new java.util.HashMap<>();
+        environment.put("GEMINI_API_KEY", apiKey);
+        environment.put("GOOGLE_API_KEY", apiKey);
+        environment.put("LLM_API_KEY", apiKey);
+        environment.put("OPENAI_API_KEY", apiKey);
+        return environment;
     }
 
     private String generateHistoricalReport(String modelName, Integer startEpoch, Integer endEpoch) {

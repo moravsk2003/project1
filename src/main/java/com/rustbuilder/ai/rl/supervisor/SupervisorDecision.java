@@ -68,6 +68,14 @@ public final class SupervisorDecision {
         return new SupervisorDecision(SupervisorAction.REQUEST_HISTORICAL_REPORT, null, null, null, null, reportModelName, reportStartEpoch, reportEndEpoch, reason);
     }
 
+    public static SupervisorDecision promoteBranch(String reason) {
+        return new SupervisorDecision(SupervisorAction.PROMOTE_BRANCH, null, null, null, null, null, null, null, reason);
+    }
+
+    public static SupervisorDecision jumpToBranch(String modelName, String reason) {
+        return new SupervisorDecision(SupervisorAction.JUMP_TO_BRANCH, null, null, null, modelName, null, null, null, reason);
+    }
+
     public SupervisorAction getAction() {
         return action;
     }

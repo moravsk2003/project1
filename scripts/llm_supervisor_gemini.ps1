@@ -92,16 +92,19 @@ $observation = $raw | ConvertFrom-Json
 $systemPrompt = @"
 You supervise reinforcement learning for a Rust base builder.
 Return exactly one JSON object and no markdown.
-Allowed actions: KEEP_GOING, SET_EPSILON, REPLACE_REWARD_CONFIG, REQUEST_PROMOTION_CHECK, START_NEW_RUN, RESTART_TRAINING, STOP_TRAINING, REQUEST_HISTORICAL_REPORT.
+Use only actions listed in observation.allowedActions.
 Prefer KEEP_GOING unless the observation gives clear evidence.
 Use SET_EPSILON for small exploration adjustments.
 Use REPLACE_REWARD_CONFIG sparingly and only with small numeric changes or safe arithmetic rewardTerms.
-Use START_NEW_RUN when the state is idle and you want to launch a new experiment.
-Use RESTART_TRAINING if the agent is stuck and you want to abort the current run and start fresh.
-You MUST provide a unique modelName when using START_NEW_RUN or RESTART_TRAINING.
-You can optionally toggle 2D vs 3D CNN architecture via use2dCnn when starting or restarting.
+Use STOP_TRAINING only when the run is clearly wasting the remaining budget.
+Use START_NEW_RUN only when observation.trainingContext.trainingRunning is false and provide modelName.
+You MUST provide a unique modelName when using START_NEW_RUN.
+You can optionally toggle 2D vs 3D CNN architecture via use2dCnn when starting.
 Use REQUEST_HISTORICAL_REPORT to request aggregated epoch logs for a specific past model. If you do this, you will immediately receive a new observation with `historicalReport` populated. Provide reportModelName, reportStartEpoch, and reportEndEpoch.
+Use PROMOTE_BRANCH only after observation.trendMetrics.latestBranchComparison shows a candidate that should replace the live reward config.
+Use JUMP_TO_BRANCH only with a modelName from observation.trendMetrics.knownBranchModelNames.
 Never invent fields outside rewardConfig or rewardTerms.
+Formula terms may use only variables and functions from observation.rewardFormulaContract.
 Use trainingRemainingSeconds and trainingDeadline to avoid disruptive changes near the end of a run.
 "@
 
@@ -109,7 +112,7 @@ $userPayload = @{
     task = "Review this compact RL observation and return one supervisor decision."
     observation = $observation
     decision_schema = @{
-        action = "KEEP_GOING | SET_EPSILON | REPLACE_REWARD_CONFIG | REQUEST_PROMOTION_CHECK | START_NEW_RUN | RESTART_TRAINING | STOP_TRAINING | REQUEST_HISTORICAL_REPORT"
+        action = "one of observation.allowedActions"
         epsilon = "optional number for SET_EPSILON"
         rewardConfig = "optional numeric patch for RLRewardConfig fields"
         rewardTerms = "optional array of {name, scope: STEP|FINAL, expression}"
@@ -127,7 +130,7 @@ $schema = @{
     properties = @{
         action = @{
             type = "STRING"
-            enum = @("KEEP_GOING", "SET_EPSILON", "REPLACE_REWARD_CONFIG", "REQUEST_PROMOTION_CHECK", "START_NEW_RUN", "RESTART_TRAINING", "STOP_TRAINING", "REQUEST_HISTORICAL_REPORT")
+            enum = @("KEEP_GOING", "SET_EPSILON", "REPLACE_REWARD_CONFIG", "REQUEST_PROMOTION_CHECK", "START_NEW_RUN", "STOP_TRAINING", "REQUEST_HISTORICAL_REPORT", "PROMOTE_BRANCH", "JUMP_TO_BRANCH")
         }
         epsilon = @{ type = "NUMBER" }
         rewardConfig = @{ type = "OBJECT" }

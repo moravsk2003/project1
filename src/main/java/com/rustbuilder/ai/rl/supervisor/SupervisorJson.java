@@ -10,6 +10,57 @@ import java.util.List;
 import java.util.Map;
 
 public final class SupervisorJson {
+    private static final List<String> TRAINING_ACTIONS = List.of(
+        SupervisorAction.KEEP_GOING.name(),
+        SupervisorAction.SET_EPSILON.name(),
+        SupervisorAction.REPLACE_REWARD_CONFIG.name(),
+        SupervisorAction.STOP_TRAINING.name(),
+        SupervisorAction.REQUEST_PROMOTION_CHECK.name(),
+        SupervisorAction.PROMOTE_BRANCH.name(),
+        SupervisorAction.JUMP_TO_BRANCH.name());
+    private static final List<String> IDLE_ACTIONS = List.of(
+        SupervisorAction.KEEP_GOING.name(),
+        SupervisorAction.START_NEW_RUN.name(),
+        SupervisorAction.REQUEST_HISTORICAL_REPORT.name(),
+        SupervisorAction.PROMOTE_BRANCH.name(),
+        SupervisorAction.JUMP_TO_BRANCH.name());
+    private static final List<String> STEP_REWARD_FORMULA_VARIABLES = List.of(
+        "inserted",
+        "survived",
+        "invalid",
+        "block_count",
+        "socket_connections",
+        "stability",
+        "is_foundation",
+        "is_tc_action",
+        "is_workbench_action",
+        "is_loot_room_action",
+        "error_no_support",
+        "error_collision",
+        "error_bad_socket");
+    private static final List<String> FINAL_REWARD_FORMULA_VARIABLES = List.of(
+        "final_score",
+        "raw_score_reward",
+        "logistics_score",
+        "cost_score",
+        "raid_score",
+        "working_area_score",
+        "safe_zone_score",
+        "sulfur_to_tc",
+        "component_count",
+        "main_component_blocks",
+        "blocks_placed",
+        "tc_present",
+        "tc_enclosed",
+        "invalid_rate",
+        "early_stop_penalty");
+    private static final List<String> REWARD_FORMULA_FUNCTIONS = List.of(
+        "abs(x)",
+        "sqrt(x)",
+        "min(a,b)",
+        "max(a,b)",
+        "clamp(x,min,max)");
+
     private SupervisorJson() {
     }
 
@@ -55,22 +106,31 @@ public final class SupervisorJson {
         map.put("invalidActionReasons", obs.invalidActionReasons);
         map.put("actionTypeCounts", obs.actionTypeCounts);
         map.put("currentRewardConfig", obs.currentRewardConfig);
-        map.put("allowedActions", List.of(
-            SupervisorAction.KEEP_GOING.name(),
-            SupervisorAction.SET_EPSILON.name(),
-            SupervisorAction.REPLACE_REWARD_CONFIG.name(),
-            SupervisorAction.STOP_TRAINING.name(),
-            SupervisorAction.REQUEST_PROMOTION_CHECK.name(),
-            SupervisorAction.START_NEW_RUN.name(),
-            SupervisorAction.RESTART_TRAINING.name(),
-            SupervisorAction.REQUEST_HISTORICAL_REPORT.name()));
+        map.put("trainingContext", obs.trainingContext);
+        map.put("trendMetrics", obs.trendMetrics);
+        map.put("rewardFormulaContract", rewardFormulaContract());
+        map.put("allowedActions", allowedActions(obs));
         
         if (obs.historicalReport != null && !obs.historicalReport.isBlank()) {
             map.put("historicalReport", obs.historicalReport);
         }
         map.put("responseContract",
-            "Return one JSON object with action, optional epsilon, optional rewardConfig, optional rewardTerms, and reason.");
+            "Return one JSON object. The action must be one of allowedActions. Include reason. For SET_EPSILON include epsilon. For REPLACE_REWARD_CONFIG include only changed rewardConfig fields and/or rewardTerms. For START_NEW_RUN or JUMP_TO_BRANCH include modelName.");
         return SimpleJson.stringify(map);
+    }
+
+    private static List<String> allowedActions(SupervisorObservation obs) {
+        Object running = obs.trainingContext != null ? obs.trainingContext.get("trainingRunning") : null;
+        return Boolean.FALSE.equals(running) ? IDLE_ACTIONS : TRAINING_ACTIONS;
+    }
+
+    private static Map<String, Object> rewardFormulaContract() {
+        Map<String, Object> map = new LinkedHashMap<>();
+        map.put("stepVariables", STEP_REWARD_FORMULA_VARIABLES);
+        map.put("finalVariables", FINAL_REWARD_FORMULA_VARIABLES);
+        map.put("functions", REWARD_FORMULA_FUNCTIONS);
+        map.put("unknownVariablesEvaluateToZero", true);
+        return map;
     }
 
     @SuppressWarnings("unchecked")
@@ -130,6 +190,14 @@ public final class SupervisorJson {
             Integer startEpoch = integerValue(map.get("reportStartEpoch"));
             Integer endEpoch = integerValue(map.get("reportEndEpoch"));
             return SupervisorDecision.requestHistoricalReport(reportModelName, startEpoch, endEpoch, reason);
+        }
+
+        if (action == SupervisorAction.PROMOTE_BRANCH) {
+            return SupervisorDecision.promoteBranch(reason);
+        }
+
+        if (action == SupervisorAction.JUMP_TO_BRANCH) {
+            return SupervisorDecision.jumpToBranch(stringValue(map.get("modelName")), reason);
         }
         
         return SupervisorDecision.keepGoing(reason);

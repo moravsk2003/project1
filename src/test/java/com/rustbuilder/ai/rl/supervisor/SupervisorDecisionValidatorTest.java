@@ -65,4 +65,45 @@ class SupervisorDecisionValidatorTest {
         assertEquals(0.25, sanitized.basePlacementReward, 0.0);
         assertEquals(-100.0, sanitized.penaltyCollision, 0.0);
     }
+
+    @Test
+    void rejectsUnsafeAutopilotModelNames() {
+        LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
+
+        SupervisorDecision decision = validator.validate(
+            SupervisorDecision.startNewRun(false, RLRewardConfig.createDefault(), "../bad", "idle"),
+            config,
+            RLRewardConfig.createDefault());
+
+        assertEquals(SupervisorAction.KEEP_GOING, decision.getAction());
+    }
+
+    @Test
+    void sanitizesStartRunRewardConfig() {
+        LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
+        RLRewardConfig proposed = RLRewardConfig.createDefault();
+        proposed.raidBonusMultiplier = 500.0;
+
+        SupervisorDecision decision = validator.validate(
+            SupervisorDecision.startNewRun(true, proposed, "auto_run_2d", "try 2d"),
+            config,
+            RLRewardConfig.createDefault());
+
+        assertEquals(SupervisorAction.START_NEW_RUN, decision.getAction());
+        assertEquals("auto_run_2d", decision.getProposedModelName());
+        assertEquals(100.0, decision.getProposedRewardConfig().raidBonusMultiplier, 0.0);
+    }
+
+    @Test
+    void sanitizesBranchJumpModelName() {
+        LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
+
+        SupervisorDecision decision = validator.validate(
+            SupervisorDecision.jumpToBranch("known_branch_1", "jump"),
+            config,
+            RLRewardConfig.createDefault());
+
+        assertEquals(SupervisorAction.JUMP_TO_BRANCH, decision.getAction());
+        assertEquals("known_branch_1", decision.getProposedModelName());
+    }
 }

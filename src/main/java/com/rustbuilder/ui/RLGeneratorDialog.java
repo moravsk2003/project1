@@ -97,6 +97,7 @@ public class RLGeneratorDialog {
     private Label statusLabel;
     private TextArea diagnosticLogArea;
     private TextArea llmLogArea;
+    private Label llmBranchStatusLabel;
     
     private Button trainButton;
     private Button stopButton;
@@ -183,6 +184,8 @@ public class RLGeneratorDialog {
         llmBox.setPadding(new Insets(14));
         llmBox.getChildren().addAll(
             createSupervisorSection(),
+            new Separator(),
+            createLlmBranchSection(),
             new Separator(),
             createLlmLogSection()
         );
@@ -515,6 +518,19 @@ public class RLGeneratorDialog {
         return box;
     }
 
+    private VBox createLlmBranchSection() {
+        VBox box = card();
+        box.getChildren().add(sectionTitle("Branch Experiments"));
+
+        llmBranchStatusLabel = valueLabel(rlService != null
+            ? rlService.getSupervisorBranchStatus()
+            : "No branch experiment yet.");
+        llmBranchStatusLabel.setWrapText(true);
+
+        box.getChildren().add(llmBranchStatusLabel);
+        return box;
+    }
+
     private void handleEncoderModeSelection() {
         if (syncingEncoderMode || encoderModeComboBox == null) return;
         RLTrainingService.EncoderMode selectedMode = encoderModeComboBox.getValue();
@@ -839,6 +855,7 @@ public class RLGeneratorDialog {
         environment.put("GEMINI_API_KEY", apiKey);
         environment.put("GOOGLE_API_KEY", apiKey);
         environment.put("LLM_API_KEY", apiKey);
+        environment.put("OPENAI_API_KEY", apiKey);
         return environment;
     }
 
@@ -862,6 +879,7 @@ public class RLGeneratorDialog {
                 statusText += " | Left " + formatDuration(m.trainingRemainingMs);
             }
             statusLabel.setText(statusText);
+            refreshLlmBranchStatus();
             
             int totalEps = m.totalEpochs * m.totalEpisodesPerEpoch;
             int doneEps = (m.currentEpoch - 1) * m.totalEpisodesPerEpoch + m.currentEpisodeInEpoch;
@@ -1205,12 +1223,19 @@ public class RLGeneratorDialog {
             if (llmLogArea == null) {
                 return;
             }
+            refreshLlmBranchStatus();
             llmLogArea.appendText(String.format("[%02d:%02d:%02d] %s%n",
                 java.time.LocalTime.now().getHour(),
                 java.time.LocalTime.now().getMinute(),
                 java.time.LocalTime.now().getSecond(),
                 text));
         });
+    }
+
+    private void refreshLlmBranchStatus() {
+        if (llmBranchStatusLabel != null && rlService != null) {
+            llmBranchStatusLabel.setText(rlService.getSupervisorBranchStatus());
+        }
     }
 
     public void reportMode() {

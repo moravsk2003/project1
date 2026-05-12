@@ -3,6 +3,7 @@ package com.rustbuilder.ai.rl.supervisor;
 import com.rustbuilder.ai.core.TrainingMetrics;
 import com.rustbuilder.ai.rl.EpisodeResult;
 import java.time.Instant;
+import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -12,6 +13,15 @@ import java.util.stream.Collectors;
  */
 public class RLTrainingAnalyzer {
     public SupervisorObservation summarize(String branchId, TrainingMetrics metrics, EpisodeResult result, com.rustbuilder.ai.rl.RLRewardConfig currentConfig) {
+        return summarize(branchId, metrics, result, currentConfig, Collections.emptyMap(), Collections.emptyMap());
+    }
+
+    public SupervisorObservation summarize(String branchId,
+                                           TrainingMetrics metrics,
+                                           EpisodeResult result,
+                                           com.rustbuilder.ai.rl.RLRewardConfig currentConfig,
+                                           Map<String, Object> trainingContext,
+                                           Map<String, Object> trendMetrics) {
         if (metrics == null) {
             throw new IllegalArgumentException("metrics must not be null");
         }
@@ -57,6 +67,8 @@ public class RLTrainingAnalyzer {
             summarizeEnumMap(result != null ? result.errorStats : null),
             summarizeEnumMap(result != null ? result.typeStats : null),
             currentConfig != null ? currentConfig.toMap() : null,
+            trainingContext,
+            trendMetrics,
             null
         );
     }

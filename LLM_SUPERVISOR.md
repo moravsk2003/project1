@@ -24,8 +24,8 @@ Open the RL dialog and use the `LLM Supervisor` section:
 - `Apply mode`: `AUTO_APPLY` applies validated decisions; `LOG_ONLY` and
   `MANUAL_APPROVAL` record decisions without changing training.
 - `API key`: optional key for the external command. It is passed only to the
-  launched process as `GEMINI_API_KEY`, `GOOGLE_API_KEY`, and `LLM_API_KEY`;
-  it is not saved in model metadata.
+  launched process as `GEMINI_API_KEY`, `GOOGLE_API_KEY`, `LLM_API_KEY`, and
+  `OPENAI_API_KEY`; it is not saved in model metadata.
 - `Command`: optional external command. Leave empty for a safe no-op supervisor.
 - `Apply Pending`: applies the most recent validated decision when using
   `MANUAL_APPROVAL`.
@@ -109,16 +109,39 @@ Reward config patch with a formula term:
 }
 ```
 
-Allowed actions:
+Allowed actions are included in each observation as `allowedActions`.
+During an active training run the hook allows:
 
 - `KEEP_GOING`
 - `SET_EPSILON`
 - `REPLACE_REWARD_CONFIG`
 - `STOP_TRAINING`
 - `REQUEST_PROMOTION_CHECK`
+- `PROMOTE_BRANCH`
+- `JUMP_TO_BRANCH`
 
-Formula expressions are arithmetic-only and support variables, `min`, `max`,
-`clamp`, `abs`, and `sqrt`. Invalid formulas evaluate to `0`.
+When the autopilot is idle, it allows:
+
+- `KEEP_GOING`
+- `START_NEW_RUN`
+- `REQUEST_HISTORICAL_REPORT`
+- `PROMOTE_BRANCH`
+- `JUMP_TO_BRANCH`
+
+`SET_EPSILON` and `REPLACE_REWARD_CONFIG` do not mutate the live training
+branch directly. They create a short baseline-vs-candidate branch experiment.
+The next observations include `trendMetrics.latestBranchComparison`; return
+`PROMOTE_BRANCH` to apply the candidate reward config/epsilon after reviewing
+the comparison. The experiment automatically saves the better branch as an
+RL model and reports it as `savedWinnerModelName`. Baseline and candidate
+branches are both saved. The saved winner is queued/applied automatically; the
+live branch is saved as `*_before_jump_*` before any jump.
+`JUMP_TO_BRANCH` can switch only to names from
+`trendMetrics.knownBranchModelNames`.
+
+Formula expressions are arithmetic-only and support the variables/functions
+listed in `rewardFormulaContract`. Unknown variables and invalid formulas
+evaluate to `0`.
 
 Supervisor observations include training time context:
 
@@ -129,6 +152,15 @@ Supervisor observations include training time context:
 - `trainingRemainingSeconds`
 - `trainingTimeLimitEnabled`
 - `trainingTimeLimitReached`
+
+They also include:
+
+- `trainingContext`: current epoch/episode, target episodes, max steps,
+  encoder mode, 2D/3D CNN flag, epsilon schedule, and run/model identifiers.
+- `trendMetrics`: deltas since the last supervisor check and how long the
+  best score has stalled, plus recent supervisor snapshots and the latest
+  branch comparison when available.
+- `rewardFormulaContract`: allowed STEP/FINAL formula variables and functions.
 
 Each supervisor response is logged in two files under `models_rl`:
 

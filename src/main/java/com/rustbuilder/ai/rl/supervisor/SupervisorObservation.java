@@ -48,6 +48,8 @@ public final class SupervisorObservation {
     public final Map<String, Integer> invalidActionReasons;
     public final Map<String, Integer> actionTypeCounts;
     public final Map<String, Double> currentRewardConfig;
+    public final Map<String, Object> trainingContext;
+    public final Map<String, Object> trendMetrics;
     public final String historicalReport;
 
     public SupervisorObservation(String branchId,
@@ -91,6 +93,63 @@ public final class SupervisorObservation {
                                  Map<String, Integer> actionTypeCounts,
                                  Map<String, Double> currentRewardConfig,
                                  String historicalReport) {
+        this(branchId, totalEpisodesTrained, bestScore, avgEvalScore, currentEpisodeEvalScore,
+            currentEpisodeStepReward, currentEpisodeFinalReward, bestTotalReward,
+            invalidActionRate, lastEpisodeInvalidActions, lastEpisodeTotalActions,
+            epsilon, lastTrainLoss, memorySize, bestBaseBlocks, bestBaseHasTC,
+            bestBaseDoors, episodeBlocksPlaced, episodeHasTC, componentCount,
+            mainComponentBlocks, evalLogisticsScore, evalCostScore, evalRaidScore,
+            evalWorkingAreaScore, evalSafeZoneScore, raidSulfurToTC, stopReason,
+            stepRewardBreakdown, finalRewardBreakdown, trainingStartTimeIso,
+            currentTimeIso, trainingDeadlineIso, trainingElapsedMs,
+            trainingRemainingMs, trainingTimeLimitEnabled, trainingTimeLimitReached,
+            invalidActionReasons, actionTypeCounts, currentRewardConfig,
+            Collections.emptyMap(), Collections.emptyMap(), historicalReport);
+    }
+
+    public SupervisorObservation(String branchId,
+                                 int totalEpisodesTrained,
+                                 double bestScore,
+                                 double avgEvalScore,
+                                 double currentEpisodeEvalScore,
+                                 double currentEpisodeStepReward,
+                                 double currentEpisodeFinalReward,
+                                 double bestTotalReward,
+                                 double invalidActionRate,
+                                 int lastEpisodeInvalidActions,
+                                 int lastEpisodeTotalActions,
+                                 double epsilon,
+                                 double lastTrainLoss,
+                                 int memorySize,
+                                 int bestBaseBlocks,
+                                 boolean bestBaseHasTC,
+                                 int bestBaseDoors,
+                                 int episodeBlocksPlaced,
+                                 boolean episodeHasTC,
+                                 int componentCount,
+                                 int mainComponentBlocks,
+                                 double evalLogisticsScore,
+                                 double evalCostScore,
+                                 double evalRaidScore,
+                                 double evalWorkingAreaScore,
+                                 double evalSafeZoneScore,
+                                 int raidSulfurToTC,
+                                 String stopReason,
+                                 String stepRewardBreakdown,
+                                 String finalRewardBreakdown,
+                                 String trainingStartTimeIso,
+                                 String currentTimeIso,
+                                 String trainingDeadlineIso,
+                                 long trainingElapsedMs,
+                                 long trainingRemainingMs,
+                                 boolean trainingTimeLimitEnabled,
+                                 boolean trainingTimeLimitReached,
+                                 Map<String, Integer> invalidActionReasons,
+                                 Map<String, Integer> actionTypeCounts,
+                                 Map<String, Double> currentRewardConfig,
+                                 Map<String, Object> trainingContext,
+                                 Map<String, Object> trendMetrics,
+                                 String historicalReport) {
         this.branchId = branchId != null ? branchId : "candidate";
         this.totalEpisodesTrained = totalEpisodesTrained;
         this.bestScore = bestScore;
@@ -131,6 +190,8 @@ public final class SupervisorObservation {
         this.invalidActionReasons = copyMap(invalidActionReasons);
         this.actionTypeCounts = copyMap(actionTypeCounts);
         this.currentRewardConfig = copyDoubleMap(currentRewardConfig);
+        this.trainingContext = copyObjectMap(trainingContext);
+        this.trendMetrics = copyObjectMap(trendMetrics);
         this.historicalReport = historicalReport != null ? historicalReport : "";
     }
 
@@ -142,6 +203,13 @@ public final class SupervisorObservation {
     }
 
     private static Map<String, Double> copyDoubleMap(Map<String, Double> source) {
+        if (source == null || source.isEmpty()) {
+            return Collections.emptyMap();
+        }
+        return Collections.unmodifiableMap(new LinkedHashMap<>(source));
+    }
+
+    private static Map<String, Object> copyObjectMap(Map<String, Object> source) {
         if (source == null || source.isEmpty()) {
             return Collections.emptyMap();
         }

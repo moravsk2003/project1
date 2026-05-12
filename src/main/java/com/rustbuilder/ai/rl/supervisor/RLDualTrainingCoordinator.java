@@ -75,7 +75,9 @@ public class RLDualTrainingCoordinator {
             config.getWorkingAreaWeight(),
             config.getSafeZoneWeight(),
             config.getEpochs(),
-            LlmSupervisorConfig.disabled()
+            LlmSupervisorConfig.disabled(),
+            config.getTrainingDurationMs(),
+            config.isUse2dCnn()
         );
     }
 
