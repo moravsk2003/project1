@@ -22,3 +22,12 @@
 # virtual machine crash logs, see http://www.java.com/en/download/help/error_hotspot.xml
 hs_err_pid*
 replay_pid*
+
+# Local secrets / API keys
+.env
+*.env
+.llm_supervisor*
+llm_supervisor.local.*
+
+# RL model artifacts and logs
+models_rl/
