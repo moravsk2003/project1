@@ -46,9 +46,7 @@ public class GeneratorService {
         // Bottom-Right (1,1) South Wall
         gridModel.addBlock(new Wall(startX + TILE_SIZE, startY + TILE_SIZE, 0, Orientation.SOUTH));
 
-        // 3. Honeycomb (Triangle foundations around the core)
-        // Simplified for now: Adding a layer of square foundations
-
+        // 3. Outer square foundation ring
         for (int x = -1; x < 3; x++) {
             for (int y = -1; y < 3; y++) {
                 // Skip the inner 2x2
@@ -59,7 +57,7 @@ public class GeneratorService {
             }
         }
 
-        // Add outer walls for the honeycomb
+        // Add outer walls for the ring
         // Top edge
         for (int x = -1; x < 3; x++)
             gridModel.addBlock(new Wall(startX + x * TILE_SIZE, startY - TILE_SIZE, 0, Orientation.NORTH));

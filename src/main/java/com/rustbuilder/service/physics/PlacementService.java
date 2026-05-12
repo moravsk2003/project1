@@ -10,21 +10,14 @@ import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.core.DoorType;
 import com.rustbuilder.model.core.Orientation;
 import com.rustbuilder.model.core.Socket;
-import com.rustbuilder.model.structure.Floor;
-import com.rustbuilder.model.structure.Foundation;
-import com.rustbuilder.model.structure.TriangleFloor;
-import com.rustbuilder.model.structure.TriangleFoundation;
-import com.rustbuilder.model.structure.Wall;
 import com.rustbuilder.util.BlockFactory;
 import com.rustbuilder.util.BuildingTypeUtils;
-import com.rustbuilder.util.SocketCompatibilityUtils;
 import java.util.List;
 
 public class PlacementService {
     private static final int SPATIAL_TARGET_SEARCH_THRESHOLD = 96;
     private static final int AIM_GRID_SIZE = 4;
     private static final int AIM_SECTOR_COUNT = AIM_GRID_SIZE * AIM_GRID_SIZE;
-    private static final ThreadLocal<DummyBlocks> DUMMY_BLOCKS = ThreadLocal.withInitial(DummyBlocks::new);
 
     public static class Placement {
         public double x, y, rotation;
@@ -50,7 +43,6 @@ public class PlacementService {
 
     public static Placement calculatePlacement(GridModel grid, BuildAction action) {
         double tileSize = GameConstants.TILE_SIZE;
-        double halfTile = GameConstants.HALF_TILE;
         double startX = GameConstants.GRID_ORIGIN_X;
         double startY = GameConstants.GRID_ORIGIN_Y;
 
@@ -69,152 +61,94 @@ public class PlacementService {
         // gridX, gridY means the center of the grid cell
         double rawCenterX = startX + action.gridX * tileSize + offsetX;
         double rawCenterY = startY + action.gridY * tileSize + offsetY;
-        
-        // Base X,Y of a block if placed exactly on grid
-        double exactX = rawCenterX - halfTile;
-        double exactY = rawCenterY - halfTile;
-        
+
         int z = (action.actionType == BuildAction.ActionType.FOUNDATION || action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION) ? 0 : action.floor;
 
-        BuildingBlock target = null;
-        double minDistSq = Double.MAX_VALUE;
-        List<BuildingBlock> allBlocks = grid.getAllBlocks();
-        List<BuildingBlock> candidates = allBlocks.size() > SPATIAL_TARGET_SEARCH_THRESHOLD
-            ? grid.getNearbyBlocks(rawCenterX, rawCenterY, z, tileSize * 2.0)
-            : allBlocks;
-        for (BuildingBlock b : candidates) {
-            if (b.getZ() != z && b.getZ() != z - 1) continue; // Only same floor or floor below
-            
-            // Measure from center of block to rawCenter
-            double dx = b.getX() + halfTile - rawCenterX;
-            double dy = b.getY() + halfTile - rawCenterY;
-            double dSq = dx * dx + dy * dy;
-            if (dSq < minDistSq || shouldPreferCeilingWallTarget(action.actionType, dSq, minDistSq, b, target)) {
-                minDistSq = dSq; 
-                target = b; 
-            }
+        SocketPlacementResolver.Result resolved = SocketPlacementResolver.resolve(
+                grid, rawCenterX, rawCenterY, toolIdForAction(action.actionType), z, false,
+                (block, socket) -> socketPriorityForAction(action, block, socket));
+
+        if (!resolved.valid) {
+            Placement p = new Placement(0, 0, 0, Orientation.NORTH, false, placementErrorFor(action, resolved));
+            p.minDist = centerDistance(resolved.block, rawCenterX, rawCenterY);
+            p.socketDist = resolved.socketDistanceSq >= 0 ? Math.sqrt(resolved.socketDistanceSq) : -1.0;
+            return p;
         }
 
-        double firstThreshold = tileSize * 1.5;
-        boolean isFirst = target == null || minDistSq > firstThreshold * firstThreshold;
+        Placement p = new Placement(resolved.x, resolved.y, resolved.rotation, resolved.orientation, true, PlacementError.NONE);
+        p.minDist = centerDistance(resolved.block, rawCenterX, rawCenterY);
+        p.socketDist = resolved.socketDistanceSq >= 0 ? Math.sqrt(resolved.socketDistanceSq) : -1.0;
 
-        // 1. Initial / Free placement
-        if (isFirst) {
-            if (action.actionType == BuildAction.ActionType.FOUNDATION) {
-                return new Placement(exactX, exactY, 0, Orientation.NORTH, true, PlacementError.NONE);
-            }
-            if (action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION) {
-                return new Placement(exactX, exactY, horizontalRotationDegrees(action), Orientation.NORTH, true, PlacementError.NONE);
-            }
-            return new Placement(0, 0, 0, Orientation.NORTH, false, PlacementError.BAD_SOCKET_IS_FIRST);
+        if (resolved.block == null && action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION) {
+            p.rotation = horizontalRotationDegrees(action);
         }
 
-        // 2. Decor / Deployables (TC, Workbench, Loot) -> Center of Target
-        if (action.actionType == BuildAction.ActionType.TC || action.actionType == BuildAction.ActionType.WORKBENCH || action.actionType == BuildAction.ActionType.LOOT_ROOM) {
-            if (target != null) {
-                return new Placement(target.getX(), target.getY(), target.getRotation(), Orientation.NORTH, true, PlacementError.NONE);
-            }
-            return new Placement(0, 0, 0, Orientation.NORTH, false, target == null ? PlacementError.BAD_SOCKET_NO_TARGET : PlacementError.BAD_SOCKET_WRONG_TARGET_TYPE);
-        }
-
-        // 4. Walls / Doorways / Windows
-        if (isWallLike(action.actionType)) {
-            if (target != null && isValidWallTarget(target, z)) {
-                Orientation orient = getWallOrientation(target, action.orientation);
-                return new Placement(target.getX(), target.getY(), target.getRotation(), orient, true);
-            }
-            return new Placement(0,0,0,null,false, target == null ? PlacementError.BAD_SOCKET_NO_TARGET : PlacementError.BAD_SOCKET_WRONG_TARGET_TYPE); // Invalid attachment target for wall
-        }
-
-        // 5. Connecting Foundations/Floors mathematically
-        if (target != null && isValidBase(target.getType(), true)) {
-            // Reuse a per-thread dummy in the center of the AI's requested cell
-            BuildingBlock dummy = instantiateDummy(action.actionType, exactX, exactY, z);
-            if (dummy == null) return new Placement(0,0,0,null,false);
-            
-            // Use the selected horizontal rotation, then snap that shape to the closest socket.
-            double bestShiftX = 0;
-            double bestShiftY = 0;
-            double bestRot = 0;
-            double globalMinDistSq = Double.MAX_VALUE;
-            
-            double testRot = target.getRotation() + horizontalRotationDegrees(action);
-            {
-                 dummy.setRotation((testRot + 360) % 360);
-                 
-                 for (Socket tSock : target.getSockets()) {
-                     if (tSock.isCenter()) continue; // Skip center socket
-                     for (Socket dSock : dummy.getSockets()) {
-                         if (dSock.isCenter()) continue;
-                         if (!SocketCompatibilityUtils.areEdgesParallel(tSock, dSock)) continue;
-                         double dx = tSock.getX() - dSock.getX();
-                         double dy = tSock.getY() - dSock.getY();
-                         double distSq = dx * dx + dy * dy;
-                         if (distSq < globalMinDistSq) {
-                             globalMinDistSq = distSq;
-                             bestShiftX = tSock.getX() - dSock.getX();
-                             bestShiftY = tSock.getY() - dSock.getY();
-                             bestRot = dummy.getRotation();
-                         }
-                     }
-                 }
-            }
-            
-            double socketThreshold = tileSize * 0.5;
-            if (globalMinDistSq < socketThreshold * socketThreshold) {
-                 double finalSnapX = exactX + bestShiftX;
-                 double finalSnapY = exactY + bestShiftY;
-                 
-                 // Post-snap overlap guard: center-to-center distance must be >= 0.9 * tileSize
-                 double cx1 = target.getX() + halfTile;
-                 double cy1 = target.getY() + halfTile;
-                 double cx2 = finalSnapX + halfTile;
-                 double cy2 = finalSnapY + halfTile;
-                 double centerDx = cx2 - cx1;
-                 double centerDy = cy2 - cy1;
-                 double centerDistSq = centerDx * centerDx + centerDy * centerDy;
-                 
-                 double centerThreshold = tileSize * 0.9;
-                 boolean allowSameTileCeilingOnWall = isCeilingAction(action.actionType)
-                         && target != null
-                         && BuildingTypeUtils.isWall(target.getType())
-                         && z == target.getZ() + 1;
-                 if (centerDistSq >= centerThreshold * centerThreshold || allowSameTileCeilingOnWall) {
-                     Placement p = new Placement(finalSnapX, finalSnapY, bestRot, Orientation.NORTH, true); p.minDist = Math.sqrt(minDistSq); p.socketDist = Math.sqrt(globalMinDistSq); return p;
-                 } else {
-                     Placement p = new Placement(0,0,0,null,false, PlacementError.BAD_SOCKET_CENTERDIST_REJECT); p.minDist = Math.sqrt(minDistSq); p.socketDist = Math.sqrt(globalMinDistSq); return p;
-                 }
-            } else {
-                 Placement p = new Placement(0,0,0,null,false, PlacementError.BAD_SOCKET_NO_SOCKET_ALIGNMENT); p.minDist = Math.sqrt(minDistSq); p.socketDist = Math.sqrt(globalMinDistSq); return p;
-            }
-        }
-
-        Placement p = new Placement(0,0,0,null,false, target == null ? PlacementError.BAD_SOCKET_NO_TARGET : PlacementError.BAD_SOCKET_WRONG_TARGET_TYPE); p.minDist = target == null ? -1.0 : Math.sqrt(minDistSq); return p;
-    }
-    
-    private static boolean isWallLike(BuildAction.ActionType type) {
-        return type == BuildAction.ActionType.WALL || type == BuildAction.ActionType.DOORWAY || type == BuildAction.ActionType.WINDOW_FRAME;
+        return p;
     }
 
-    private static boolean shouldPreferCeilingWallTarget(BuildAction.ActionType actionType, double distanceSq,
-            double bestDistanceSq, BuildingBlock candidate, BuildingBlock currentTarget) {
-        if (!isCeilingAction(actionType) || candidate == null || !BuildingTypeUtils.isWall(candidate.getType())) {
-            return false;
+    private static String toolIdForAction(BuildAction.ActionType type) {
+        if (type == BuildAction.ActionType.TRIANGLE_FOUNDATION) {
+            return "TRIANGLE";
         }
-        if (currentTarget != null && BuildingTypeUtils.isWall(currentTarget.getType())) {
-            return false;
-        }
-        return Math.abs(distanceSq - bestDistanceSq) < 0.001;
+        return type == null ? null : type.name();
     }
 
-    private static boolean isCeilingAction(BuildAction.ActionType type) {
-        return type == BuildAction.ActionType.FLOOR || type == BuildAction.ActionType.TRIANGLE_FLOOR;
+    private static PlacementError placementErrorFor(BuildAction action, SocketPlacementResolver.Result resolved) {
+        if (resolved == null || resolved.block == null) {
+            if (action.actionType == BuildAction.ActionType.FOUNDATION ||
+                    action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION) {
+                return PlacementError.BAD_SOCKET_NO_TARGET;
+            }
+            return PlacementError.BAD_SOCKET_IS_FIRST;
+        }
+        return PlacementError.BAD_SOCKET_WRONG_TARGET_TYPE;
     }
-    
-    private static boolean isValidBase(BuildingType type, boolean includeWall) {
-        if (type == BuildingType.FOUNDATION || type == BuildingType.TRIANGLE_FOUNDATION || type == BuildingType.FLOOR || type == BuildingType.TRIANGLE_FLOOR) return true;
-        if (includeWall && (type == BuildingType.WALL || type == BuildingType.DOORWAY || type == BuildingType.WINDOW_FRAME)) return true;
-        return false;
+
+    private static double centerDistance(BuildingBlock block, double rawCenterX, double rawCenterY) {
+        if (block == null) {
+            return -1.0;
+        }
+        double dx = block.getX() + GameConstants.HALF_TILE - rawCenterX;
+        double dy = block.getY() + GameConstants.HALF_TILE - rawCenterY;
+        return Math.sqrt(dx * dx + dy * dy);
+    }
+
+    private static int socketPriorityForAction(BuildAction action, BuildingBlock block, Socket socket) {
+        if (action == null || block == null || socket == null || !isWallAction(action.actionType)) {
+            return 0;
+        }
+        int desiredSide = desiredWallSocketSide(action, block);
+        return socket.getSide() == desiredSide ? 0 : 1;
+    }
+
+    private static boolean isWallAction(BuildAction.ActionType type) {
+        return type == BuildAction.ActionType.WALL
+                || type == BuildAction.ActionType.DOORWAY
+                || type == BuildAction.ActionType.WINDOW_FRAME;
+    }
+
+    private static int desiredWallSocketSide(BuildAction action, BuildingBlock target) {
+        if (BuildingTypeUtils.isWall(target.getType())) {
+            return Socket.CENTER_SIDE;
+        }
+        if (target.getType() == BuildingType.TRIANGLE_FOUNDATION ||
+                target.getType() == BuildingType.TRIANGLE_FLOOR) {
+            int index = action.orientation % 3;
+            if (index < 0) {
+                index += 3;
+            }
+            switch (index) {
+                case 1:
+                    return 4;
+                case 2:
+                    return 5;
+                case 0:
+                default:
+                    return 6;
+            }
+        }
+        int side = action.orientation % 4;
+        return side < 0 ? side + 4 : side;
     }
 
     private static double horizontalRotationDegrees(BuildAction action) {
@@ -228,59 +162,6 @@ public class PlacementService {
         int index = action.orientation % 4;
         if (index < 0) index += 4;
         return index * 90.0;
-    }
-
-    private static boolean isValidWallTarget(BuildingBlock target, int placementFloor) {
-        if (target == null) return false;
-        if (BuildingTypeUtils.isHorizontalSurface(target.getType())) {
-            return target.getZ() == placementFloor;
-        }
-        if (BuildingTypeUtils.isWall(target.getType())) {
-            return placementFloor > 0 && target.getZ() == placementFloor - 1;
-        }
-        return false;
-    }
-
-    private static Orientation getWallOrientation(BuildingBlock target, int orientationSelection) {
-        if (target instanceof Wall && BuildingTypeUtils.isWall(target.getType())) {
-            return ((Wall) target).getOrientation();
-        }
-        return getOrientationFromAction(target.getType(), orientationSelection);
-    }
-
-    private static Orientation getOrientationFromAction(BuildingType baseType, int orientationSelection) {
-        if (baseType == BuildingType.TRIANGLE_FOUNDATION || baseType == BuildingType.TRIANGLE_FLOOR) {
-            Orientation[] triOrients = {Orientation.TRIANGLE_BASE, Orientation.TRIANGLE_LEFT, Orientation.TRIANGLE_RIGHT};
-            return triOrients[orientationSelection % 3];
-        } else {
-            Orientation[] sqOrients = {Orientation.NORTH, Orientation.EAST, Orientation.SOUTH, Orientation.WEST};
-            return sqOrients[orientationSelection % 4];
-        }
-    }
-    
-    private static BuildingBlock instantiateDummy(BuildAction.ActionType type, double x, double y, int z) {
-        BuildingBlock dummy = DUMMY_BLOCKS.get().get(type);
-        if (dummy != null) {
-            dummy.setTransform(x, y, z, 0);
-        }
-        return dummy;
-    }
-
-    private static class DummyBlocks {
-        private final Foundation foundation = new Foundation(0, 0, 0);
-        private final TriangleFoundation triangleFoundation = new TriangleFoundation(0, 0, 0, 0);
-        private final Floor floor = new Floor(0, 0, 0, 0);
-        private final TriangleFloor triangleFloor = new TriangleFloor(0, 0, 0, 0);
-
-        private BuildingBlock get(BuildAction.ActionType type) {
-            switch (type) {
-                case FOUNDATION: return foundation;
-                case TRIANGLE_FOUNDATION: return triangleFoundation;
-                case FLOOR: return floor;
-                case TRIANGLE_FLOOR: return triangleFloor;
-                default: return null;
-            }
-        }
     }
 
     public static BuildingBlock createRealBlock(BuildAction action, Placement placement) {
@@ -301,9 +182,7 @@ public class PlacementService {
 
         if (block != null) {
             block.setTier(tier != null ? tier : BuildingTier.STONE);
-            if (!(block instanceof Wall)) {
-                block.setRotation(finalRotation);
-            }
+            block.setRotation(finalRotation);
         }
         return block;
     }

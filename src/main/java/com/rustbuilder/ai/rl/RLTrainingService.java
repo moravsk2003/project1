@@ -12,6 +12,17 @@ import com.rustbuilder.ai.rl.env.state.VoxelV1StateEncoder;
 import com.rustbuilder.ai.rl.env.state.BucketedVoxelV2StateEncoder;
 import com.rustbuilder.ai.rl.env.state.HybridV3StateEncoder;
 import com.rustbuilder.ai.rl.env.spec.EncodingRuntimeConfig;
+import com.rustbuilder.ai.rl.supervisor.LlmSupervisor;
+import com.rustbuilder.ai.rl.supervisor.LlmSupervisorApplyMode;
+import com.rustbuilder.ai.rl.supervisor.LlmSupervisorConfig;
+import com.rustbuilder.ai.rl.supervisor.LlmSupervisorRateLimiter;
+import com.rustbuilder.ai.rl.supervisor.NoOpLlmSupervisor;
+import com.rustbuilder.ai.rl.supervisor.RLTrainingAnalyzer;
+import com.rustbuilder.ai.rl.supervisor.SupervisorDecision;
+import com.rustbuilder.ai.rl.supervisor.SupervisorDecisionLogWriter;
+import com.rustbuilder.ai.rl.supervisor.SupervisorDecisionValidator;
+import com.rustbuilder.ai.rl.supervisor.SupervisorJson;
+import com.rustbuilder.ai.rl.supervisor.SupervisorObservation;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingTier;
 import com.rustbuilder.model.core.BuildingType;
@@ -48,12 +59,12 @@ public class RLTrainingService {
      * Experimental 5-phase multi-discrete action space integration.
      */
     private MultiDiscreteAction currentMultiAction;
+    private boolean use2dCnn = false;
 
     // Hyperparameters
     private double epsilon = 1.0;
     private double epsilonDecay;
     private final double minEpsilon = 0.05;
-    private final int batchSize = 32;
     private final int targetUpdateFreq = 10;
     private static final int MEMORY_CAPACITY = 10000;
 
@@ -95,10 +106,42 @@ public class RLTrainingService {
     private volatile boolean trainingRunning = false;
     private long trainingStartTime = 0;
     private long totalTrainingTimeMs = 0;
+    private long currentTrainingDurationMs = 0;
+    private long trainingDeadlineMs = 0;
+    private boolean trainingTimeLimitAnnounced = false;
     private String currentRunId;
 
     // Training log (file I/O delegated to RLTrainingLogger)
     private final RLTrainingLogger logger = new RLTrainingLogger();
+    private LlmSupervisorConfig supervisorConfig = LlmSupervisorConfig.disabled();
+    private LlmSupervisor llmSupervisor = new NoOpLlmSupervisor();
+    private final RLTrainingAnalyzer trainingAnalyzer = new RLTrainingAnalyzer();
+    private final SupervisorDecisionValidator supervisorDecisionValidator = new SupervisorDecisionValidator();
+    private final SupervisorDecisionLogWriter supervisorDecisionLogWriter = new SupervisorDecisionLogWriter();
+    private final LlmSupervisorRateLimiter supervisorRateLimiter = new LlmSupervisorRateLimiter();
+    private volatile String lastSupervisorDecisionSummary = "";
+    private volatile SupervisorDecision pendingSupervisorDecision;
+    private volatile String pendingSupervisorDecisionSummary = "";
+    private volatile java.util.function.Consumer<String> supervisorLogCallback;
+    private final com.rustbuilder.ai.rl.supervisor.LlmOrchestrator llmOrchestrator;
+
+    /**
+     * Called by LlmOrchestrator to surface its decision/error to the UI log.
+     */
+    public void setLastSupervisorDecision(SupervisorDecision decision, String summary) {
+        this.lastSupervisorDecisionSummary = summary != null ? summary : "";
+    }
+
+    public void setSupervisorLogCallback(java.util.function.Consumer<String> supervisorLogCallback) {
+        this.supervisorLogCallback = supervisorLogCallback;
+    }
+
+    private void emitSupervisorLog(String message) {
+        java.util.function.Consumer<String> callback = supervisorLogCallback;
+        if (callback != null && message != null && !message.isBlank()) {
+            callback.accept(message);
+        }
+    }
 
     public RLTrainingService() {
         this.evaluator = new HouseEvaluator();
@@ -114,12 +157,19 @@ public class RLTrainingService {
         // Neural Multi-Discrete Flow configuration
         this.rewardConfig = RLRewardConfig.createDefault();
         this.multiDiscreteMemory = new MultiDiscreteExperienceReplay(MEMORY_CAPACITY);
-        this.multiDiscreteAgent = new MultiDiscreteDQNAgent(this.activeConfig.stateEncodingSpec, this.activeConfig.actionSpaceSpec);
+        this.multiDiscreteAgent = new MultiDiscreteDQNAgent(this.activeConfig.stateEncodingSpec, this.activeConfig.actionSpaceSpec, this.use2dCnn);
         this.multiDiscreteAgent.setRewardConfig(this.rewardConfig);
         this.multiDiscreteNeuralProvider = new NeuralMultiDiscreteDecisionProvider(this.multiDiscreteAgent, this.stateEncoder);
 
         // Default policy is Neural
         this.multiDiscretePolicy = new ProvidedPhaseMultiDiscretePolicy(this.multiDiscreteNeuralProvider);
+        
+        this.llmOrchestrator = new com.rustbuilder.ai.rl.supervisor.LlmOrchestrator(this);
+        this.llmOrchestrator.start();
+    }
+
+    public com.rustbuilder.ai.rl.supervisor.LlmOrchestrator getLlmOrchestrator() {
+        return llmOrchestrator;
     }
 
     public void setEncoderMode(EncoderMode mode) {
@@ -157,7 +207,7 @@ public class RLTrainingService {
         this.multiDiscreteMemory = new MultiDiscreteExperienceReplay(MEMORY_CAPACITY);
 
         // Create new agent matching new spec
-        this.multiDiscreteAgent = new MultiDiscreteDQNAgent(activeConfig.stateEncodingSpec, activeConfig.actionSpaceSpec);
+        this.multiDiscreteAgent = new MultiDiscreteDQNAgent(activeConfig.stateEncodingSpec, activeConfig.actionSpaceSpec, this.use2dCnn);
         this.multiDiscreteAgent.setRewardConfig(this.rewardConfig);
         this.multiDiscreteNeuralProvider = new NeuralMultiDiscreteDecisionProvider(this.multiDiscreteAgent, this.stateEncoder);
         this.multiDiscreteNeuralProvider.setUseAimSectorLearning(this.useAimSectorLearning);
@@ -194,7 +244,35 @@ public class RLTrainingService {
      */
     public void train(String modelName, int episodes, int maxStepsPerEpisode, double logW, double costW, double raidW, double workingAreaW, double safeZoneW,
                       int epochs, Consumer<TrainingMetrics> progressCallback, Runnable epochCompleteCallback) {
-        evaluator.setWeights(logW, costW, raidW, workingAreaW, safeZoneW);
+        train(new RLTrainingConfig(modelName, episodes, maxStepsPerEpisode, logW, costW, raidW,
+            workingAreaW, safeZoneW, epochs, supervisorConfig), progressCallback, epochCompleteCallback);
+    }
+
+    public void train(RLTrainingConfig trainingConfig,
+                      Consumer<TrainingMetrics> progressCallback,
+                      Runnable epochCompleteCallback) {
+        if (trainingConfig == null) {
+            throw new IllegalArgumentException("trainingConfig must not be null");
+        }
+
+        String modelName = trainingConfig.getModelName();
+        int episodes = trainingConfig.getEpisodesPerEpoch();
+        int maxStepsPerEpisode = trainingConfig.getMaxStepsPerEpisode();
+        int epochs = trainingConfig.getEpochs();
+        this.supervisorConfig = trainingConfig.getSupervisorConfig();
+        this.currentTrainingDurationMs = trainingConfig.getTrainingDurationMs();
+        
+        if (this.use2dCnn != trainingConfig.isUse2dCnn()) {
+            this.use2dCnn = trainingConfig.isUse2dCnn();
+            reinitializeForEncoderSwitch();
+        }
+
+        evaluator.setWeights(
+            trainingConfig.getLogisticsWeight(),
+            trainingConfig.getCostWeight(),
+            trainingConfig.getRaidWeight(),
+            trainingConfig.getWorkingAreaWeight(),
+            trainingConfig.getSafeZoneWeight());
 
         int totalEpisodesToTrain = epochs * episodes;
         double exploreEpisodes = totalEpisodesToTrain * 0.8;
@@ -208,6 +286,10 @@ public class RLTrainingService {
         stopRequested = false;
         trainingRunning = true;
         this.trainingStartTime = System.currentTimeMillis();
+        this.trainingDeadlineMs = currentTrainingDurationMs > 0
+            ? trainingStartTime + currentTrainingDurationMs
+            : 0L;
+        this.trainingTimeLimitAnnounced = false;
 
         logger.setLogFile(modelName, true);
         logger.setRunContext(currentRunId,
@@ -216,16 +298,17 @@ public class RLTrainingService {
             activeConfig.stateEncodingSpec.hasGlobalVector,
             activeConfig.stateEncodingSpec.globalFeatureCount);
 
+        String modelRunDir = RLModelManager.getModelDirectory(modelName).toString();
         logger.writeRunMetadata(modelName, activeConfig,
             "default_config",
             "default_training",
-            "models_rl", "models_rl");
+            modelRunDir, modelRunDir);
 
         logger.init();
 
         try {
             for (int epoch = 0; epoch < epochs; epoch++) {
-                if (stopRequested) break;
+                if (stopRequested || shouldStopForTrainingTimeLimit()) break;
 
                 double epochTotalReward = 0;
                 double epochTotalStepReward = 0;
@@ -245,7 +328,7 @@ public class RLTrainingService {
             EpisodeRunner runner = new EpisodeRunner(multiDiscreteAgent, multiDiscreteMemory, multiDiscretePolicy, multiDiscreteObserver, random, rewardConfig, logger, this, stateEncoder, evaluator);
 
             for (int ep = 0; ep < episodes; ep++) {
-                if (stopRequested) break;
+                if (stopRequested || shouldStopForTrainingTimeLimit()) break;
                 EpisodeResult result;
                 // Set epsilon BEFORE the episode to ensure correct exploration rate
                 if (multiDiscreteNeuralProvider != null) {
@@ -315,24 +398,16 @@ public class RLTrainingService {
                 if (recentRewards.size() > AVG_WINDOW) recentRewards.removeFirst();
                 avgReward = recentRewards.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
 
-                if (progressCallback != null && (ep % 5 == 0 || ep == episodes - 1)) {
-                    double invalidRate = result.totalActions > 0 ? (double) result.invalidActions / result.totalActions : 0.0;
-                    double loss = lastTrainLoss;
+                TrainingMetrics metrics = createTrainingMetrics(
+                    epoch + 1, epochs, ep + 1, episodes, result, episodeEvalScore);
+                maybeInvokeSupervisor(modelName, metrics, result);
 
-                    TrainingMetrics metrics = new TrainingMetrics(
-                        epoch + 1, epochs, ep + 1, episodes,
-                        episodesTrained, bestScore, epsilon, loss,
-                        avgReward, invalidRate, result.invalidActions, result.totalActions,
-                        bestBaseBlocks, bestBaseHasTC, bestBaseDoors,
-                        avgEvalScore, episodeEvalScore, result.accStepReward, result.finalEvalReward,
-                        result.stepRewardBreakdownSummary(), result.finalRewardBreakdownSummary(),
-                        getBestTotalRewardForDisplay(), bestBaseStepReward, bestBaseFinalReward, bestBaseTotalReward,
-                        multiDiscreteMemory != null ? multiDiscreteMemory.size() : 0
-                    );
+                if (progressCallback != null && (ep % 5 == 0 || ep == episodes - 1)) {
                     progressCallback.accept(metrics);
                 }
 
                 if (result.finalEvalReward > epochBestEpScore) epochBestEpScore = result.finalEvalReward;
+                if (shouldStopForTrainingTimeLimit()) break;
             }
 
                 // End of epoch logging
@@ -353,7 +428,228 @@ public class RLTrainingService {
         } finally {
             logger.close();
             totalTrainingTimeMs += System.currentTimeMillis() - trainingStartTime;
+            currentTrainingDurationMs = 0L;
+            trainingDeadlineMs = 0L;
             trainingRunning = false;
+        }
+    }
+
+    private TrainingMetrics createTrainingMetrics(int currentEpoch,
+                                                  int totalEpochs,
+                                                  int currentEpisodeInEpoch,
+                                                  int totalEpisodesPerEpoch,
+                                                  EpisodeResult result,
+                                                  double episodeEvalScore) {
+        double invalidRate = result.totalActions > 0
+            ? (double) result.invalidActions / result.totalActions
+            : 0.0;
+
+        return new TrainingMetrics(
+            currentEpoch, totalEpochs, currentEpisodeInEpoch, totalEpisodesPerEpoch,
+            episodesTrained, bestScore, epsilon, lastTrainLoss,
+            avgReward, invalidRate, result.invalidActions, result.totalActions,
+            bestBaseBlocks, bestBaseHasTC, bestBaseDoors,
+            avgEvalScore, episodeEvalScore, result.accStepReward, result.finalEvalReward,
+            result.stepRewardBreakdownSummary(), result.finalRewardBreakdownSummary(),
+            getBestTotalRewardForDisplay(), bestBaseStepReward, bestBaseFinalReward, bestBaseTotalReward,
+            multiDiscreteMemory != null ? multiDiscreteMemory.size() : 0,
+            trainingStartTime,
+            System.currentTimeMillis(),
+            trainingDeadlineMs,
+            getCurrentTrainingElapsedMs(),
+            getCurrentTrainingRemainingMs(),
+            currentTrainingDurationMs > 0,
+            isTrainingTimeLimitReached()
+        );
+    }
+
+    private boolean shouldStopForTrainingTimeLimit() {
+        if (!isTrainingTimeLimitReached()) {
+            return false;
+        }
+        if (!trainingTimeLimitAnnounced) {
+            trainingTimeLimitAnnounced = true;
+            lastSupervisorDecisionSummary = "Training time limit reached; stopping after current episode.";
+        }
+        stopRequested = true;
+        return true;
+    }
+
+    private boolean isTrainingTimeLimitReached() {
+        return trainingDeadlineMs > 0 && System.currentTimeMillis() >= trainingDeadlineMs;
+    }
+
+    private long getCurrentTrainingElapsedMs() {
+        return trainingStartTime > 0 ? Math.max(0L, System.currentTimeMillis() - trainingStartTime) : 0L;
+    }
+
+    private long getCurrentTrainingRemainingMs() {
+        if (trainingDeadlineMs <= 0) {
+            return -1L;
+        }
+        return Math.max(0L, trainingDeadlineMs - System.currentTimeMillis());
+    }
+
+    private void maybeInvokeSupervisor(String modelName, TrainingMetrics metrics, EpisodeResult result) {
+        LlmSupervisorConfig config = supervisorConfig;
+        if (config == null || !config.isEnabled() || metrics == null) {
+            return;
+        }
+
+        int interval = config.getCallIntervalEpisodes();
+        if (metrics.totalEpisodesTrained <= 0 || interval <= 0 || metrics.totalEpisodesTrained % interval != 0) {
+            return;
+        }
+
+        SupervisorObservation observation = trainingAnalyzer.summarize(config.getBranchId(), metrics, result, getRewardConfig());
+        emitSupervisorLog(String.format(
+            "Supervisor check: branch=%s episode=%d epsilon=%.5f best=%.4f",
+            observation.branchId,
+            observation.totalEpisodesTrained,
+            observation.epsilon,
+            observation.bestScore));
+        if (!waitForSupervisorRateLimit(observation)) {
+            return;
+        }
+
+        SupervisorDecision rawDecision;
+        try {
+            rawDecision = llmSupervisor.review(observation);
+        } catch (Exception e) {
+            emitSupervisorLog("Supervisor call failed: " + e.getMessage());
+            rawDecision = SupervisorDecision.keepGoing("Supervisor call failed: " + e.getMessage());
+        }
+
+        SupervisorDecision decision = supervisorDecisionValidator.validate(rawDecision, config, getRewardConfig());
+        boolean applied = shouldApplySupervisorDecision(config, decision);
+        if (applied) {
+            applySupervisorDecision(decision);
+            clearPendingSupervisorDecision();
+        } else if (config.getApplyMode() == LlmSupervisorApplyMode.MANUAL_APPROVAL
+                && isManuallyApplicable(decision)) {
+            pendingSupervisorDecision = decision;
+            pendingSupervisorDecisionSummary = formatSupervisorDecisionSummary(observation, decision, false, config);
+        } else if (config.getApplyMode() == LlmSupervisorApplyMode.LOG_ONLY) {
+            clearPendingSupervisorDecision();
+        }
+        lastSupervisorDecisionSummary = formatSupervisorDecisionSummary(observation, decision, applied, config);
+        emitSupervisorLog(lastSupervisorDecisionSummary);
+        supervisorDecisionLogWriter.write(modelName, observation, decision, applied);
+    }
+
+    private boolean waitForSupervisorRateLimit(SupervisorObservation observation) {
+        int estimatedTokens = estimateSupervisorTokens(observation);
+        java.time.Duration delay = supervisorRateLimiter.reserveDelay(estimatedTokens);
+        if (!delay.isPositive()) {
+            return true;
+        }
+
+        lastSupervisorDecisionSummary = String.format(
+            "Supervisor rate limit pause: waiting %ds (limits: %d RPM, %d RPD, %d TPM).",
+            Math.max(1, delay.toSeconds()),
+            supervisorRateLimiter.getRequestsPerMinute(),
+            supervisorRateLimiter.getRequestsPerDay(),
+            supervisorRateLimiter.getTokensPerMinute());
+        emitSupervisorLog(lastSupervisorDecisionSummary);
+
+        long remainingMs = delay.toMillis();
+        while (remainingMs > 0 && !stopRequested) {
+            long sleepMs = Math.min(remainingMs, 1_000L);
+            try {
+                Thread.sleep(sleepMs);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+            remainingMs -= sleepMs;
+        }
+        if (stopRequested) {
+            return false;
+        }
+        supervisorRateLimiter.reserveNowAfterDelay(estimatedTokens);
+        return true;
+    }
+
+    private int estimateSupervisorTokens(SupervisorObservation observation) {
+        String json = SupervisorJson.observationToJson(observation);
+        return Math.max(1, (json.length() / 4) + 2_048);
+    }
+
+    private boolean shouldApplySupervisorDecision(LlmSupervisorConfig config, SupervisorDecision decision) {
+        if (config == null || decision == null || decision.getAction() == null) {
+            return false;
+        }
+        if (decision.getAction() == com.rustbuilder.ai.rl.supervisor.SupervisorAction.KEEP_GOING
+            || decision.getAction() == com.rustbuilder.ai.rl.supervisor.SupervisorAction.REQUEST_PROMOTION_CHECK) {
+            return false;
+        }
+        return config.getApplyMode() == LlmSupervisorApplyMode.AUTO_APPLY;
+    }
+
+    private boolean isManuallyApplicable(SupervisorDecision decision) {
+        if (decision == null || decision.getAction() == null) {
+            return false;
+        }
+        return decision.getAction() == com.rustbuilder.ai.rl.supervisor.SupervisorAction.SET_EPSILON
+            || decision.getAction() == com.rustbuilder.ai.rl.supervisor.SupervisorAction.REPLACE_REWARD_CONFIG
+            || decision.getAction() == com.rustbuilder.ai.rl.supervisor.SupervisorAction.STOP_TRAINING;
+    }
+
+    private void clearPendingSupervisorDecision() {
+        pendingSupervisorDecision = null;
+        pendingSupervisorDecisionSummary = "";
+    }
+
+    private String formatSupervisorDecisionSummary(SupervisorObservation observation,
+                                                   SupervisorDecision decision,
+                                                   boolean applied,
+                                                   LlmSupervisorConfig config) {
+        String reason = decision.getReason();
+        if (reason == null || reason.isBlank()) {
+            reason = "no reason";
+        }
+        return String.format("Supervisor ep %d [%s]: %s, applied=%s, reason=%s",
+            observation.totalEpisodesTrained,
+            config.getApplyMode(),
+            decision.getAction(),
+            applied ? "yes" : "no",
+            reason);
+    }
+
+    private void applySupervisorDecision(SupervisorDecision decision) {
+        if (decision == null) {
+            return;
+        }
+
+        switch (decision.getAction()) {
+            case SET_EPSILON:
+                if (decision.getProposedEpsilon() != null) {
+                    setEpsilon(decision.getProposedEpsilon());
+                }
+                break;
+            case REPLACE_REWARD_CONFIG:
+                if (decision.getProposedRewardConfig() != null) {
+                    setRewardConfig(decision.getProposedRewardConfig());
+                }
+                break;
+            case STOP_TRAINING:
+                requestStop();
+                break;
+            case RESTART_TRAINING:
+                requestStop();
+                if (decision.getProposedRewardConfig() != null) {
+                    setRewardConfig(decision.getProposedRewardConfig());
+                }
+                if (decision.getProposedUse2dCnn() != null) {
+                    setUse2dCnn(decision.getProposedUse2dCnn());
+                }
+                // Stop current run, orchestrator will pick up and start a new run later or user can click start
+                break;
+            case START_NEW_RUN:
+            case REQUEST_PROMOTION_CHECK:
+            case KEEP_GOING:
+            default:
+                break;
         }
     }
 
@@ -504,10 +800,49 @@ public class RLTrainingService {
     }
 
     public void setRewardConfig(RLRewardConfig rewardConfig) {
-        this.rewardConfig = (rewardConfig != null) ? rewardConfig.clone() : null;
+        if (rewardConfig == null) {
+            this.rewardConfig = RLRewardConfig.createDefault();
+        } else if (this.rewardConfig == null) {
+            this.rewardConfig = rewardConfig.clone();
+        } else {
+            this.rewardConfig.copyFrom(rewardConfig);
+        }
         if (this.multiDiscreteAgent != null) {
             this.multiDiscreteAgent.setRewardConfig(this.rewardConfig);
         }
+    }
+
+    public LlmSupervisorConfig getSupervisorConfig() {
+        return supervisorConfig != null ? supervisorConfig.clone() : LlmSupervisorConfig.disabled();
+    }
+
+    public void setSupervisorConfig(LlmSupervisorConfig supervisorConfig) {
+        this.supervisorConfig = supervisorConfig != null
+            ? supervisorConfig.clone()
+            : LlmSupervisorConfig.disabled();
+    }
+
+    public void setLlmSupervisor(LlmSupervisor llmSupervisor) {
+        this.llmSupervisor = llmSupervisor != null ? llmSupervisor : new NoOpLlmSupervisor();
+    }
+
+    public String getLastSupervisorDecisionSummary() {
+        return lastSupervisorDecisionSummary != null ? lastSupervisorDecisionSummary : "";
+    }
+
+    public String getPendingSupervisorDecisionSummary() {
+        return pendingSupervisorDecisionSummary != null ? pendingSupervisorDecisionSummary : "";
+    }
+
+    public boolean applyPendingSupervisorDecision() {
+        SupervisorDecision decision = pendingSupervisorDecision;
+        if (!isManuallyApplicable(decision)) {
+            return false;
+        }
+        applySupervisorDecision(decision);
+        lastSupervisorDecisionSummary = "Supervisor pending decision manually applied: " + decision.getAction();
+        clearPendingSupervisorDecision();
+        return true;
     }
 
     /**
@@ -534,6 +869,8 @@ public class RLTrainingService {
         this.bestBaseFinalReward = 0;
         this.bestBaseTotalReward = 0;
         this.totalTrainingTimeMs = 0;
+        this.lastSupervisorDecisionSummary = "";
+        clearPendingSupervisorDecision();
 
         if (this.multiDiscreteMemory != null) {
             this.multiDiscreteMemory.clear();
@@ -593,6 +930,11 @@ public class RLTrainingService {
 
 
     public GridModel getBestGridModel() { return bestGridModel; }
+    public void setBestGridModel(GridModel model) {
+        synchronized (bestGridLock) {
+            this.bestGridModel = model;
+        }
+    }
     public GridModel getBestGridModelSnapshot() {
         synchronized (bestGridLock) {
             GridModel snapshot = new GridModel();
@@ -606,6 +948,11 @@ public class RLTrainingService {
         }
     }
     public double getBestTotalReward() { return bestTotalReward; }
+    public void setBestRewardGridModel(GridModel model) {
+        synchronized (bestGridLock) {
+            this.bestRewardGridModel = model;
+        }
+    }
     public GridModel getBestRewardGridModelSnapshot() {
         synchronized (bestGridLock) {
             GridModel snapshot = new GridModel();
@@ -635,8 +982,23 @@ public class RLTrainingService {
         return stopRequested;
     }
 
+    public boolean isTrainingRunning() {
+        return trainingRunning;
+    }
+
     public com.rustbuilder.ai.rl.env.spec.EncodingRuntimeConfig getRuntimeConfig() {
         return this.activeConfig;
+    }
+    
+    public boolean isUse2dCnn() {
+        return use2dCnn;
+    }
+    
+    public void setUse2dCnn(boolean use2dCnn) {
+        if (this.use2dCnn != use2dCnn) {
+            this.use2dCnn = use2dCnn;
+            reinitializeForEncoderSwitch();
+        }
     }
 
     public boolean isUseAimSectorLearning() {
@@ -692,36 +1054,6 @@ public class RLTrainingService {
      */
     public void setMultiDiscreteDecisionProvider(MultiDiscretePhaseDecisionProvider provider) {
         this.multiDiscretePolicy = new ProvidedPhaseMultiDiscretePolicy(provider);
-    }
-
-    /**
-     * Check if two blocks are structurally connected (socket proximity or shared foundation for furniture).
-     */
-    private boolean areBlocksConnected(BuildingBlock a, BuildingBlock b) {
-        // Quick distance reject
-        if (Math.abs(a.getX() - b.getX()) > 200 || Math.abs(a.getY() - b.getY()) > 200) return false;
-
-        // Furniture connects to the foundation it sits on (same x,y position)
-        boolean aFurn = com.rustbuilder.util.BuildingTypeUtils.isFurniture(a.getType());
-        boolean bFurn = com.rustbuilder.util.BuildingTypeUtils.isFurniture(b.getType());
-        boolean aBase = com.rustbuilder.util.BuildingTypeUtils.isFoundation(a.getType()) || com.rustbuilder.util.BuildingTypeUtils.isFloor(a.getType());
-        boolean bBase = com.rustbuilder.util.BuildingTypeUtils.isFoundation(b.getType()) || com.rustbuilder.util.BuildingTypeUtils.isFloor(b.getType());
-
-        if ((aFurn && bBase) || (bFurn && aBase)) {
-            if (a.getZ() == b.getZ() && Math.abs(a.getX() - b.getX()) < 1.0 && Math.abs(a.getY() - b.getY()) < 1.0) {
-                return true;
-            }
-        }
-
-        // Socket-based connection
-        for (com.rustbuilder.model.core.Socket s1 : a.getSockets()) {
-            for (com.rustbuilder.model.core.Socket s2 : b.getSockets()) {
-                double dx = s1.getX() - s2.getX();
-                double dy = s1.getY() - s2.getY();
-                if (dx * dx + dy * dy < 1.3) return true;
-            }
-        }
-        return false;
     }
 
     private boolean isFoundation(BuildingBlock b) {

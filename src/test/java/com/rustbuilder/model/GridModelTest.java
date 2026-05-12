@@ -34,10 +34,9 @@ public class GridModelTest {
         Wall wall1 = new Wall(0, 0, 0, Orientation.NORTH);
         gridModel.addBlock(wall1);
 
-        // Place another wall at 90 degrees (T-junction/Corner) — same tile
+        // Place another wall at 90 degrees on the same tile.
         Wall wall2 = new Wall(0, 0, 0, Orientation.EAST);
 
-        // Should be allowed (corner connection — different orientations don't collide)
         assertTrue(gridModel.canPlace(wall2), "Should allow placing wall at 90 degrees on same tile (Corner)");
     }
 
@@ -59,23 +58,8 @@ public class GridModelTest {
         Foundation foundation = new Foundation(0, 0, 0, 0);
         gridModel.addBlock(foundation);
 
-        // Place wall on edge of foundation
-        // Wall offset logic is complex, but let's try placing a wall that "snaps" to it
-        // Ideally we use SnappingService to get coordinates, but here we test raw collision
-        
-        // Wall at center of foundation (invalid usually, but let's check if they collide)
-        // Actually, walls are placed on edges of tiles usually? 
-        // In this model, walls are centered on the tile edge or center?
-        // Wall.java: getPolygonPoints uses TILE_SIZE/2 offset.
-        // Let's assume we place a wall at the same (x,y) as foundation.
-        
         Wall wall = new Wall(0, 0, 0, Orientation.NORTH);
-        
-        // They should NOT collide because we want to place walls on foundations
-        // But wait, my logic in GridModel says:
-        // if ((isNewWall && isExistingFoundation) || (isNewFoundation && isExistingWall)) continue;
-        // So they are explicitly ignored.
-        
+
         assertTrue(gridModel.canPlace(wall), "Should allow placing wall on foundation");
     }
 
@@ -88,25 +72,6 @@ public class GridModelTest {
         // Place a floor at the same location
         Floor floor = new Floor(0, 0, 0, 0);
 
-        // Should collide if wall cuts through floor
-        // With my recent change, I removed the explicit ignore.
-        // And I shrunk the floor polygon.
-        // Wall (North) is thin strip in middle-ish?
-        // Wall polygon: thickness 6.
-        // Floor polygon: shrunk by 5 (thickness - 1).
-        
-        // If Wall is North (Rot 0), it runs along X axis? Or Y?
-        // Wall (0,0,0,0) -> Orientation NORTH.
-        // Let's check Wall.java geometry if needed, but assuming standard:
-        // It should probably collide if it's right in the middle.
-        
-        // Wait, if I place a floor on a wall, it usually snaps to the top (Z+1).
-        // But if I place it at same Z?
-        // Rust logic: You can't place a floor intersecting a wall on the same level usually?
-        // Or maybe you can?
-        // The user said "walls should interfere with placing ceiling".
-        // So they SHOULD collide.
-        
         assertFalse(gridModel.canPlace(floor), "Should NOT allow placing floor intersecting wall");
     }
     @Test
@@ -135,7 +100,7 @@ public class GridModelTest {
         // This is intentional: diagonal walls cut through the space above them.
         assertFalse(gridModel.canPlace(floor), "Should NOT allow placing floor at Z=1 if diagonal wall at Z=0 intersects it");
 
-        // 3. Now test with a Normal (edge) wall — it should NOT block a floor above it
+        // 3. Now test with an edge wall; it should not block a floor above it.
         gridModel.clear();
         // Add a foundation so the wall has support
         Foundation foundation = new Foundation(0, 0, 0, 0);
@@ -143,9 +108,6 @@ public class GridModelTest {
         Wall edgeWall = new Wall(0, 0, 0, Orientation.NORTH);
         gridModel.addBlock(edgeWall);
 
-        // 4. A floor at Z=1 above an edge wall (North) should be allowed:
-        //    The edge wall is thin (6px strip) and sits at the tile boundary,
-        //    so the shrunk floor polygon should not intersect it.
         assertTrue(gridModel.canPlace(floor), "Should allow placing floor at Z=1 if wall at Z=0 is an edge-only wall");
     }
 

@@ -9,11 +9,14 @@ import java.io.Serializable;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
+import com.rustbuilder.ai.rl.supervisor.LlmSupervisorConfig;
 import com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteActionSpace;
 
 
@@ -42,6 +45,10 @@ public class RLModelManager {
         public final double workingAreaWeight;
         public final double safeZoneWeight;
         public RLRewardConfig rewardConfig; 
+        public LlmSupervisorConfig supervisorConfig;
+        
+        public String bestBaseRewardJson;
+        public String bestBaseEvalJson;
 
         // Compatibility metadata
         public String stateEncoderName = "Voxel";
@@ -60,6 +67,7 @@ public class RLModelManager {
         public int globalFeatureCount = 0;
         public boolean hasObjectTable = false;
         public boolean hasGraphState = false;
+        public boolean use2dCnn = false;
 
         public RLModel(String name, int episodesTrained,
                        double bestScore, double epsilon,
@@ -84,7 +92,7 @@ public class RLModelManager {
         }
     }
 
-    private static Path getModelsDir() {
+    public static Path getModelsDir() {
         Path dir = Paths.get(MODELS_DIR);
         try {
             Files.createDirectories(dir);
@@ -93,13 +101,46 @@ public class RLModelManager {
         return dir;
     }
 
+    public static Path getModelDirectory(String modelName) {
+        Path dir = getModelDirectoryPath(modelName);
+        try {
+            Files.createDirectories(dir);
+        } catch (IOException e) {
+        }
+        return dir;
+    }
+
+    public static Path resolveModelFile(String modelName, String fileName) {
+        return getModelDirectory(modelName).resolve(fileName);
+    }
+
+    public static Path findExistingModelFile(String modelName, String fileName) {
+        Path modelFile = getModelDirectoryPath(modelName).resolve(fileName);
+        if (Files.exists(modelFile)) {
+            return modelFile;
+        }
+        return getModelsDir().resolve(fileName);
+    }
+
+    private static Path getModelDirectoryPath(String modelName) {
+        return getModelsDir().resolve(safeModelDirectoryName(modelName));
+    }
+
+    private static String safeModelDirectoryName(String modelName) {
+        String name = modelName == null ? "" : modelName.trim();
+        if (name.isEmpty()) {
+            return "unnamed_model";
+        }
+        return name.replaceAll("[\\\\/:*?\"<>|]+", "_");
+    }
+
     public static void saveModel(RLModel model, RLTrainingService rlService) throws IOException {
-        Path file = getModelsDir().resolve(model.name + ".rmeta");
+        Path file = resolveModelFile(model.name, model.name + ".rmeta");
         try (ObjectOutputStream oos = new ObjectOutputStream(
                 new BufferedOutputStream(Files.newOutputStream(file)))) {
             oos.writeObject(model);
         }
-        Path netFile = getModelsDir().resolve(model.name + ".rnet");
+        Path netFile = resolveModelFile(model.name, model.name + ".rnet");
         rlService.getMultiDiscreteAgent().save(netFile.toString());
     }
 
@@ -110,7 +151,7 @@ public class RLModelManager {
     }
 
     public static RLModel loadMetadata(String name) throws IOException, ClassNotFoundException {
-        Path file = getModelsDir().resolve(name + ".rmeta");
+        Path file = findExistingModelFile(name, name + ".rmeta");
         try (ObjectInputStream ois = new ObjectInputStream(
                 new BufferedInputStream(Files.newInputStream(file)))) {
             return (RLModel) ois.readObject();
@@ -118,7 +159,7 @@ public class RLModelManager {
     }
 
     public static void loadNetworkWeights(String name, RLTrainingService rlService) throws IOException {
-        Path netFile = getModelsDir().resolve(name + ".rnet");
+        Path netFile = findExistingModelFile(name, name + ".rnet");
         if (Files.exists(netFile)) {
             rlService.getMultiDiscreteAgent().load(netFile.toString());
         }
@@ -126,30 +167,70 @@ public class RLModelManager {
 
     public static List<String> listModels() {
         Path dir = getModelsDir();
+        Set<String> names = new LinkedHashSet<>();
         try (Stream<Path> files = Files.list(dir)) {
-            return files
+            files
                 .filter(p -> p.toString().endsWith(".rmeta"))
                 .map(p -> {
                     String fileName = p.getFileName().toString();
                     return fileName.substring(0, fileName.length() - 6); // remove .rmeta
                 })
                 .sorted()
-                .collect(Collectors.toList());
+                .forEach(names::add);
         } catch (IOException e) {
-            return new ArrayList<>();
+        }
+
+        try (Stream<Path> dirs = Files.list(dir)) {
+            dirs
+                .filter(Files::isDirectory)
+                .forEach(modelDir -> addNestedModelNames(modelDir, names));
+        } catch (IOException e) {
+        }
+
+        return names.stream().sorted().collect(Collectors.toList());
+    }
+
+    private static void addNestedModelNames(Path modelDir, Set<String> names) {
+        try (Stream<Path> files = Files.list(modelDir)) {
+            files
+                .filter(p -> p.toString().endsWith(".rmeta"))
+                .map(p -> {
+                    String fileName = p.getFileName().toString();
+                    return fileName.substring(0, fileName.length() - 6); // remove .rmeta
+                })
+                .forEach(names::add);
+        } catch (IOException e) {
         }
     }
 
     public static boolean deleteModel(String name) {
         Path meta = getModelsDir().resolve(name + ".rmeta");
         Path net = getModelsDir().resolve(name + ".rnet");
+        Path modelDir = getModelDirectoryPath(name);
         try {
             boolean d1 = Files.deleteIfExists(meta);
             boolean d2 = Files.deleteIfExists(net);
-            return d1 || d2;
+            boolean d3 = deleteDirectoryIfExists(modelDir);
+            return d1 || d2 || d3;
         } catch (IOException e) {
             return false;
         }
+    }
+
+    private static boolean deleteDirectoryIfExists(Path dir) throws IOException {
+        if (!Files.exists(dir)) {
+            return false;
+        }
+
+        try (Stream<Path> paths = Files.walk(dir)) {
+            List<Path> ordered = paths
+                .sorted(Comparator.reverseOrder())
+                .collect(Collectors.toList());
+            for (Path path : ordered) {
+                Files.deleteIfExists(path);
+            }
+        }
+        return true;
     }
 
     public static RLModel createSnapshot(String name, RLTrainingService rlService,
@@ -181,6 +262,11 @@ public class RLModelManager {
         model.globalFeatureCount = config.stateEncodingSpec.globalFeatureCount;
         model.hasObjectTable = config.stateEncodingSpec.hasObjectTable;
         model.hasGraphState = config.stateEncodingSpec.hasGraphState;
+        model.supervisorConfig = rlService.getSupervisorConfig();
+        model.use2dCnn = rlService.isUse2dCnn();
+        
+        model.bestBaseEvalJson = com.rustbuilder.model.GridSerializer.toJson(rlService.getBestGridModelSnapshot());
+        model.bestBaseRewardJson = com.rustbuilder.model.GridSerializer.toJson(rlService.getBestRewardGridModelSnapshot());
         
         return model;
     }
@@ -216,8 +302,19 @@ public class RLModelManager {
         rlService.setEpisodesTrained(model.episodesTrained);
         rlService.setEpsilon(model.epsilon);
         rlService.setBestScore(model.bestScore);
+        rlService.setUse2dCnn(model.use2dCnn);
         if (model.rewardConfig != null) {
             rlService.setRewardConfig(model.rewardConfig.clone());
+        }
+        if (model.supervisorConfig != null) {
+            rlService.setSupervisorConfig(model.supervisorConfig.clone());
+        }
+        
+        if (model.bestBaseEvalJson != null && !model.bestBaseEvalJson.isEmpty()) {
+            rlService.setBestGridModel(com.rustbuilder.model.GridSerializer.fromJson(model.bestBaseEvalJson));
+        }
+        if (model.bestBaseRewardJson != null && !model.bestBaseRewardJson.isEmpty()) {
+            rlService.setBestRewardGridModel(com.rustbuilder.model.GridSerializer.fromJson(model.bestBaseRewardJson));
         }
     }
 }

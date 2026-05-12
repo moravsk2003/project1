@@ -1,5 +1,6 @@
 package com.rustbuilder.ai.rl;
 
+import com.rustbuilder.ai.rl.reward.RewardFormulaSet;
 import java.io.Serializable;
 
 /**
@@ -11,8 +12,8 @@ public class RLRewardConfig implements Serializable, Cloneable {
 
     // --- Step Rewards ---
     public double basePlacementReward = 0.08;
-    public double socketConnectionReward = 0.09;
-    public double socketConnectionMax = 0.99;
+    public double socketConnectionReward = 0.07;
+    public double socketConnectionMax = 0.9;
     public double disconnectedSegmentPenalty = -0.2;
     
     public double stabilityRewardMult = 0.04;
@@ -39,10 +40,14 @@ public class RLRewardConfig implements Serializable, Cloneable {
     public double penaltyGenericInvalid = -0.20;
 
     // --- Growth Bonuses (Multi-Discrete Flow) ---
-    public double blockGrowthReward = 0.11;
-    public double growthStreakBonus = 0.03;
+    public double blockGrowthReward = 0.05;
+    public double growthStreakBonus = 0.01;
+    public double mainComponentGrowthReward = 0.02;
+    public double componentCountIncreasePenalty = 0.025;
+    public double tcProtectionDeltaReward = 0.2;
+    public double tcProtectionEpisodeRewardCap = 1.0;
     public double noGrowthPenalty = -0.04;
-    public double stepEvalDeltaMultiplier = 3.0;
+    public double stepEvalDeltaMultiplier = 6.0;
     public double stopUnderbuildPenaltyLow = -0.5;
     public double stopUnderbuildPenaltyHigh = -1.0;
     public double stopRewardClampMin = -4.0;
@@ -59,15 +64,84 @@ public class RLRewardConfig implements Serializable, Cloneable {
     public double logisticsBonus = 10.0;
     public double raidBonusMultiplier = 30.0;
     public double totalFailurePenalty = -5.0;
+    public RewardFormulaSet rewardFormulaSet = new RewardFormulaSet();
 
     public static RLRewardConfig createDefault() {
         return new RLRewardConfig();
     }
 
+    public void copyFrom(RLRewardConfig other) {
+        if (other == null) return;
+
+        this.basePlacementReward = other.basePlacementReward;
+        this.socketConnectionReward = other.socketConnectionReward;
+        this.socketConnectionMax = other.socketConnectionMax;
+        this.disconnectedSegmentPenalty = other.disconnectedSegmentPenalty;
+        this.stabilityRewardMult = other.stabilityRewardMult;
+        this.floatingBlockPenalty = other.floatingBlockPenalty;
+        this.tcPlacementBonus = other.tcPlacementBonus;
+        this.tcEnclosedBonus = other.tcEnclosedBonus;
+        this.secondaryDeployableBonus = other.secondaryDeployableBonus;
+        this.foundationCountBonus1 = other.foundationCountBonus1;
+        this.foundationCountBonus2 = other.foundationCountBonus2;
+        this.foundationCountBonus3 = other.foundationCountBonus3;
+        this.foundationCountBonus4 = other.foundationCountBonus4;
+        this.foundationCountBonus5 = other.foundationCountBonus5;
+        this.spatialCompactnessBonus = other.spatialCompactnessBonus;
+        this.spatialScatteredPenalty = other.spatialScatteredPenalty;
+        this.penaltyNoSupport = other.penaltyNoSupport;
+        this.penaltyBadSocket = other.penaltyBadSocket;
+        this.penaltyCollision = other.penaltyCollision;
+        this.penaltyFloorConstraint = other.penaltyFloorConstraint;
+        this.penaltyGenericInvalid = other.penaltyGenericInvalid;
+        this.blockGrowthReward = other.blockGrowthReward;
+        this.growthStreakBonus = other.growthStreakBonus;
+        this.mainComponentGrowthReward = other.mainComponentGrowthReward;
+        this.componentCountIncreasePenalty = other.componentCountIncreasePenalty;
+        this.tcProtectionDeltaReward = other.tcProtectionDeltaReward;
+        this.tcProtectionEpisodeRewardCap = other.tcProtectionEpisodeRewardCap;
+        this.noGrowthPenalty = other.noGrowthPenalty;
+        this.stepEvalDeltaMultiplier = other.stepEvalDeltaMultiplier;
+        this.stopUnderbuildPenaltyLow = other.stopUnderbuildPenaltyLow;
+        this.stopUnderbuildPenaltyHigh = other.stopUnderbuildPenaltyHigh;
+        this.stopRewardClampMin = other.stopRewardClampMin;
+        this.stopUnbuiltBlockPenalty = other.stopUnbuiltBlockPenalty;
+        this.finalScoreMultiplier = other.finalScoreMultiplier;
+        this.earlyStopPenaltyMult = other.earlyStopPenaltyMult;
+        this.connectivityBonus = other.connectivityBonus;
+        this.fragmentBasePenalty = other.fragmentBasePenalty;
+        this.fragmentDistPenaltyMult = other.fragmentDistPenaltyMult;
+        this.tcConnectivityPenalty = other.tcConnectivityPenalty;
+        this.tcDistancePenaltyMult = other.tcDistancePenaltyMult;
+        this.logisticsBonus = other.logisticsBonus;
+        this.raidBonusMultiplier = other.raidBonusMultiplier;
+        this.totalFailurePenalty = other.totalFailurePenalty;
+        this.rewardFormulaSet = other.rewardFormulaSet != null
+            ? other.rewardFormulaSet.clone()
+            : new RewardFormulaSet();
+    }
+
+    public java.util.Map<String, Double> toMap() {
+        java.util.Map<String, Double> map = new java.util.LinkedHashMap<>();
+        for (java.lang.reflect.Field field : this.getClass().getFields()) {
+            if (field.getType() == double.class) {
+                try {
+                    map.put(field.getName(), field.getDouble(this));
+                } catch (IllegalAccessException ignored) {
+                }
+            }
+        }
+        return map;
+    }
+
     @Override
     public RLRewardConfig clone() {
         try {
-            return (RLRewardConfig) super.clone();
+            RLRewardConfig clone = (RLRewardConfig) super.clone();
+            clone.rewardFormulaSet = rewardFormulaSet != null
+                ? rewardFormulaSet.clone()
+                : new RewardFormulaSet();
+            return clone;
         } catch (CloneNotSupportedException e) {
             throw new AssertionError();
         }

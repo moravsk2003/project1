@@ -4,12 +4,21 @@ import com.rustbuilder.core.action.BuildAction;
 import com.rustbuilder.core.placement.PlacementError;
 import com.rustbuilder.ai.rl.env.state.EncodedState;
 import com.rustbuilder.ai.rl.env.state.StateRepresentationEncoder;
+import com.rustbuilder.config.GameConstants;
 import com.rustbuilder.ai.rl.log.StopReason;
 import com.rustbuilder.ai.rl.multidiscrete.*;
 import com.rustbuilder.model.GridModel;
+import com.rustbuilder.model.core.BuildingBlock;
+import com.rustbuilder.model.core.BuildingType;
+import com.rustbuilder.model.core.Socket;
 import com.rustbuilder.service.evaluator.HouseEvaluator;
 import com.rustbuilder.service.physics.PlacementService;
+import com.rustbuilder.util.BuildingTypeUtils;
+import com.rustbuilder.util.SocketCompatibilityUtils;
+import java.util.ArrayList;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Random;
 import java.util.logging.Level;
 import java.util.logging.Logger;
@@ -20,7 +29,8 @@ public class EpisodeRunner {
     private static final int TRAIN_START_MEMORY = 48;
     private static final int TRAIN_BATCH_SIZE = 32;
     private static final int TRAIN_EVERY_STEPS = 4;
-    private static final double GROWTH_STREAK_BONUS_MAX = 3.0;
+    private static final int GROWTH_STREAK_BONUS_STEP_CAP = 15;
+    private static final int SPATIAL_COMPONENT_SEARCH_THRESHOLD = 128;
 
     private final MultiDiscreteDQNAgent multiDiscreteAgent;
     private final MultiDiscreteExperienceReplay multiDiscreteMemory;
@@ -80,9 +90,9 @@ public class EpisodeRunner {
 
         int consecutiveInvalidSteps = 0;
         int consecutiveNoGrowthSteps = 0;
-        int lastBlockCount = 0;
         int consecutiveGrowthSteps = 0;
         double previousStepEvalScore = 0.0;
+        double remainingTcProtectionReward = Math.max(0.0, rewardConfig.tcProtectionEpisodeRewardCap);
 
         try {
             for (int step = 0; step < maxStepsPerEpisode; step++) {
@@ -179,6 +189,8 @@ public class EpisodeRunner {
             long placementStartNs = System.nanoTime();
             BuildAction legacyAction = MultiDiscreteActionMapper.toBuildAction(multiAction);
             int beforeBlockCount = result.grid.getAllBlocks().size();
+            ComponentStats oldComponentStats = analyzeComponents(result.grid);
+            double oldTcProtectionScore = calculateTcProtectionScore(result.grid);
             RLTrainingService.PlacementResult pResult = rlService.placeBlock(result.grid, legacyAction);
             result.perfPlacementNs += System.nanoTime() - placementStartNs;
 
@@ -257,13 +269,26 @@ public class EpisodeRunner {
                 stepReward += growthReward;
                 result.stepRewardGrowth += growthReward;
                 consecutiveGrowthSteps++;
-                double growthStreakReward = Math.min(
-                    consecutiveGrowthSteps * rewardConfig.growthStreakBonus,
-                    GROWTH_STREAK_BONUS_MAX
-                );
+                double growthStreakReward = calculateGrowthStreakReward(consecutiveGrowthSteps, rewardConfig);
                 stepReward += growthStreakReward;
                 result.stepRewardGrowthStreak += growthStreakReward;
                 consecutiveNoGrowthSteps = 0;
+
+                ComponentStats newComponentStats = analyzeComponents(result.grid);
+                ComponentDeltaReward componentDeltaReward = calculateComponentDeltaReward(
+                    oldComponentStats, newComponentStats, rewardConfig);
+                stepReward += componentDeltaReward.total();
+                result.stepRewardMainComponentDelta += componentDeltaReward.mainComponentReward;
+                result.stepRewardFragmentationDelta -= componentDeltaReward.componentIncreasePenalty;
+
+                double newTcProtectionScore = calculateTcProtectionScore(result.grid);
+                double tcProtectionReward = calculateTcProtectionDeltaReward(
+                    oldTcProtectionScore, newTcProtectionScore, rewardConfig, remainingTcProtectionReward);
+                if (tcProtectionReward > 0.0) {
+                    stepReward += tcProtectionReward;
+                    result.stepRewardTcProtectionDelta += tcProtectionReward;
+                    remainingTcProtectionReward -= tcProtectionReward;
+                }
 
                 double currentStepEvalScore = calculateStepEvalScore(result.grid, previousStepEvalScore);
                 double stepEvalDelta = currentStepEvalScore - previousStepEvalScore;
@@ -352,6 +377,159 @@ public class EpisodeRunner {
         return result;
     }
 
+    static double calculateGrowthStreakReward(int consecutiveGrowthSteps, RLRewardConfig config) {
+        if (consecutiveGrowthSteps <= 0 || config == null) {
+            return 0.0;
+        }
+        int cappedStreak = Math.min(consecutiveGrowthSteps, GROWTH_STREAK_BONUS_STEP_CAP);
+        return cappedStreak * Math.max(0.0, config.growthStreakBonus);
+    }
+
+    static ComponentDeltaReward calculateComponentDeltaReward(ComponentStats oldStats, ComponentStats newStats, RLRewardConfig config) {
+        if (oldStats == null || newStats == null || config == null) {
+            return ComponentDeltaReward.ZERO;
+        }
+        double mainComponentReward = Math.max(0, newStats.mainComponentBlocks - oldStats.mainComponentBlocks)
+            * Math.max(0.0, config.mainComponentGrowthReward);
+        double componentIncreasePenalty = Math.max(0, newStats.componentCount - oldStats.componentCount)
+            * Math.max(0.0, config.componentCountIncreasePenalty);
+        return new ComponentDeltaReward(mainComponentReward, componentIncreasePenalty);
+    }
+
+    static double calculateTcProtectionDeltaReward(double oldScore, double newScore, RLRewardConfig config, double remainingBudget) {
+        if (config == null || remainingBudget <= 0.0) {
+            return 0.0;
+        }
+        double scoreDelta = Math.max(0.0, newScore - oldScore);
+        double rawReward = scoreDelta * Math.max(0.0, config.tcProtectionDeltaReward);
+        return Math.min(rawReward, Math.max(0.0, remainingBudget));
+    }
+
+    static double calculateTcProtectionScore(GridModel grid) {
+        if (grid == null) {
+            return 0.0;
+        }
+
+        List<BuildingBlock> blocks = grid.getAllBlocks();
+        BuildingBlock tc = null;
+        for (BuildingBlock block : blocks) {
+            if (block.getType() == BuildingType.TC) {
+                tc = block;
+                break;
+            }
+        }
+        if (tc == null) {
+            return 0.0;
+        }
+
+        int nearbyWallLike = 0;
+        boolean hasRoof = false;
+        boolean hasDoorLike = false;
+        double nearRadiusSq = GameConstants.TILE_SIZE * GameConstants.TILE_SIZE * 2.25;
+
+        for (BuildingBlock block : blocks) {
+            if (block == tc) continue;
+
+            double dx = block.getX() - tc.getX();
+            double dy = block.getY() - tc.getY();
+            double distSq = dx * dx + dy * dy;
+
+            if (BuildingTypeUtils.isHorizontalSurface(block.getType())
+                    && block.getZ() == tc.getZ() + 1
+                    && Math.abs(dx) < 1.0
+                    && Math.abs(dy) < 1.0) {
+                hasRoof = true;
+            }
+
+            if (block.getZ() == tc.getZ() && distSq <= nearRadiusSq) {
+                if (BuildingTypeUtils.isWall(block.getType())) {
+                    nearbyWallLike++;
+                    if (block.getType() == BuildingType.DOORWAY) {
+                        hasDoorLike = true;
+                    }
+                } else if (block.getType() == BuildingType.DOOR) {
+                    hasDoorLike = true;
+                }
+            }
+        }
+
+        double score = 0.0;
+        score += Math.min(4, nearbyWallLike) * 0.5;
+        if (hasRoof) {
+            score += 1.0;
+        }
+        if (hasDoorLike) {
+            score += 1.0;
+        }
+        return score;
+    }
+
+    static ComponentStats analyzeComponents(GridModel grid) {
+        if (grid == null) {
+            return ComponentStats.EMPTY;
+        }
+        List<BuildingBlock> allBlocks = grid.getAllBlocks();
+        int blockCount = allBlocks.size();
+        if (blockCount == 0) {
+            return ComponentStats.EMPTY;
+        }
+
+        boolean useSpatialComponentSearch = blockCount > SPATIAL_COMPONENT_SEARCH_THRESHOLD;
+        Map<BuildingBlock, Integer> blockIndex = null;
+        if (useSpatialComponentSearch) {
+            blockIndex = new IdentityHashMap<>(blockCount);
+            for (int i = 0; i < blockCount; i++) {
+                blockIndex.put(allBlocks.get(i), i);
+            }
+        }
+
+        boolean[] visited = new boolean[blockCount];
+        List<Integer> componentSizes = new ArrayList<>();
+        for (int i = 0; i < blockCount; i++) {
+            if (visited[i]) continue;
+            int size = 0;
+            java.util.ArrayDeque<Integer> queue = new java.util.ArrayDeque<>();
+            queue.add(i);
+            visited[i] = true;
+            while (!queue.isEmpty()) {
+                int cur = queue.poll();
+                size++;
+                BuildingBlock currentBlock = allBlocks.get(cur);
+                if (useSpatialComponentSearch) {
+                    List<BuildingBlock> neighbors = grid.getNearbyBlocks(
+                        currentBlock.getX(), currentBlock.getY(), currentBlock.getZ(), GameConstants.TILE_SIZE * 1.5
+                    );
+                    for (BuildingBlock neighbor : neighbors) {
+                        Integer neighborIndex = blockIndex.get(neighbor);
+                        if (neighborIndex == null) continue;
+                        int j = neighborIndex;
+                        if (visited[j]) continue;
+                        if (areBlocksConnected(currentBlock, neighbor)) {
+                            visited[j] = true;
+                            queue.add(j);
+                        }
+                    }
+                } else {
+                    for (int j = 0; j < blockCount; j++) {
+                        if (visited[j]) continue;
+                        if (!areBlocksConnected(currentBlock, allBlocks.get(j))) continue;
+                        visited[j] = true;
+                        queue.add(j);
+                    }
+                }
+            }
+            componentSizes.add(size);
+        }
+
+        int mainComponentBlocks = 0;
+        for (int size : componentSizes) {
+            if (size > mainComponentBlocks) {
+                mainComponentBlocks = size;
+            }
+        }
+        return new ComponentStats(componentSizes.size(), mainComponentBlocks);
+    }
+
     private double calculateStepEvalScore(GridModel grid, double fallbackScore) {
         if (evaluator == null || rewardConfig.stepEvalDeltaMultiplier == 0.0) {
             return fallbackScore;
@@ -376,6 +554,99 @@ public class EpisodeRunner {
             return result.grid.clone();
         } finally {
             result.perfGridCloneNs += System.nanoTime() - cloneStartNs;
+        }
+    }
+
+    private static boolean areBlocksConnected(BuildingBlock b1, BuildingBlock b2) {
+        if (b1 == null || b2 == null || b1 == b2) return false;
+        if (Math.abs(b1.getX() - b2.getX()) > GameConstants.TILE_SIZE * 2.5 ||
+            Math.abs(b1.getY() - b2.getY()) > GameConstants.TILE_SIZE * 2.5) {
+            return false;
+        }
+
+        if (isFurnitureOnBase(b1, b2) || isFurnitureOnBase(b2, b1)) {
+            return true;
+        }
+        if (isDoorInDoorway(b1, b2) || isDoorInDoorway(b2, b1)) {
+            return true;
+        }
+
+        boolean allowCenterConnection = b1.getZ() == b2.getZ()
+                && (BuildingTypeUtils.isFoundation(b1.getType()) || BuildingTypeUtils.isFoundation(b2.getType()));
+        if (Math.abs(b1.getZ() - b2.getZ()) <= 1 && areSocketsConnected(b1, b2, allowCenterConnection)) {
+            return true;
+        }
+
+        if (b1.getZ() != b2.getZ()) return false;
+        double dx = b1.getX() - b2.getX();
+        double dy = b1.getY() - b2.getY();
+        double distSq = dx * dx + dy * dy;
+        double threshold = GameConstants.TILE_SIZE * 1.5;
+        return distSq <= threshold * threshold;
+    }
+
+    private static boolean isFurnitureOnBase(BuildingBlock furniture, BuildingBlock base) {
+        return BuildingTypeUtils.isFurniture(furniture.getType())
+                && BuildingTypeUtils.isHorizontalSurface(base.getType())
+                && furniture.getZ() == base.getZ()
+                && sameTilePosition(furniture, base);
+    }
+
+    private static boolean isDoorInDoorway(BuildingBlock door, BuildingBlock doorway) {
+        return door.getType() == BuildingType.DOOR
+                && doorway.getType() == BuildingType.DOORWAY
+                && door.getZ() == doorway.getZ()
+                && sameTilePosition(door, doorway);
+    }
+
+    private static boolean sameTilePosition(BuildingBlock a, BuildingBlock b) {
+        return Math.abs(a.getX() - b.getX()) < 1.0
+                && Math.abs(a.getY() - b.getY()) < 1.0;
+    }
+
+    private static boolean areSocketsConnected(BuildingBlock b1, BuildingBlock b2, boolean allowCenterConnection) {
+        for (Socket s1 : b1.getSockets()) {
+            for (Socket s2 : b2.getSockets()) {
+                if (SocketCompatibilityUtils.areEdgeSocketsConnected(s1, s2, 1.3)) {
+                    return true;
+                }
+                if (allowCenterConnection && s1.isCenter() && s2.isCenter()) {
+                    double dx = s1.getX() - s2.getX();
+                    double dy = s1.getY() - s2.getY();
+                    if (dx * dx + dy * dy < 1.3) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    static final class ComponentStats {
+        static final ComponentStats EMPTY = new ComponentStats(0, 0);
+
+        final int componentCount;
+        final int mainComponentBlocks;
+
+        ComponentStats(int componentCount, int mainComponentBlocks) {
+            this.componentCount = componentCount;
+            this.mainComponentBlocks = mainComponentBlocks;
+        }
+    }
+
+    static final class ComponentDeltaReward {
+        static final ComponentDeltaReward ZERO = new ComponentDeltaReward(0.0, 0.0);
+
+        final double mainComponentReward;
+        final double componentIncreasePenalty;
+
+        ComponentDeltaReward(double mainComponentReward, double componentIncreasePenalty) {
+            this.mainComponentReward = mainComponentReward;
+            this.componentIncreasePenalty = componentIncreasePenalty;
+        }
+
+        double total() {
+            return mainComponentReward - componentIncreasePenalty;
         }
     }
 }

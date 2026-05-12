@@ -1,0 +1,101 @@
+package com.rustbuilder.ai.rl.supervisor;
+
+import com.rustbuilder.ai.core.TrainingMetrics;
+import com.rustbuilder.ai.rl.RLTrainingConfig;
+import com.rustbuilder.ai.rl.RLTrainingService;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.function.Consumer;
+
+/**
+ * Runs baseline and LLM-candidate training branches in isolated services.
+ */
+public class RLDualTrainingCoordinator {
+
+    public DualTrainingResult trainInParallel(RLTrainingConfig baselineConfig,
+                                              RLTrainingConfig candidateConfig,
+                                              Consumer<BranchProgress> progressCallback) throws Exception {
+        return trainInParallel(new RLTrainingService(), new RLTrainingService(),
+            baselineConfig, candidateConfig, progressCallback);
+    }
+
+    public DualTrainingResult trainInParallel(RLTrainingService baselineService,
+                                              RLTrainingService candidateService,
+                                              RLTrainingConfig baselineConfig,
+                                              RLTrainingConfig candidateConfig,
+                                              Consumer<BranchProgress> progressCallback) throws Exception {
+        if (baselineService == null || candidateService == null) {
+            throw new IllegalArgumentException("branch services must not be null");
+        }
+        if (baselineConfig == null || candidateConfig == null) {
+            throw new IllegalArgumentException("branch configs must not be null");
+        }
+        if (baselineConfig.getModelName().equals(candidateConfig.getModelName())) {
+            throw new IllegalArgumentException("baseline and candidate model names must be different");
+        }
+
+        RLTrainingConfig safeBaselineConfig = withoutSupervisor(baselineConfig);
+        candidateService.setSupervisorConfig(candidateConfig.getSupervisorConfig());
+
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        try {
+            Future<?> baselineFuture = executor.submit(() ->
+                baselineService.train(safeBaselineConfig,
+                    metrics -> publish(progressCallback, "baseline", metrics),
+                    null));
+
+            Future<?> candidateFuture = executor.submit(() ->
+                candidateService.train(candidateConfig,
+                    metrics -> publish(progressCallback, candidateConfig.getSupervisorConfig().getBranchId(), metrics),
+                    null));
+
+            baselineFuture.get();
+            candidateFuture.get();
+            return new DualTrainingResult(baselineService, candidateService);
+        } finally {
+            executor.shutdownNow();
+        }
+    }
+
+    private void publish(Consumer<BranchProgress> progressCallback, String branchId, TrainingMetrics metrics) {
+        if (progressCallback != null) {
+            progressCallback.accept(new BranchProgress(branchId, metrics));
+        }
+    }
+
+    private RLTrainingConfig withoutSupervisor(RLTrainingConfig config) {
+        return new RLTrainingConfig(
+            config.getModelName(),
+            config.getEpisodesPerEpoch(),
+            config.getMaxStepsPerEpisode(),
+            config.getLogisticsWeight(),
+            config.getCostWeight(),
+            config.getRaidWeight(),
+            config.getWorkingAreaWeight(),
+            config.getSafeZoneWeight(),
+            config.getEpochs(),
+            LlmSupervisorConfig.disabled()
+        );
+    }
+
+    public static final class BranchProgress {
+        public final String branchId;
+        public final TrainingMetrics metrics;
+
+        public BranchProgress(String branchId, TrainingMetrics metrics) {
+            this.branchId = branchId != null ? branchId : "branch";
+            this.metrics = metrics;
+        }
+    }
+
+    public static final class DualTrainingResult {
+        public final RLTrainingService baselineService;
+        public final RLTrainingService candidateService;
+
+        public DualTrainingResult(RLTrainingService baselineService, RLTrainingService candidateService) {
+            this.baselineService = baselineService;
+            this.candidateService = candidateService;
+        }
+    }
+}

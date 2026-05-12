@@ -1,25 +1,30 @@
 package com.rustbuilder.service;
 
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.deployable.ToolCupboard;
 import com.rustbuilder.model.structure.Foundation;
 import com.rustbuilder.service.evaluator.HouseEvaluator;
+import org.junit.jupiter.api.Test;
 
-public class TestOpenBase {
-    public static void main(String[] args) {
+class TestOpenBase {
+
+    @Test
+    void evaluatesOpenBaseWithoutThrowing() {
         HouseEvaluator evaluator = new HouseEvaluator();
         GridModel grid = new GridModel();
-        
-        // Place 3x3 foundations
-        for(int x=0; x<3; x++) {
-            for(int y=0; y<3; y++) {
+
+        for (int x = 0; x < 3; x++) {
+            for (int y = 0; y < 3; y++) {
                 grid.addBlock(new Foundation(x * 60, y * 60, 0));
             }
         }
-        
-        // Place TC in center
+
         grid.addBlock(new ToolCupboard(60, 60, 0, 0));
-        
-        HouseEvaluator.EvaluationResult result = evaluator.evaluate(grid);
+
+        HouseEvaluator.EvaluationResult result = assertDoesNotThrow(() -> evaluator.evaluate(grid));
+        assertNotNull(result);
     }
 }

@@ -12,7 +12,7 @@ import com.rustbuilder.model.structure.Foundation;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.Orientation;
 import com.rustbuilder.model.structure.Wall;
-import com.rustbuilder.service.physics.StabilityService;
+import com.rustbuilder.model.stability.StabilityService;
 
 class StabilityServiceTest {
 

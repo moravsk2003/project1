@@ -85,8 +85,4 @@ public class HeuristicMultiDiscretePhasePolicy implements MultiDiscretePhasePoli
 
         return action;
     }
-
-    private MultiDiscreteAction fallbackAction(MultiDiscretePhaseContext context, MultiDiscreteStateObserver observer) {
-        return null;
-    }
 }

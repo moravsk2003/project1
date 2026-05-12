@@ -10,16 +10,10 @@ import com.rustbuilder.model.GridModel;
 import com.rustbuilder.service.physics.PlacementService;
 
 /**
- * Provides CHEAP heuristic masking to prune obviously invalid actions during multi-discrete selection.
- * 
- * REFACTOR GOAL:
- * - Phase 1 (Type), Phase 2 (Floor), Phase 3 (Tile), Phase 4 (Rotation) use ONLY cheap heuristics.
- * - Phase 5 (Aim Sector) is the ONLY phase that performs exact physics feasibility checks (dry-runs).
- * - Avoids "continuation search" (don't check if downstream phases are feasible from an upstream phase).
- * 
- * SEMANTICS:
- * - Rotation (Phase 4): Defines discrete block orientation (critical for Walls/Doors).
- * - Aim (Phase 5): Defines fine-grained sub-tile placement offset (critical for all types).
+ * Provides lightweight heuristic masking for multi-discrete action selection.
+ *
+ * <p>Type, floor, tile, and rotation phases use structural pre-filters; aim
+ * sector selection performs the exact placement feasibility checks.
  */
 public class HeuristicMaskingUtils {
 
@@ -41,7 +35,7 @@ public class HeuristicMaskingUtils {
 
     public static boolean DEBUG_MODE = false;
 
-    // Debug counters for dead branches
+    // Debug counters for pruning decisions.
     public static int prunedTypeCount = 0;
     public static int emptyTilesCount = 0;
     public static int emptyRotationsCount = 0;
@@ -101,7 +95,6 @@ public class HeuristicMaskingUtils {
      * No longer performs expensive continuation scanning.
      */
     public static List<Integer> getFeasibleTypes(GridModel grid, boolean hasTC, boolean hasLootRoom, int step) {
-        // [PERF] Removed hasFeasibleContinuation loop. Just use cheap gating.
         return getValidTypes(grid, hasTC, hasLootRoom, step);
     }
 
@@ -114,7 +107,6 @@ public class HeuristicMaskingUtils {
      * Uses CHEAP structural heuristics (walls below, foundations at floor 0).
      */
     public static List<Integer> getValidFloors(GridModel grid, int typeIndex, int step) {
-        // [PERF] Removed hasFeasibleTile scan. Just return basic structurally-valid floors.
         return getBasicFloors(new MultiDiscretePhaseContext(grid, false, false, step, step + 1), typeIndex);
     }
 

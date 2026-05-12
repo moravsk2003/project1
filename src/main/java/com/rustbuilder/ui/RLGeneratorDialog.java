@@ -5,7 +5,12 @@ import java.io.IOException;
 import com.rustbuilder.ai.core.TrainingMetrics;
 import com.rustbuilder.ai.rl.RLModelManager;
 import com.rustbuilder.ai.rl.RLModelManager.RLModel;
+import com.rustbuilder.ai.rl.RLTrainingConfig;
 import com.rustbuilder.ai.rl.RLTrainingService;
+import com.rustbuilder.ai.rl.supervisor.ExternalCommandLlmSupervisor;
+import com.rustbuilder.ai.rl.supervisor.LlmSupervisorApplyMode;
+import com.rustbuilder.ai.rl.supervisor.LlmSupervisorConfig;
+import com.rustbuilder.ai.rl.supervisor.NoOpLlmSupervisor;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.ui.hints.HintKey;
@@ -20,6 +25,7 @@ import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.PasswordField;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
@@ -50,6 +56,11 @@ public class RLGeneratorDialog {
     private RLTrainingService rlService;
     private String currentModelName;
     private boolean trainingRunning = false;
+    private String lastShownSupervisorSummary = "";
+    private String lastShownPendingSupervisorSummary = "";
+
+    /** API-ключ зберігається в пам'яті до закриття програми. */
+    private static String savedApiKey = "";
 
     // UI Components
     private ComboBox<String> modelComboBox;
@@ -72,6 +83,14 @@ public class RLGeneratorDialog {
     private Spinner<Integer> episodesSpinner;
     private Spinner<Integer> stepsSpinner;
     private Spinner<Integer> epochsSpinner;
+    private TextField trainingTimeLimitField;
+    private CheckBox supervisorEnabledCheck;
+    private Spinner<Integer> supervisorIntervalSpinner;
+    private PasswordField supervisorApiKeyField;
+    private TextField supervisorCommandField;
+    private ComboBox<LlmSupervisorApplyMode> supervisorApplyModeComboBox;
+    private Button supervisorApplyPendingButton;
+    private CheckBox use2dCnnCheck;
     
     // Legacy multiDiscreteCheck removed
     private ProgressBar progressBar;
@@ -122,20 +141,19 @@ public class RLGeneratorDialog {
         dialogStage.setTitle("RL Base Generator");
         dialogStage.setResizable(true);
 
-        VBox mainContent = new VBox(10);
-        mainContent.setPadding(new Insets(14));
-        mainContent.setStyle("-fx-background-color: #2b2b2b;");
+        TabPane tabPane = new TabPane();
+        tabPane.setStyle("-fx-background: #2b2b2b; -fx-background-color: #2b2b2b;");
 
-        mainContent.getChildren().addAll(
+        Tab manualTab = new Tab("Manual Control");
+        manualTab.setClosable(false);
+        VBox manualBox = new VBox(10);
+        manualBox.setPadding(new Insets(14));
+        manualBox.getChildren().addAll(
             createModelSection(),
             new Separator(),
             createPrioritySection(),
             new Separator(),
             createTrainingSection(),
-            new Separator(),
-            createRewardConfigSection(),
-            new Separator(),
-            createExperimentalSection(),
             new Separator(),
             createStatsSection(),
             new Separator(),
@@ -143,13 +161,41 @@ public class RLGeneratorDialog {
             new Separator(),
             createActionSection()
         );
+        manualTab.setContent(new ScrollPane(manualBox));
 
-        ScrollPane scroll = new ScrollPane(mainContent);
-        scroll.setFitToWidth(true);
-        scroll.setStyle("-fx-background: #2b2b2b; -fx-background-color: #2b2b2b;");
-        scroll.setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        Tab advancedTab = new Tab("Advanced Settings");
+        advancedTab.setClosable(false);
+        VBox advancedBox = new VBox(10);
+        advancedBox.setPadding(new Insets(14));
+        advancedBox.getChildren().addAll(
+            createRewardConfigSection(),
+            new Separator(),
+            createExperimentalSection()
+        );
+        advancedTab.setContent(new ScrollPane(advancedBox));
 
-        Scene scene = new Scene(scroll, 500, 700);
+        Tab llmTab = new Tab("LLM Autopilot");
+        llmTab.setClosable(false);
+        VBox llmBox = new VBox(10);
+        llmBox.setPadding(new Insets(14));
+        llmBox.getChildren().addAll(
+            createSupervisorSection()
+        );
+        llmTab.setContent(new ScrollPane(llmBox));
+
+        tabPane.getTabs().addAll(manualTab, advancedTab, llmTab);
+        
+        // Disable scrollpane background on the internal scrollpanes
+        for (Tab t : tabPane.getTabs()) {
+            ((ScrollPane) t.getContent()).setFitToWidth(true);
+            ((ScrollPane) t.getContent()).setStyle("-fx-background: #2b2b2b; -fx-background-color: #2b2b2b;");
+            ((ScrollPane) t.getContent()).setHbarPolicy(ScrollPane.ScrollBarPolicy.NEVER);
+        }
+
+        VBox mainContent = new VBox(tabPane);
+        mainContent.setStyle("-fx-background-color: #2b2b2b;");
+        VBox.setVgrow(tabPane, Priority.ALWAYS);
+        Scene scene = new Scene(mainContent, 550, 800);
         dialogStage.setScene(scene);
         
         dialogStage.setOnCloseRequest(e -> cleanup());
@@ -281,6 +327,14 @@ public class RLGeneratorDialog {
         HintUtils.attachHint(epochsSpinner.getEditor(), HintKey.EPOCHS);
         grid.add(epochsSpinner, 1, 2);
 
+        Label timeLimitLabel = bodyLabel("Time limit:");
+        HintUtils.attachHint(timeLimitLabel, "Training time limit", "Optional wall-clock budget. Examples: 30m, 2h, 01:30. Empty or 0 means no time limit.");
+        grid.add(timeLimitLabel, 0, 3);
+        trainingTimeLimitField = new TextField();
+        trainingTimeLimitField.setPromptText("0, 30m, 2h, 01:30");
+        HintUtils.attachHint(trainingTimeLimitField, "Training time limit", "Training stops cleanly after this duration, and the LLM supervisor sees elapsed time, current time, remaining time, and deadline.");
+        grid.add(trainingTimeLimitField, 1, 3);
+
         box.getChildren().add(grid);
         return box;
     }
@@ -310,7 +364,108 @@ public class RLGeneratorDialog {
         aimSectorCheck.setSelected(rlService.isUseAimSectorLearning());
         aimSectorCheck.setOnAction(e -> rlService.setUseAimSectorLearning(aimSectorCheck.isSelected()));
 
-        box.getChildren().addAll(encoderRow, aimSectorCheck);
+        use2dCnnCheck = new CheckBox("Use 2D CNN Architecture");
+        HintUtils.attachHint(use2dCnnCheck, "Use 2D CNN Architecture", "Flattens the 3D voxel input along the Z-axis, creating a 2D map with dense channels. Potentially faster and easier to train.");
+        use2dCnnCheck.setStyle("-fx-text-fill: #ecf0f1;");
+        use2dCnnCheck.setSelected(rlService.isUse2dCnn());
+        use2dCnnCheck.setOnAction(e -> rlService.setUse2dCnn(use2dCnnCheck.isSelected()));
+
+        box.getChildren().addAll(encoderRow, aimSectorCheck, use2dCnnCheck);
+        return box;
+    }
+
+    private VBox createSupervisorSection() {
+        VBox box = card();
+        box.getChildren().add(sectionTitle("LLM Supervisor"));
+
+        LlmSupervisorConfig config = rlService.getSupervisorConfig();
+
+        supervisorEnabledCheck = new CheckBox("Enable LLM supervisor");
+        supervisorEnabledCheck.setStyle("-fx-text-fill: #ecf0f1;");
+        supervisorEnabledCheck.setSelected(config.isEnabled());
+        HintUtils.attachHint(supervisorEnabledCheck, "LLM Supervisor", "Allows a configured LLM supervisor to review compact training metrics between episodes.");
+
+        HBox intervalRow = new HBox(8);
+        intervalRow.setAlignment(Pos.CENTER_LEFT);
+        Label intervalLabel = bodyLabel("Call every episodes:");
+        HintUtils.attachHint(intervalLabel, "Supervisor frequency", "How often the LLM supervisor is called. Default is every 1000 trained episodes.");
+
+        supervisorIntervalSpinner = new Spinner<>(1, 1_000_000,
+            config.getCallIntervalEpisodes() > 0
+                ? config.getCallIntervalEpisodes()
+                : LlmSupervisorConfig.DEFAULT_CALL_INTERVAL_EPISODES,
+            100);
+        supervisorIntervalSpinner.setEditable(true);
+        supervisorIntervalSpinner.setPrefWidth(130);
+        HintUtils.attachHint(supervisorIntervalSpinner.getEditor(), "Supervisor frequency", "Default: 1000 episodes. Lower values react faster but can slow training.");
+
+        HBox modeRow = new HBox(8);
+        modeRow.setAlignment(Pos.CENTER_LEFT);
+        Label modeLabel = bodyLabel("Apply mode:");
+        HintUtils.attachHint(modeLabel, "Supervisor apply mode", "Auto Apply changes training immediately. Log Only records decisions without applying them.");
+        supervisorApplyModeComboBox = new ComboBox<>();
+        supervisorApplyModeComboBox.getItems().setAll(LlmSupervisorApplyMode.values());
+        supervisorApplyModeComboBox.setValue(config.getApplyMode());
+        supervisorApplyModeComboBox.setPrefWidth(170);
+        HintUtils.attachHint(supervisorApplyModeComboBox, "Supervisor apply mode", "Use Log Only first when testing a new LLM prompt or command.");
+
+        HBox apiKeyRow = new HBox(8);
+        apiKeyRow.setAlignment(Pos.CENTER_LEFT);
+        Label apiKeyLabel = bodyLabel("API key:");
+        HintUtils.attachHint(apiKeyLabel, "Supervisor API key", "Optional key passed only to the external command environment. It is not saved in model metadata.");
+        supervisorApiKeyField = new PasswordField();
+        supervisorApiKeyField.setPromptText("Optional Gemini/API key...");
+        // Restore API key saved in memory for this session
+        if (!savedApiKey.isEmpty()) {
+            supervisorApiKeyField.setText(savedApiKey);
+        }
+        HBox.setHgrow(supervisorApiKeyField, Priority.ALWAYS);
+        HintUtils.attachHint(supervisorApiKeyField, "Supervisor API key", "For Gemini, this becomes GEMINI_API_KEY and GOOGLE_API_KEY for the wrapper process.");
+
+        Button saveApiKeyBtn = styledBtn("💾", "#27ae60");
+        saveApiKeyBtn.setMinWidth(36);
+        HintUtils.attachHint(saveApiKeyBtn, "Зберегти API-ключ", "Зберігає ключ у пам'яті до закриття програми. Ключ не записується на диск.");
+        saveApiKeyBtn.setOnAction(e -> {
+            savedApiKey = supervisorApiKeyField.getText();
+            saveApiKeyBtn.setText("✅");
+            javafx.animation.PauseTransition pause = new javafx.animation.PauseTransition(javafx.util.Duration.seconds(2));
+            pause.setOnFinished(ev -> saveApiKeyBtn.setText("💾"));
+            pause.play();
+        });
+
+        HBox commandRow = new HBox(8);
+        commandRow.setAlignment(Pos.CENTER_LEFT);
+        Label commandLabel = bodyLabel("Command:");
+        HintUtils.attachHint(commandLabel, "Supervisor command", "Optional external command. It receives observation JSON on stdin and returns decision JSON on stdout.");
+        String defaultCommand = "powershell -ExecutionPolicy Bypass -File scripts/llm_supervisor_gemini.ps1";
+        String existingCommand = config.getExternalCommand();
+        supervisorCommandField = new TextField(
+            (existingCommand == null || existingCommand.isBlank()) ? defaultCommand : existingCommand);
+        supervisorCommandField.setPromptText("Optional command/script...");
+        HBox.setHgrow(supervisorCommandField, Priority.ALWAYS);
+        HintUtils.attachHint(supervisorCommandField, "Supervisor command", "Use a local script/wrapper for your LLM provider. Leave empty to run the safe no-op supervisor.");
+
+        intervalRow.getChildren().addAll(intervalLabel, supervisorIntervalSpinner);
+        modeRow.getChildren().addAll(modeLabel, supervisorApplyModeComboBox);
+        apiKeyRow.getChildren().addAll(apiKeyLabel, supervisorApiKeyField, saveApiKeyBtn);
+        commandRow.getChildren().addAll(commandLabel, supervisorCommandField);
+
+        Button triggerLlmButton = styledBtn("Start Auto-Pilot / Trigger Check", "#f39c12");
+        HintUtils.attachHint(triggerLlmButton, "Почати авто-пілот", "Негайно відправити стан системи до LLM для аналізу (якщо навчання не запущено).");
+        triggerLlmButton.setOnAction(e -> {
+            supervisorEnabledCheck.setSelected(true);
+            applySupervisorConfigFromUI(currentModelName == null ? "auto_run" : currentModelName);
+            rlService.getLlmOrchestrator().forceCheck(this::appendStatus);
+        });
+
+        supervisorApplyPendingButton = styledBtn("Apply Pending", "#16a085");
+        HintUtils.attachHint(supervisorApplyPendingButton, "Apply pending supervisor decision", "Applies the last validated LLM decision when apply mode is MANUAL_APPROVAL.");
+        supervisorApplyPendingButton.setOnAction(e -> applyPendingSupervisorDecision());
+        
+        HBox llmActionRow = new HBox(8);
+        llmActionRow.getChildren().addAll(triggerLlmButton, supervisorApplyPendingButton);
+
+        box.getChildren().addAll(supervisorEnabledCheck, intervalRow, modeRow, apiKeyRow, commandRow, llmActionRow);
         return box;
     }
 
@@ -436,16 +591,30 @@ public class RLGeneratorDialog {
         int ep = episodesSpinner.getValue();
         int steps = stepsSpinner.getValue();
         int epochs = epochsSpinner.getValue();
+        long trainingDurationMs = parseTrainingDurationMs();
+        if (trainingDurationMs < 0) {
+            showAlert("Training time limit should be empty, 0, minutes, or values like 30m, 2h, 01:30.");
+            resetTrainingButtonsAfterRejectedStart();
+            return;
+        }
         double lw = logisticsSlider.getValue();
         double cw = costSlider.getValue();
         double rw = raidSlider.getValue();
         double ww = workingAreaSlider.getValue();
         double safeZoneW = safeZoneSlider.getValue();
+        applySupervisorConfigFromUI(modelName);
+        if (trainingDurationMs > 0) {
+            appendStatus("Training time limit: " + formatDuration(trainingDurationMs));
+        }
         
         final String finalModelName = modelName;
         Thread trainingThread = new Thread(() -> {
             try {
-                rlService.train(finalModelName, ep, steps, lw, cw, rw, ww, safeZoneW, epochs,
+                RLTrainingConfig trainingConfig = new RLTrainingConfig(
+                    finalModelName, ep, steps, lw, cw, rw, ww, safeZoneW, epochs,
+                    rlService.getSupervisorConfig(), trainingDurationMs,
+                    use2dCnnCheck != null && use2dCnnCheck.isSelected());
+                rlService.train(trainingConfig,
                     this::onTrainingProgress, 
                     () -> Platform.runLater(() -> statusLabel.setText("Status: Epoch Complete")));
                 
@@ -476,10 +645,142 @@ public class RLGeneratorDialog {
         trainingThread.start();
     }
 
+    private long parseTrainingDurationMs() {
+        if (trainingTimeLimitField == null) {
+            return 0L;
+        }
+        String raw = trainingTimeLimitField.getText();
+        if (raw == null || raw.trim().isEmpty()) {
+            return 0L;
+        }
+        String value = raw.trim().toLowerCase(java.util.Locale.ROOT);
+        if ("0".equals(value)) {
+            return 0L;
+        }
+
+        try {
+            if (value.contains(":")) {
+                String[] parts = value.split(":");
+                if (parts.length == 2) {
+                    long hours = Long.parseLong(parts[0].trim());
+                    long minutes = Long.parseLong(parts[1].trim());
+                    return ((hours * 60L) + minutes) * 60_000L;
+                }
+                if (parts.length == 3) {
+                    long hours = Long.parseLong(parts[0].trim());
+                    long minutes = Long.parseLong(parts[1].trim());
+                    long seconds = Long.parseLong(parts[2].trim());
+                    return (((hours * 60L) + minutes) * 60L + seconds) * 1_000L;
+                }
+                return -1L;
+            }
+
+            long multiplier = 60_000L;
+            if (value.endsWith("ms")) {
+                multiplier = 1L;
+                value = value.substring(0, value.length() - 2).trim();
+            } else if (value.endsWith("s")) {
+                multiplier = 1_000L;
+                value = value.substring(0, value.length() - 1).trim();
+            } else if (value.endsWith("m")) {
+                multiplier = 60_000L;
+                value = value.substring(0, value.length() - 1).trim();
+            } else if (value.endsWith("h")) {
+                multiplier = 3_600_000L;
+                value = value.substring(0, value.length() - 1).trim();
+            }
+            double numeric = Double.parseDouble(value.replace(',', '.'));
+            if (numeric < 0) {
+                return -1L;
+            }
+            return Math.round(numeric * multiplier);
+        } catch (NumberFormatException ex) {
+            return -1L;
+        }
+    }
+
+    private void resetTrainingButtonsAfterRejectedStart() {
+        trainingRunning = false;
+        trainButton.setDisable(false);
+        stopButton.setDisable(true);
+        diagnosticButton.setDisable(false);
+        statusLabel.setText("Status: Ready");
+    }
+
+    private void applySupervisorConfigFromUI(String modelName) {
+        if (supervisorEnabledCheck == null || supervisorIntervalSpinner == null) {
+            return;
+        }
+
+        LlmSupervisorConfig config = rlService.getSupervisorConfig();
+        config.setEnabled(supervisorEnabledCheck.isSelected());
+        config.setCallIntervalEpisodes(supervisorIntervalSpinner.getValue());
+        config.setBranchId(modelName + "_candidate");
+        config.setExternalCommand(supervisorCommandField != null ? supervisorCommandField.getText() : "");
+        config.setApiKey(supervisorApiKeyField != null ? supervisorApiKeyField.getText() : "");
+        config.setApplyMode(supervisorApplyModeComboBox != null
+            ? supervisorApplyModeComboBox.getValue()
+            : LlmSupervisorApplyMode.AUTO_APPLY);
+        rlService.setSupervisorConfig(config);
+        installSupervisorProvider(config);
+
+        if (config.isEnabled()) {
+            appendStatus(String.format("LLM Supervisor enabled: every %d episodes.", config.getCallIntervalEpisodes()));
+        } else {
+            appendStatus(String.format("LLM Supervisor disabled (default interval %d episodes).", config.getCallIntervalEpisodes()));
+        }
+    }
+
+    private void installSupervisorProvider(LlmSupervisorConfig config) {
+        if (config.isEnabled() && !config.getExternalCommand().isBlank()) {
+            try {
+                java.util.Map<String, String> environmentOverrides = createSupervisorEnvironmentOverrides(config);
+                rlService.setLlmSupervisor(new ExternalCommandLlmSupervisor(
+                    config.getExternalCommand(),
+                    rlService::getRewardConfig,
+                    environmentOverrides));
+                appendStatus(environmentOverrides.isEmpty()
+                    ? "LLM Supervisor command connected."
+                    : "LLM Supervisor command connected with UI API key.");
+            } catch (IllegalArgumentException ex) {
+                rlService.setLlmSupervisor(new NoOpLlmSupervisor());
+                appendStatus("LLM Supervisor command rejected: " + ex.getMessage());
+            }
+        } else {
+            rlService.setLlmSupervisor(new NoOpLlmSupervisor());
+        }
+    }
+
+    private java.util.Map<String, String> createSupervisorEnvironmentOverrides(LlmSupervisorConfig config) {
+        String apiKey = config != null ? config.getApiKey() : "";
+        if (apiKey.isBlank()) {
+            return java.util.Map.of();
+        }
+
+        java.util.Map<String, String> environment = new java.util.HashMap<>();
+        environment.put("GEMINI_API_KEY", apiKey);
+        environment.put("GOOGLE_API_KEY", apiKey);
+        environment.put("LLM_API_KEY", apiKey);
+        return environment;
+    }
+
+    private void applyPendingSupervisorDecision() {
+        if (rlService.applyPendingSupervisorDecision()) {
+            appendStatus("Applied pending LLM supervisor decision.");
+            updateSummaryUI();
+        } else {
+            appendStatus("No pending LLM supervisor decision to apply.");
+        }
+    }
+
     private void onTrainingProgress(TrainingMetrics m) {
         Platform.runLater(() -> {
-            statusLabel.setText(String.format("Status: Training Epoch %d/%d, Ep %d/%d", 
-                m.currentEpoch, m.totalEpochs, m.currentEpisodeInEpoch, m.totalEpisodesPerEpoch));
+            String statusText = String.format("Status: Training Epoch %d/%d, Ep %d/%d",
+                m.currentEpoch, m.totalEpochs, m.currentEpisodeInEpoch, m.totalEpisodesPerEpoch);
+            if (m.trainingTimeLimitEnabled) {
+                statusText += " | Left " + formatDuration(m.trainingRemainingMs);
+            }
+            statusLabel.setText(statusText);
             
             int totalEps = m.totalEpochs * m.totalEpisodesPerEpoch;
             int doneEps = (m.currentEpoch - 1) * m.totalEpisodesPerEpoch + m.currentEpisodeInEpoch;
@@ -493,6 +794,14 @@ public class RLGeneratorDialog {
             sb.append(String.format("  Best Score: %.4f | Avg Eval Score: %.4f\n", m.bestScore, m.avgEvalScore));
             sb.append(String.format("  Eval Score:  %.4f | Total Reward: %.2f\n", m.currentEpisodeEvalScore, totalReward));
             sb.append(String.format("  Epsilon:    %.4f | Loss:     %.6f\n", m.epsilon, m.lastTrainLoss));
+            if (m.trainingTimeLimitEnabled) {
+                sb.append(String.format("  Time:       elapsed %s | left %s | deadline %s\n",
+                    formatDuration(m.trainingElapsedMs),
+                    formatDuration(m.trainingRemainingMs),
+                    formatDeadline(m.trainingDeadlineEpochMs)));
+            } else {
+                sb.append(String.format("  Time:       elapsed %s | no limit\n", formatDuration(m.trainingElapsedMs)));
+            }
             sb.append(String.format("  Step Reward: %.2f | Final Reward: %.2f\n", m.currentEpisodeStepReward, m.currentEpisodeFinalReward));
             if (m.currentEpisodeStepRewardBreakdown != null && !m.currentEpisodeStepRewardBreakdown.isEmpty()) {
                 sb.append("  Step By:    ").append(m.currentEpisodeStepRewardBreakdown).append("\n");
@@ -507,6 +816,20 @@ public class RLGeneratorDialog {
             sb.append("------------------------------------------\n");
             
             diagnosticLogArea.setText(sb.toString() + diagnosticLogArea.getText());
+
+            String supervisorSummary = rlService.getLastSupervisorDecisionSummary();
+            if (supervisorSummary != null && !supervisorSummary.isBlank()
+                    && !supervisorSummary.equals(lastShownSupervisorSummary)) {
+                lastShownSupervisorSummary = supervisorSummary;
+                diagnosticLogArea.setText("[SUPERVISOR] " + supervisorSummary + "\n" + diagnosticLogArea.getText());
+            }
+
+            String pendingSummary = rlService.getPendingSupervisorDecisionSummary();
+            if (pendingSummary != null && !pendingSummary.isBlank()
+                    && !pendingSummary.equals(lastShownPendingSupervisorSummary)) {
+                lastShownPendingSupervisorSummary = pendingSummary;
+                diagnosticLogArea.setText("[SUPERVISOR PENDING] " + pendingSummary + "\n" + diagnosticLogArea.getText());
+            }
             
             updateSummaryUI(m);
         });
@@ -557,8 +880,30 @@ public class RLGeneratorDialog {
 
         if (rlService != null) {
             ramUsageLbl.setText(rlService.getRamUsage());
-            timerLbl.setText(rlService.getFormattedTrainingTime());
+            timerLbl.setText(m.trainingTimeLimitEnabled
+                ? formatDuration(m.trainingElapsedMs) + " / left " + formatDuration(m.trainingRemainingMs)
+                : rlService.getFormattedTrainingTime());
         }
+    }
+
+    private String formatDuration(long ms) {
+        if (ms < 0) {
+            return "--:--:--";
+        }
+        long totalSeconds = Math.max(0L, ms / 1000L);
+        long seconds = totalSeconds % 60L;
+        long minutes = (totalSeconds / 60L) % 60L;
+        long hours = totalSeconds / 3600L;
+        return String.format("%02d:%02d:%02d", hours, minutes, seconds);
+    }
+
+    private String formatDeadline(long epochMs) {
+        if (epochMs <= 0) {
+            return "none";
+        }
+        return java.time.format.DateTimeFormatter.ofPattern("HH:mm:ss")
+            .withZone(java.time.ZoneId.systemDefault())
+            .format(java.time.Instant.ofEpochMilli(epochMs));
     }
 
     private void stopTraining() {
@@ -722,6 +1067,7 @@ public class RLGeneratorDialog {
                 rlService.setRewardConfig(meta.rewardConfig.clone());
             }
             syncRewardUIFromConfig();
+            syncSupervisorUIFromConfig();
             
             // Legacy multiDiscrete check removed
             updateStats();
@@ -756,10 +1102,29 @@ public class RLGeneratorDialog {
 
     public void show() {
         refreshModelList();
+        syncSupervisorUIFromConfig();
         updateStats();
         updateSummaryUI();
         reportMode();
         dialogStage.show();
+    }
+
+    private void syncSupervisorUIFromConfig() {
+        if (supervisorEnabledCheck == null || supervisorIntervalSpinner == null || rlService == null) {
+            return;
+        }
+        LlmSupervisorConfig config = rlService.getSupervisorConfig();
+        supervisorEnabledCheck.setSelected(config.isEnabled());
+        supervisorIntervalSpinner.getValueFactory().setValue(config.getCallIntervalEpisodes());
+        if (supervisorCommandField != null) {
+            supervisorCommandField.setText(config.getExternalCommand());
+        }
+        if (supervisorApiKeyField != null) {
+            supervisorApiKeyField.setText(config.getApiKey());
+        }
+        if (supervisorApplyModeComboBox != null) {
+            supervisorApplyModeComboBox.setValue(config.getApplyMode());
+        }
     }
 
     public void appendStatus(String text) {
@@ -1015,10 +1380,6 @@ public class RLGeneratorDialog {
         rlService.setRewardConfig(com.rustbuilder.ai.rl.RLRewardConfig.createDefault());
         syncRewardUIFromConfig();
         appendStatus("Reward Configuration reset to defaults.");
-    }
-
-    private void focusDefault() {
-        newModelField.requestFocus();
     }
 
     // Helper UI builders

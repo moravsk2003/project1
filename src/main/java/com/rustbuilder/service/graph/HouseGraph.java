@@ -12,7 +12,7 @@ import com.rustbuilder.config.GameConstants;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.structure.Wall;
-import com.rustbuilder.service.evaluator.RaidConstants;
+import com.rustbuilder.service.raid.RaidConstants;
 import com.rustbuilder.util.BuildingTypeUtils;
 
 /**

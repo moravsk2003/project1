@@ -36,6 +36,13 @@ public class TrainingMetrics {
     public final double bestBaseTotalReward;
     
     public final int memorySize;
+    public final long trainingStartEpochMs;
+    public final long currentTimeEpochMs;
+    public final long trainingDeadlineEpochMs;
+    public final long trainingElapsedMs;
+    public final long trainingRemainingMs;
+    public final boolean trainingTimeLimitEnabled;
+    public final boolean trainingTimeLimitReached;
 
     public TrainingMetrics(
             int currentEpoch, int totalEpochs, int currentEpisodeInEpoch, int totalEpisodesPerEpoch,
@@ -76,6 +83,32 @@ public class TrainingMetrics {
             String currentEpisodeStepRewardBreakdown, String currentEpisodeFinalRewardBreakdown,
             double bestTotalReward, double bestBaseStepReward, double bestBaseFinalReward, double bestBaseTotalReward,
             int memorySize) {
+        this(currentEpoch, totalEpochs, currentEpisodeInEpoch, totalEpisodesPerEpoch,
+            totalEpisodesTrained, bestScore, epsilon, lastTrainLoss,
+            avgReward, invalidActionRate, lastEpisodeInvalidActions, lastEpisodeTotalActions,
+            bestBaseBlocks, bestBaseHasTC, bestBaseDoors,
+            avgEvalScore, currentEpisodeEvalScore, currentEpisodeStepReward, currentEpisodeFinalReward,
+            currentEpisodeStepRewardBreakdown, currentEpisodeFinalRewardBreakdown,
+            bestTotalReward, bestBaseStepReward, bestBaseFinalReward, bestBaseTotalReward,
+            memorySize, 0L, System.currentTimeMillis(), 0L, 0L, -1L, false, false);
+    }
+
+    public TrainingMetrics(
+            int currentEpoch, int totalEpochs, int currentEpisodeInEpoch, int totalEpisodesPerEpoch,
+            int totalEpisodesTrained, double bestScore, double epsilon, double lastTrainLoss,
+            double avgReward, double invalidActionRate, int lastEpisodeInvalidActions, int lastEpisodeTotalActions,
+            int bestBaseBlocks, boolean bestBaseHasTC, int bestBaseDoors,
+            double avgEvalScore, double currentEpisodeEvalScore, double currentEpisodeStepReward, double currentEpisodeFinalReward,
+            String currentEpisodeStepRewardBreakdown, String currentEpisodeFinalRewardBreakdown,
+            double bestTotalReward, double bestBaseStepReward, double bestBaseFinalReward, double bestBaseTotalReward,
+            int memorySize,
+            long trainingStartEpochMs,
+            long currentTimeEpochMs,
+            long trainingDeadlineEpochMs,
+            long trainingElapsedMs,
+            long trainingRemainingMs,
+            boolean trainingTimeLimitEnabled,
+            boolean trainingTimeLimitReached) {
         
         this.currentEpoch = currentEpoch;
         this.totalEpochs = totalEpochs;
@@ -108,5 +141,12 @@ public class TrainingMetrics {
         this.bestBaseTotalReward = bestBaseTotalReward;
         
         this.memorySize = memorySize;
+        this.trainingStartEpochMs = trainingStartEpochMs;
+        this.currentTimeEpochMs = currentTimeEpochMs;
+        this.trainingDeadlineEpochMs = trainingDeadlineEpochMs;
+        this.trainingElapsedMs = trainingElapsedMs;
+        this.trainingRemainingMs = trainingRemainingMs;
+        this.trainingTimeLimitEnabled = trainingTimeLimitEnabled;
+        this.trainingTimeLimitReached = trainingTimeLimitReached;
     }
 }

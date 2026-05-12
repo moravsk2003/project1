@@ -1,6 +1,9 @@
 package com.rustbuilder.ai.rl;
 
 import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
+import com.rustbuilder.ai.rl.reward.RewardFormulaScope;
 import com.rustbuilder.core.action.BuildAction;
 import com.rustbuilder.core.placement.PlacementError;
 import com.rustbuilder.model.core.BuildingBlock;
@@ -30,6 +33,7 @@ public class StepRewardFunction {
         public double foundationBonus = 0;
         public double spatialCompactness = 0;
         public double spatialScatteredPenalty = 0;
+        public double formulaReward = 0;
 
         public double total() {
             return invalidPenalty
@@ -41,7 +45,8 @@ public class StepRewardFunction {
                 + typeBonus
                 + foundationBonus
                 + spatialCompactness
-                + spatialScatteredPenalty;
+                + spatialScatteredPenalty
+                + formulaReward;
         }
     }
 
@@ -78,10 +83,12 @@ public class StepRewardFunction {
                 case FLOOR_CONSTRAINT -> config.penaltyFloorConstraint;
                 default -> config.penaltyGenericInvalid;
             };
+            breakdown.formulaReward = evaluateStepFormulas(config, gridModel, action, inserted, survived, placed, error, 0);
             return breakdown;
         }
         if (!survived || placed == null) {
             breakdown.invalidPenalty = config.penaltyNoSupport;
+            breakdown.formulaReward = evaluateStepFormulas(config, gridModel, action, inserted, survived, placed, error, 0);
             return breakdown;
         }
 
@@ -160,7 +167,48 @@ public class StepRewardFunction {
             }
         }
 
+        breakdown.formulaReward = evaluateStepFormulas(config, gridModel, action, inserted, survived, placed, error, socketConnections);
         return breakdown;
+    }
+
+    private static double evaluateStepFormulas(RLRewardConfig config,
+                                               GridModel gridModel,
+                                               BuildAction action,
+                                               boolean inserted,
+                                               boolean survived,
+                                               BuildingBlock placed,
+                                               PlacementError error,
+                                               int socketConnections) {
+        if (config == null || config.rewardFormulaSet == null || config.rewardFormulaSet.isEmpty()) {
+            return 0.0;
+        }
+
+        Map<String, Double> vars = new HashMap<>();
+        int blockCount = gridModel != null ? gridModel.getAllBlocks().size() : 0;
+        vars.put("inserted", inserted ? 1.0 : 0.0);
+        vars.put("survived", survived ? 1.0 : 0.0);
+        vars.put("invalid", (!inserted || error != PlacementError.NONE) ? 1.0 : 0.0);
+        vars.put("block_count", (double) blockCount);
+        vars.put("socket_connections", (double) socketConnections);
+        vars.put("stability", placed != null ? placed.getStability() : 0.0);
+        vars.put("is_foundation", placed != null && isFoundation(placed) ? 1.0 : 0.0);
+        vars.put("is_tc_action", action != null && action.actionType == BuildAction.ActionType.TC ? 1.0 : 0.0);
+        vars.put("is_workbench_action", action != null && action.actionType == BuildAction.ActionType.WORKBENCH ? 1.0 : 0.0);
+        vars.put("is_loot_room_action", action != null && action.actionType == BuildAction.ActionType.LOOT_ROOM ? 1.0 : 0.0);
+        vars.put("error_no_support", error == PlacementError.NO_SUPPORT ? 1.0 : 0.0);
+        vars.put("error_collision", error == PlacementError.COLLISION ? 1.0 : 0.0);
+        vars.put("error_bad_socket", isBadSocketError(error) ? 1.0 : 0.0);
+
+        return config.rewardFormulaSet.evaluate(RewardFormulaScope.STEP, vars);
+    }
+
+    private static boolean isBadSocketError(PlacementError error) {
+        return error == PlacementError.BAD_SOCKET
+            || error == PlacementError.BAD_SOCKET_IS_FIRST
+            || error == PlacementError.BAD_SOCKET_NO_TARGET
+            || error == PlacementError.BAD_SOCKET_WRONG_TARGET_TYPE
+            || error == PlacementError.BAD_SOCKET_NO_SOCKET_ALIGNMENT
+            || error == PlacementError.BAD_SOCKET_CENTERDIST_REJECT;
     }
 
     /**

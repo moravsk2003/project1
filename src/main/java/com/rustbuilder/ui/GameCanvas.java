@@ -1063,22 +1063,17 @@ public class GameCanvas extends Canvas {
             if (hoveredBlock.getType() == BuildingType.FOUNDATION || hoveredBlock.getType() == BuildingType.FLOOR) {
                  gc.strokeRect(x, y, TILE_SIZE, TILE_SIZE);
             } else if (hoveredBlock.getType() == BuildingType.TRIANGLE_FOUNDATION || hoveredBlock.getType() == BuildingType.TRIANGLE_FLOOR) {
-                 // Simplified triangle highlight (box for now)
-                 // Or re-use drawTriangle logic?
-                 // Let's reuse drawTriangle logic manually
                  drawTriangleHighlight(gc, x, y, hoveredBlock.getRotation());
             } else if (hoveredBlock instanceof com.rustbuilder.model.structure.Wall) {
-                 // Highlight logic for wall
+                 // Wall highlight is handled by the block shape itself.
             }
 
-            // Draw Text
             gc.setFill(Color.BLACK);
             gc.setGlobalAlpha(0.7);
             gc.fillRect(x + 10, y + 10, 80, 20);
             gc.setGlobalAlpha(1.0);
             
             gc.setFill(Color.WHITE);
-            // Limit decimals
             gc.fillText(String.format("Stab: %.0f%%", stability * 100), x + 15, y + 25);
         }
     }

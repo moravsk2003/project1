@@ -1,20 +1,20 @@
-package com.rustbuilder.service.physics;
+package com.rustbuilder.model.stability;
 
+import com.rustbuilder.config.GameConstants;
+import com.rustbuilder.model.GridModel;
+import com.rustbuilder.model.core.BuildingBlock;
+import com.rustbuilder.model.core.BuildingType;
+import com.rustbuilder.model.core.Socket;
+import com.rustbuilder.util.BuildingTypeUtils;
 import java.util.ArrayDeque;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Queue;
 import java.util.Set;
-import com.rustbuilder.model.core.BuildingBlock;
-import com.rustbuilder.model.core.BuildingType;
-import com.rustbuilder.model.GridModel;
-import com.rustbuilder.model.core.Socket;
-import com.rustbuilder.util.BuildingTypeUtils;
-import com.rustbuilder.config.GameConstants;
 
 public class StabilityService {
 
-    // Legacy method for backward compatibility
+    // Legacy method for list-based callers.
     public static void recalculateAll(List<BuildingBlock> blocks) {
         Queue<BuildingBlock> queue = new ArrayDeque<>();
         Set<BuildingBlock> inQueue = new HashSet<>();
@@ -28,7 +28,7 @@ public class StabilityService {
             }
         }
 
-        // BFS Propagation (legacy O(N²) — iterates all blocks per step)
+        // BFS propagation for the list-based compatibility path; O(N^2) per wave.
         while (!queue.isEmpty()) {
             BuildingBlock supporter = queue.poll();
             inQueue.remove(supporter);
@@ -54,7 +54,7 @@ public class StabilityService {
         }
     }
 
-    // Optimized method using GridModel spatial lookup
+    // Optimized method using GridModel spatial lookup.
     public static void recalculateAll(GridModel grid) {
         List<BuildingBlock> allBlocks = grid.getAllBlocks();
 
@@ -70,7 +70,7 @@ public class StabilityService {
             }
         }
 
-        // BFS Propagation — O(N) with spatial lookup
+        // BFS propagation: O(N) with spatial lookup.
         while (!queue.isEmpty()) {
             BuildingBlock supporter = queue.poll();
             inQueue.remove(supporter);
@@ -79,7 +79,7 @@ public class StabilityService {
             if (supporterStability <= 0) continue;
 
             List<BuildingBlock> candidates = grid.getNearbyBlocks(
-                supporter.getX(), supporter.getY(), supporter.getZ(), GameConstants.TILE_SIZE * 1.5
+                    supporter.getX(), supporter.getY(), supporter.getZ(), GameConstants.TILE_SIZE * 1.5
             );
 
             for (BuildingBlock supported : candidates) {
@@ -106,52 +106,52 @@ public class StabilityService {
         double distSq = dx * dx + dy * dy;
         double zDiff = supported.getZ() - supporter.getZ();
 
-        // 1. Wall on Foundation (Vertical)
+        // 1. Wall on Foundation (vertical).
         if (isWall(supported) && isFoundation(supporter)) {
             if (zDiff == 0 && areSocketsConnected(supported, supporter, true)) {
                 return 1.0;
             }
         }
 
-        // 2. Wall on Wall (Vertical Stack)
+        // 2. Wall on Wall (vertical stack).
         if (isWall(supported) && isWall(supporter)) {
             if (zDiff == 1 && areSocketsConnected(supported, supporter, false)) {
                 return 0.9;
             }
         }
 
-        // 3. Floor on Wall (Ceiling)
+        // 3. Floor on Wall (ceiling).
         if (isFloor(supported) && isWall(supporter)) {
             if (zDiff == 1 && areSocketsConnected(supported, supporter, false)) {
                 return 0.8;
             }
         }
 
-        // 4. Floor on Floor (Horizontal Side Connection)
+        // 4. Floor on Floor (horizontal side connection).
         if (isFloor(supported) && isFloor(supporter)) {
             if (zDiff == 0 && areSocketsConnected(supported, supporter, false)) {
-                return 0.5; // Side connection
+                return 0.5;
             }
         }
 
-        // 5. Wall on Floor (Vertical)
+        // 5. Wall on Floor (vertical).
         if (isWall(supported) && isFloor(supporter)) {
             if (zDiff == 0 && areSocketsConnected(supported, supporter, false)) {
                 return 0.9;
             }
         }
 
-        // 6. TC / Workbench / LootRoom on Foundation or Floor
+        // 6. TC / Workbench / LootRoom on Foundation or Floor.
         if ((supported.getType() == BuildingType.TC ||
-             supported.getType() == BuildingType.WORKBENCH ||
-             supported.getType() == BuildingType.LOOT_ROOM) &&
-            (isFoundation(supporter) || isFloor(supporter))) {
+                supported.getType() == BuildingType.WORKBENCH ||
+                supported.getType() == BuildingType.LOOT_ROOM) &&
+                (isFoundation(supporter) || isFloor(supporter))) {
             if (zDiff == 0 && distSq < 1.0) {
-                 return 1.0;
+                return 1.0;
             }
         }
 
-        // 7. Door inside a Doorway
+        // 7. Door inside a Doorway.
         if (supported.getType() == BuildingType.DOOR && supporter.getType() == BuildingType.DOORWAY) {
             if (zDiff == 0 && distSq < 1.0) {
                 return 1.0;
@@ -160,19 +160,19 @@ public class StabilityService {
 
         return 0.0;
     }
-    
+
     private static boolean areSocketsConnected(BuildingBlock b1, BuildingBlock b2, boolean allowCenterConnection) {
         List<Socket> sockets1 = b1.getSockets();
         List<Socket> sockets2 = b2.getSockets();
-        
+
         if (Math.abs(b1.getX() - b2.getX()) > GameConstants.TILE_SIZE * 2.5 ||
-            Math.abs(b1.getY() - b2.getY()) > GameConstants.TILE_SIZE * 2.5) {
+                Math.abs(b1.getY() - b2.getY()) > GameConstants.TILE_SIZE * 2.5) {
             return false;
         }
 
         for (Socket s1 : sockets1) {
             for (Socket s2 : sockets2) {
-                // Increased tolerance by ~10% for easier floating-point snapping
+                // Increased tolerance by about 10% for easier floating-point snapping.
                 if (com.rustbuilder.util.SocketCompatibilityUtils.areEdgeSocketsConnected(s1, s2, 1.3)) {
                     return true;
                 }
@@ -190,7 +190,7 @@ public class StabilityService {
 
     public static boolean hasSupport(BuildingBlock block, List<BuildingBlock> potentialSupporters) {
         if (isFoundation(block) && block.getZ() == 0) {
-            return true; // Ground-level foundations always have support
+            return true;
         }
 
         for (BuildingBlock supporter : potentialSupporters) {

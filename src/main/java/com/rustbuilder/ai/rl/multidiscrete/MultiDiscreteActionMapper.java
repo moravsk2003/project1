@@ -42,7 +42,7 @@ public class MultiDiscreteActionMapper {
      * - typeIndex -> BuildingType (via ActionSpace)
      * - gridX, gridY, floorIndex -> 1:1 mapping
      * - rotationIndex -> orientation: triangles keep 0..5, cardinal pieces use 0..3.
-     * - aimSector -> Currently ignored (placeholder for future tile-local refinement).
+     * - aimSector -> forwarded to BuildAction for tile-local placement refinement.
      * - tier/doorType -> Default values (STONE/SHEET_METAL).
      * 
      * @param multiAction The multi-discrete action to convert

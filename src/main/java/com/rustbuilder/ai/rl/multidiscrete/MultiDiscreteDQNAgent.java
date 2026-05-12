@@ -25,6 +25,8 @@ import com.rustbuilder.ai.rl.env.spec.ActionSpaceSpec;
 
 public class MultiDiscreteDQNAgent {
 
+
+
     private ComputationGraph mainNet;
     private ComputationGraph targetNet;
 
@@ -32,6 +34,7 @@ public class MultiDiscreteDQNAgent {
     private int stateDepth;
     private int stateHeight;
     private int stateWidth;
+    private boolean use2dCnn;
     
     private double gamma = 0.99;
     private RLRewardConfig rewardConfig = RLRewardConfig.createDefault();
@@ -45,9 +48,10 @@ public class MultiDiscreteDQNAgent {
     private StateEncodingSpec stateSpec;
     private ActionSpaceSpec actionSpec;
 
-    public MultiDiscreteDQNAgent(StateEncodingSpec stateSpec, ActionSpaceSpec actionSpec) {
+    public MultiDiscreteDQNAgent(StateEncodingSpec stateSpec, ActionSpaceSpec actionSpec, boolean use2dCnn) {
         this.stateSpec = stateSpec;
         this.actionSpec = actionSpec;
+        this.use2dCnn = use2dCnn;
         this.stateChannels = stateSpec.voxelChannels;
         this.stateDepth = stateSpec.gridShape[2];
         this.stateHeight = stateSpec.gridShape[1];
@@ -65,6 +69,7 @@ public class MultiDiscreteDQNAgent {
         int conv1Depth = stateDepth;
         int conv1Height = stateHeight;
         int conv1Width = stateWidth;
+        int conv1Channels = use2dCnn ? stateChannels * stateDepth : stateChannels;
         
         int conv2Depth = (conv1Depth - 3 + 2 * 1) / 2 + 1;
         int conv2Height = (conv1Height - 3 + 2 * 1) / 2 + 1;
@@ -81,6 +86,7 @@ public class MultiDiscreteDQNAgent {
         if (stateSpec.hasGlobalVector) {
             builder.addInputs("input", "input_global", "cond_type", "cond_floor", "cond_tile", "cond_rot")
                    .setInputTypes(
+                           use2dCnn ? InputType.convolutional(stateHeight, stateWidth, conv1Channels) :
                            InputType.convolutional3D(Convolution3D.DataFormat.NCDHW, stateDepth, stateHeight, stateWidth, stateChannels),
                            InputType.feedForward(stateSpec.globalFeatureCount),
                            InputType.feedForward(actionSpec.typeCount),
@@ -91,6 +97,7 @@ public class MultiDiscreteDQNAgent {
         } else {
             builder.addInputs("input", "cond_type", "cond_floor", "cond_tile", "cond_rot")
                    .setInputTypes(
+                           use2dCnn ? InputType.convolutional(stateHeight, stateWidth, conv1Channels) :
                            InputType.convolutional3D(Convolution3D.DataFormat.NCDHW, stateDepth, stateHeight, stateWidth, stateChannels),
                            InputType.feedForward(actionSpec.typeCount),
                            InputType.feedForward(actionSpec.floorCount),
@@ -99,28 +106,55 @@ public class MultiDiscreteDQNAgent {
                    );
         }
 
-        builder.addLayer("conv1", new Convolution3D.Builder(3, 3, 3)
-                .nIn(stateChannels)
-                .nOut(16)
-                .stride(1, 1, 1)
-                .padding(1, 1, 1)
-                .dataFormat(Convolution3D.DataFormat.NCDHW)
-                .activation(Activation.RELU)
-                .build(), "input")
-        .addLayer("conv2", new Convolution3D.Builder(3, 3, 3)
-                .nIn(16)
-                .nOut(32)
-                .stride(2, 2, 2)
-                .padding(1, 1, 1)
-                .dataFormat(Convolution3D.DataFormat.NCDHW)
-                .activation(Activation.RELU)
-                .build(), "conv1")
-        .inputPreProcessor("dense_shared1", new Cnn3DToFeedForwardPreProcessor(conv2Depth, conv2Height, conv2Width, 32, true))
-        .addLayer("dense_shared1", new DenseLayer.Builder()
-                .nIn(32 * conv2Depth * conv2Height * conv2Width)
-                .nOut(1024)
-                .activation(Activation.RELU)
-                .build(), "conv2");
+        if (use2dCnn) {
+            builder.addLayer("conv1", new org.deeplearning4j.nn.conf.layers.ConvolutionLayer.Builder(3, 3)
+                    .nIn(conv1Channels)
+                    .nOut(16)
+                    .stride(1, 1)
+                    .padding(1, 1)
+                    .activation(Activation.RELU)
+                    .build(), "input")
+            .addLayer("conv2", new org.deeplearning4j.nn.conf.layers.ConvolutionLayer.Builder(3, 3)
+                    .nIn(16)
+                    .nOut(32)
+                    .stride(2, 2)
+                    .padding(1, 1)
+                    .activation(Activation.RELU)
+                    .build(), "conv1");
+
+            int conv2Height2D = (stateHeight - 3 + 2 * 1) / 2 + 1;
+            int conv2Width2D = (stateWidth - 3 + 2 * 1) / 2 + 1;
+
+            builder.inputPreProcessor("dense_shared1", new org.deeplearning4j.nn.conf.preprocessor.CnnToFeedForwardPreProcessor(conv2Height2D, conv2Width2D, 32))
+            .addLayer("dense_shared1", new DenseLayer.Builder()
+                    .nIn(32 * conv2Height2D * conv2Width2D)
+                    .nOut(1024)
+                    .activation(Activation.RELU)
+                    .build(), "conv2");
+        } else {
+            builder.addLayer("conv1", new Convolution3D.Builder(3, 3, 3)
+                    .nIn(stateChannels)
+                    .nOut(16)
+                    .stride(1, 1, 1)
+                    .padding(1, 1, 1)
+                    .dataFormat(Convolution3D.DataFormat.NCDHW)
+                    .activation(Activation.RELU)
+                    .build(), "input")
+            .addLayer("conv2", new Convolution3D.Builder(3, 3, 3)
+                    .nIn(16)
+                    .nOut(32)
+                    .stride(2, 2, 2)
+                    .padding(1, 1, 1)
+                    .dataFormat(Convolution3D.DataFormat.NCDHW)
+                    .activation(Activation.RELU)
+                    .build(), "conv1")
+            .inputPreProcessor("dense_shared1", new Cnn3DToFeedForwardPreProcessor(conv2Depth, conv2Height, conv2Width, 32, true))
+            .addLayer("dense_shared1", new DenseLayer.Builder()
+                    .nIn(32 * conv2Depth * conv2Height * conv2Width)
+                    .nOut(1024)
+                    .activation(Activation.RELU)
+                    .build(), "conv2");
+        }
 
         String nextLayerInput = "dense_shared1";
         int nextLayerIn = 1024;
@@ -166,13 +200,23 @@ public class MultiDiscreteDQNAgent {
         return builder.build();
     }
 
+    private INDArray prepareStateBatch(INDArray stateBatch) {
+        if (!use2dCnn) return stateBatch;
+        int n = (int) stateBatch.size(0);
+        int c = (int) stateBatch.size(1);
+        int d = (int) stateBatch.size(2);
+        int h = (int) stateBatch.size(3);
+        int w = (int) stateBatch.size(4);
+        return stateBatch.reshape(n, c * d, h, w);
+    }
+
     public INDArray encodeStateFeatures(INDArray stateBatch, INDArray globalBatch) {
         int m = (int) stateBatch.size(0);
         List<INDArray> dummyArrays = new ArrayList<>();
         try {
         if (stateSpec.hasGlobalVector) {
             INDArray[] dummyInputs = new INDArray[6];
-            dummyInputs[0] = stateBatch;
+            dummyInputs[0] = prepareStateBatch(stateBatch);
             dummyInputs[1] = globalBatch;
             dummyInputs[2] = Nd4j.zeros(m, actionSpec.typeCount);
             dummyInputs[3] = Nd4j.zeros(m, actionSpec.floorCount);
@@ -185,7 +229,7 @@ public class MultiDiscreteDQNAgent {
             return mainNet.feedForward(dummyInputs, false).get("dense_shared2");
         } else {
             INDArray[] dummyInputs = new INDArray[5];
-            dummyInputs[0] = stateBatch;
+            dummyInputs[0] = prepareStateBatch(stateBatch);
             dummyInputs[1] = Nd4j.zeros(m, actionSpec.typeCount);
             dummyInputs[2] = Nd4j.zeros(m, actionSpec.floorCount);
             dummyInputs[3] = Nd4j.zeros(m, actionSpec.tileCount);
@@ -280,10 +324,12 @@ public class MultiDiscreteDQNAgent {
         INDArray[] currentInputs;
         INDArray statesGlobalObj = stateSpec.hasGlobalVector ? Nd4j.concat(0, statesGlobalArr) : null;
         if (statesGlobalObj != null) ownedArrays.add(statesGlobalObj);
+        INDArray statesObjPrepared = prepareStateBatch(statesObj);
+        
         if (stateSpec.hasGlobalVector) {
-            currentInputs = new INDArray[]{statesObj, statesGlobalObj, condTypeObj, condFloorObj, condTileObj, condRotObj};
+            currentInputs = new INDArray[]{statesObjPrepared, statesGlobalObj, condTypeObj, condFloorObj, condTileObj, condRotObj};
         } else {
-            currentInputs = new INDArray[]{statesObj, condTypeObj, condFloorObj, condTileObj, condRotObj};
+            currentInputs = new INDArray[]{statesObjPrepared, condTypeObj, condFloorObj, condTileObj, condRotObj};
         }
         
         INDArray[] currentQsList = mainNet.output(false, currentInputs);
@@ -411,16 +457,16 @@ public class MultiDiscreteDQNAgent {
         }
         
         INDArray[] targetInputs;
+        INDArray nextStatesObjPrepared = prepareStateBatch(nextStatesObj);
         if (stateSpec.hasGlobalVector) {
-            targetInputs = new INDArray[]{nextStatesObj, nextStatesGlobalObj, nextCondTypeOnline, nextCondFloorOnline, nextCondTileOnline, nextCondRotOnline};
+            targetInputs = new INDArray[]{nextStatesObjPrepared, nextStatesGlobalObj, nextCondTypeOnline, nextCondFloorOnline, nextCondTileOnline, nextCondRotOnline};
         } else {
-            targetInputs = new INDArray[]{nextStatesObj, nextCondTypeOnline, nextCondFloorOnline, nextCondTileOnline, nextCondRotOnline};
+            targetInputs = new INDArray[]{nextStatesObjPrepared, nextCondTypeOnline, nextCondFloorOnline, nextCondTileOnline, nextCondRotOnline};
         }
         INDArray[] targetNetNextQsList = targetNet.output(false, targetInputs);
         for (INDArray targetNetNextQs : targetNetNextQsList) {
             ownedArrays.add(targetNetNextQs);
         }
-        
         for (int i = 0; i < m; i++) {
             MultiDiscreteExperienceReplay.Transition t = batch.get(i);
             

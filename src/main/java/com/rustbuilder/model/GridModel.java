@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import com.rustbuilder.model.structure.Wall;
+import com.rustbuilder.model.stability.StabilityService;
 import com.rustbuilder.util.BuildingTypeUtils;
 import com.rustbuilder.config.GameConstants;
 
@@ -77,7 +78,7 @@ public class GridModel {
      * then removes any blocks that ended up unsupported.
      */
     public void finalizeLoad() {
-        com.rustbuilder.service.physics.StabilityService.recalculateAll(this);
+        StabilityService.recalculateAll(this);
         blocks.removeIf(b -> {
             if (b.getStability() < 0.1) {
                 removeFromSpatialMap(b);
@@ -111,7 +112,7 @@ public class GridModel {
 
     private void updateStability() {
         // Use optimized spatial lookup
-        com.rustbuilder.service.physics.StabilityService.recalculateAll(this); 
+        StabilityService.recalculateAll(this);
         
         // Remove unstable blocks
         blocks.removeIf(b -> {
@@ -215,7 +216,7 @@ public class GridModel {
         // 2. Stability Check
         // Use neighbors list for support check!
         // This is O(K) instead of O(N)
-        if (!com.rustbuilder.service.physics.StabilityService.hasSupport(newBlock, neighbors)) {
+        if (!StabilityService.hasSupport(newBlock, neighbors)) {
             return false;
         }
 

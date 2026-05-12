@@ -15,6 +15,7 @@ import com.rustbuilder.service.graph.HouseGraph;
 import com.rustbuilder.service.graph.HouseGraph.TileEdge;
 import com.rustbuilder.service.graph.HouseGraph.TileNode;
 import com.rustbuilder.service.graph.NodeKey;
+import com.rustbuilder.service.raid.RaidConstants;
 
 /**
  * Evaluates raid resistance: minimum sulfur to reach TC from outside.

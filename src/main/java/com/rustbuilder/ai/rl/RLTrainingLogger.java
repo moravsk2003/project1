@@ -10,7 +10,6 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
@@ -24,9 +23,9 @@ import java.util.logging.Logger;
  *
  * <p>Manages three log files:
  * <ul>
- *   <li><b>epoch log</b> — one row per epoch with aggregated stats</li>
- *   <li><b>episode log</b> — one row per episode with detailed step/reward breakdown</li>
- *   <li><b>invalid action log</b> — one row per invalid placement attempt (for debugging)</li>
+ *   <li><b>epoch log</b> - one row per epoch with aggregated stats</li>
+ *   <li><b>episode log</b> - one row per episode with detailed step/reward breakdown</li>
+ *   <li><b>invalid action log</b> - one row per invalid placement attempt (for debugging)</li>
  * </ul>
  *
  * <p>Writers are opened once at the start of a training run ({@link #init()}) and
@@ -34,7 +33,7 @@ import java.util.logging.Logger;
  * opening/closing file handles in the hot training loop.
  *
  * <p>The CSV format (column order, delimiter, header) is <em>identical</em> to the
- * format previously embedded in {@code RLTrainingService} — no behavioural change.
+ * format previously embedded in {@code RLTrainingService}; no behavioural change.
  */
 public class RLTrainingLogger {
 
@@ -52,8 +51,12 @@ public class RLTrainingLogger {
     private static final int FINAL_DETAIL_INSERT_AFTER_INDEX = 14;
     private static final int FINAL_DETAIL_INSERTED_COLUMNS = 19;
     private static final String STEP_DETAIL_MARKER = "step_invalid_penalty";
+    private static final String COMPONENT_DELTA_MARKER = "step_main_component_delta_reward";
+    private static final String TC_PROTECTION_DELTA_MARKER = "step_tc_protection_delta_reward";
     private static final int STEP_DETAIL_INSERT_AFTER_INDEX = 13;
     private static final int STEP_DETAIL_INSERTED_COLUMNS = 20;
+    private static final int COMPONENT_DELTA_INSERTED_COLUMNS = 2;
+    private static final int TC_PROTECTION_DELTA_INSERTED_COLUMNS = 1;
 
     private Path logFilePath;
     private Path invalidLogFilePath;
@@ -85,7 +88,7 @@ public class RLTrainingLogger {
      * @param multiDiscrete {@code true} selects the multi-discrete suffix, {@code false} the legacy suffix
      */
     public void setLogFile(String modelName, boolean multiDiscrete) {
-        Path dir = Paths.get("models_rl");
+        Path dir = RLModelManager.getModelDirectory(modelName);
         try {
             Files.createDirectories(dir);
         } catch (IOException e) {
@@ -148,7 +151,8 @@ public class RLTrainingLogger {
              + "stop_reason,max_floor,placed_floor_distribution,rejected_total,rejected_no_support,rejected_collision,"
              + "rejected_bad_socket,rejected_out_of_bounds,pruned_types,dead_tiles,dead_rotations,rejected_rot_aim,rejected_proximity,"
              + "encoder_time_ms,global_encoder_time_ms,global_has_nan,global_has_infinity,"
-             + "global_feat_cnt,global_feat_mean,global_feat_max,global_feat_nonzero";
+             + "global_feat_cnt,global_feat_mean,global_feat_max,global_feat_nonzero,"
+             + "step_main_component_delta_reward,step_fragmentation_delta_reward,step_tc_protection_delta_reward";
     }
 
     private void ensureEpisodeLogHeader(Path path, String header) {
@@ -167,7 +171,9 @@ public class RLTrainingLogger {
             String currentHeader = lines.get(0);
             boolean hasFinalDetail = currentHeader.contains(FINAL_DETAIL_MARKER);
             boolean hasStepDetail = currentHeader.contains(STEP_DETAIL_MARKER);
-            if (hasFinalDetail && hasStepDetail) {
+            boolean hasComponentDelta = currentHeader.contains(COMPONENT_DELTA_MARKER);
+            boolean hasTcProtectionDelta = currentHeader.contains(TC_PROTECTION_DELTA_MARKER);
+            if (hasFinalDetail && hasStepDetail && hasComponentDelta && hasTcProtectionDelta) {
                 return;
             }
 
@@ -183,6 +189,12 @@ public class RLTrainingLogger {
                 }
                 if (!hasStepDetail) {
                     upgradedLine = insertEmptyColumns(upgradedLine, STEP_DETAIL_INSERT_AFTER_INDEX, STEP_DETAIL_INSERTED_COLUMNS);
+                }
+                if (!hasComponentDelta) {
+                    upgradedLine = appendEmptyColumns(upgradedLine, COMPONENT_DELTA_INSERTED_COLUMNS);
+                }
+                if (!hasTcProtectionDelta) {
+                    upgradedLine = appendEmptyColumns(upgradedLine, TC_PROTECTION_DELTA_INSERTED_COLUMNS);
                 }
                 upgraded.add(upgradedLine);
             }
@@ -211,6 +223,15 @@ public class RLTrainingLogger {
         return sb.toString();
     }
 
+    private String appendEmptyColumns(String line, int insertedColumns) {
+        StringBuilder sb = new StringBuilder(line.length() + insertedColumns);
+        sb.append(line);
+        for (int c = 0; c < insertedColumns; c++) {
+            sb.append(",");
+        }
+        return sb.toString();
+    }
+
     public void setRunContext(String runId, String encoderVersion, int voxelChannels, boolean hasGlobal, int globalCount) {
         this.currentRunId = runId;
         this.currentEncoderVersion = encoderVersion;
@@ -222,7 +243,7 @@ public class RLTrainingLogger {
     public void writeRunMetadata(String modelName, com.rustbuilder.ai.rl.env.spec.EncodingRuntimeConfig config,
                                  String rewardConfigName, String trainingConfigName,
                                  String logsDir, String modelsDir) {
-        Path dir = Paths.get("models_rl");
+        Path dir = RLModelManager.getModelDirectory(modelName);
         Path metaPath = dir.resolve(modelName + "_run_metadata.json");
 
         try (PrintWriter pw = new PrintWriter(new FileWriter(metaPath.toFile()))) {
@@ -441,7 +462,7 @@ public class RLTrainingLogger {
             + "%.4f,"
             + "%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,%.4f,"
             + "%.4f,%.4f,%.4f,%.4f,%.4f,%d,%d,%d,%b,%b,"
-            + "%.4f,%.5f,%s,%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%b,%b,%d,%.4f,%.4f,%d%n",
+            + "%.4f,%.5f,%s,%d,%s,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%d,%b,%b,%d,%.4f,%.4f,%d,%.4f,%.4f,%.4f%n",
             ts, currentRunId, epoch, epochEpisode, totalEpisode,
             currentEncoderVersion, currentVoxelChannels, currentHasGlobal, currentGlobalCount,
             result.totalActions, result.invalidActions, invalidPct,
@@ -464,7 +485,9 @@ public class RLTrainingLogger {
             rejectedTotal, rejectedNoSupport, rejectedCollision, rejectedBadSocket, rejectedOutOfBounds,
             prunedTypes, deadTiles, deadRots, rejectedRotAim, rejectedProx,
             result.totalEncoderTimeMs, result.totalGlobalEncoderTimeMs, gNaN, gInf,
-            gCnt, gMean, gMax, gNonzero);
+            gCnt, gMean, gMax, gNonzero,
+            result.stepRewardMainComponentDelta, result.stepRewardFragmentationDelta,
+            result.stepRewardTcProtectionDelta);
         episodeLogWriter.flush();
 
         if (invalidLogWriter != null) {

@@ -27,6 +27,7 @@ public class EpisodeResult {
     public double finalRewardFragmentPenalty = 0;
     public double finalRewardTcPenalty = 0;
     public double finalRewardFailurePenalty = 0;
+    public double finalRewardFormulaBonus = 0;
     public double evalLogisticsScore = 0;
     public double evalCostScore = 0;
     public double evalRaidScore = 0;
@@ -47,8 +48,12 @@ public class EpisodeResult {
     public double stepRewardFoundationBonus = 0;
     public double stepRewardSpatialCompactness = 0;
     public double stepRewardSpatialScatteredPenalty = 0;
+    public double stepRewardFormulaBonus = 0;
     public double stepRewardGrowth = 0;
     public double stepRewardGrowthStreak = 0;
+    public double stepRewardMainComponentDelta = 0;
+    public double stepRewardFragmentationDelta = 0;
+    public double stepRewardTcProtectionDelta = 0;
     public double stepRewardEvalDelta = 0;
     public double stepRewardNoGrowthPenalty = 0;
     public double stepRewardInvalidStreakPenalty = 0;
@@ -103,6 +108,7 @@ public class EpisodeResult {
         stepRewardFoundationBonus += breakdown.foundationBonus;
         stepRewardSpatialCompactness += breakdown.spatialCompactness;
         stepRewardSpatialScatteredPenalty += breakdown.spatialScatteredPenalty;
+        stepRewardFormulaBonus += breakdown.formulaReward;
     }
 
     public double stepRewardBreakdownTotal() {
@@ -116,8 +122,12 @@ public class EpisodeResult {
             + stepRewardFoundationBonus
             + stepRewardSpatialCompactness
             + stepRewardSpatialScatteredPenalty
+            + stepRewardFormulaBonus
             + stepRewardGrowth
             + stepRewardGrowthStreak
+            + stepRewardMainComponentDelta
+            + stepRewardFragmentationDelta
+            + stepRewardTcProtectionDelta
             + stepRewardEvalDelta
             + stepRewardNoGrowthPenalty
             + stepRewardInvalidStreakPenalty;
@@ -125,15 +135,19 @@ public class EpisodeResult {
 
     public String stepRewardBreakdownSummary() {
         return String.format(Locale.US,
-            "place %.2f, socket %.2f, stab %.2f, type %.2f, found %.2f, spatial %.2f, growth %.2f, streak %.2f, evalDelta %.2f, invalid %.2f, noGrowth %.2f, stopTrans %.2f",
+            "place %.2f, socket %.2f, stab %.2f, type %.2f, found %.2f, spatial %.2f, formula %.2f, growth %.2f, streak %.2f, mainComp %.2f, fragDelta %.2f, tcProtect %.2f, evalDelta %.2f, invalid %.2f, noGrowth %.2f, stopTrans %.2f",
             stepRewardBasePlacement,
             stepRewardSocketConnection,
             stepRewardStability + stepRewardFloatingPenalty,
             stepRewardTypeBonus,
             stepRewardFoundationBonus,
             stepRewardSpatialCompactness + stepRewardSpatialScatteredPenalty + stepRewardDisconnectedPenalty,
+            stepRewardFormulaBonus,
             stepRewardGrowth,
             stepRewardGrowthStreak,
+            stepRewardMainComponentDelta,
+            stepRewardFragmentationDelta,
+            stepRewardTcProtectionDelta,
             stepRewardEvalDelta,
             stepRewardInvalidPenalty + stepRewardInvalidStreakPenalty,
             stepRewardNoGrowthPenalty,
@@ -151,6 +165,7 @@ public class EpisodeResult {
         finalRewardFragmentPenalty = 0;
         finalRewardTcPenalty = 0;
         finalRewardFailurePenalty = 0;
+        finalRewardFormulaBonus = 0;
         evalLogisticsScore = 0;
         evalCostScore = 0;
         evalRaidScore = 0;
@@ -171,12 +186,13 @@ public class EpisodeResult {
         }
 
         return String.format(Locale.US,
-            "raw %.2f, log %.2f, raid %.2f, conn %.2f, tcBox %.2f, early %.2f, frag %.2f, tc %.2f",
+            "raw %.2f, log %.2f, raid %.2f, conn %.2f, tcBox %.2f, formula %.2f, early %.2f, frag %.2f, tc %.2f",
             finalRewardRawScore,
             finalRewardLogisticsBonus,
             finalRewardRaidBonus,
             finalRewardConnectivityBonus,
             finalRewardTcEnclosedBonus,
+            finalRewardFormulaBonus,
             earlyStopPenalty,
             finalRewardFragmentPenalty,
             finalRewardTcPenalty);

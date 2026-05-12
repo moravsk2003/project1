@@ -7,9 +7,11 @@ import com.rustbuilder.model.core.Socket;
 import com.rustbuilder.util.BuildingTypeUtils;
 import com.rustbuilder.util.SocketCompatibilityUtils;
 import com.rustbuilder.ai.rl.log.StopReason;
+import com.rustbuilder.ai.rl.reward.RewardFormulaScope;
 import com.rustbuilder.service.evaluator.HouseEvaluator;
 import com.rustbuilder.config.GameConstants;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.IdentityHashMap;
 import java.util.List;
 import java.util.Map;
@@ -163,6 +165,8 @@ public class EpisodeEvaluator {
             
             result.finalEvalReward = rawScore + logisticsBonus + raidBonus + connectivityBonus
                         + tcEnclosedBonus + earlyStopPenalty + fragmentPenalty + tcPenalty;
+            result.finalRewardFormulaBonus = evaluateFinalFormulas(result);
+            result.finalEvalReward += result.finalRewardFormulaBonus;
             
             // Distribute final reward backwards in neural memory (Multi-discrete)
             if (multiDiscreteMemory != null && multiDiscreteMemory.size() > 0) {
@@ -178,6 +182,31 @@ public class EpisodeEvaluator {
             result.finalEvalReward = rewardConfig.totalFailurePenalty + earlyStopPenalty;
             result.finalRewardFailurePenalty = rewardConfig.totalFailurePenalty;
         }
+    }
+
+    private double evaluateFinalFormulas(EpisodeResult result) {
+        if (rewardConfig == null || rewardConfig.rewardFormulaSet == null || rewardConfig.rewardFormulaSet.isEmpty()) {
+            return 0.0;
+        }
+
+        Map<String, Double> vars = new HashMap<>();
+        vars.put("final_score", result.evaluationResult != null ? result.evaluationResult.finalScore : 0.0);
+        vars.put("raw_score_reward", result.finalRewardRawScore);
+        vars.put("logistics_score", result.evalLogisticsScore);
+        vars.put("cost_score", result.evalCostScore);
+        vars.put("raid_score", result.evalRaidScore);
+        vars.put("working_area_score", result.evalWorkingAreaScore);
+        vars.put("safe_zone_score", result.evalSafeZoneScore);
+        vars.put("sulfur_to_tc", (double) result.raidSulfurToTC);
+        vars.put("component_count", (double) result.componentCount);
+        vars.put("main_component_blocks", (double) result.mainComponentBlocks);
+        vars.put("blocks_placed", (double) result.blocksPlaced);
+        vars.put("tc_present", result.finalRewardHasTC ? 1.0 : 0.0);
+        vars.put("tc_enclosed", result.finalRewardTcEnclosed ? 1.0 : 0.0);
+        vars.put("invalid_rate", result.totalActions > 0 ? (double) result.invalidActions / result.totalActions : 0.0);
+        vars.put("early_stop_penalty", result.earlyStopPenalty);
+
+        return rewardConfig.rewardFormulaSet.evaluate(RewardFormulaScope.FINAL, vars);
     }
 
     private boolean areBlocksConnected(BuildingBlock b1, BuildingBlock b2) {

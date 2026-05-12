@@ -9,8 +9,6 @@ public class ToolCupboard extends BuildingBlock {
     public ToolCupboard(double x, double y, int z, double rotation) {
         super(BuildingType.TC, x, y, z);
         setRotation(rotation);
-        // TC takes 1000 wood to build usually? Or depends.
-        // Let's set a fixed cost.
     }
     
     @Override
