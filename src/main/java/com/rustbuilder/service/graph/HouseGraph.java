@@ -11,6 +11,9 @@ import java.util.Map;
 import com.rustbuilder.config.GameConstants;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingType;
+import com.rustbuilder.model.core.DoorType;
+import com.rustbuilder.model.core.Orientation;
+import com.rustbuilder.model.structure.Door;
 import com.rustbuilder.model.structure.Wall;
 import com.rustbuilder.service.raid.RaidConstants;
 import com.rustbuilder.util.BuildingTypeUtils;
@@ -157,6 +160,7 @@ public class HouseGraph {
                 }
             }
         }
+        Map<DoorwayKey, Door> doorsByDoorway = indexDoorsByDoorway(blocks);
 
         // 3. Build horizontal edges between adjacent tiles (same floor)
         //    For square tiles: only 4 cardinal offsets (E, W, N, S).
@@ -184,18 +188,18 @@ public class HouseGraph {
                     if (b == null) continue;
 
                     BuildingBlock wall = findWallBetween(wallsByFloor, wallIndex, useWallSpatialIndex, a, b);
-                    addHorizontalEdges(a, b, wall);
+                    addHorizontalEdges(a, b, wall, doorsByDoorway);
                 }
             } else {
                 // Triangle tile: local spatial lookup preserves the distance-based behaviour without O(T^2).
                 double triangleNeighborThreshold = T * 1.1;
                 if (useTileSpatialIndex) {
                     for (TileNode b : tileSpatialIndex.getNearby(a.x, a.y, a.z, triangleNeighborThreshold)) {
-                        maybeAddTriangleEdge(wallsByFloor, wallIndex, useWallSpatialIndex, a, b, triangleNeighborThreshold);
+                        maybeAddTriangleEdge(wallsByFloor, wallIndex, useWallSpatialIndex, doorsByDoorway, a, b, triangleNeighborThreshold);
                     }
                 } else {
                     for (TileNode b : tileNodes) {
-                        maybeAddTriangleEdge(wallsByFloor, wallIndex, useWallSpatialIndex, a, b, triangleNeighborThreshold);
+                        maybeAddTriangleEdge(wallsByFloor, wallIndex, useWallSpatialIndex, doorsByDoorway, a, b, triangleNeighborThreshold);
                     }
                 } 
             }
@@ -228,9 +232,7 @@ public class HouseGraph {
                 int sulfur;
                 double walkCost;
                 if (wall.getType() == BuildingType.DOORWAY) {
-                    int doorSulfur = (wall instanceof Wall) ? ((Wall) wall).getDoorType().getSulfurCost() : 0;
-                    int frameSulfur = RaidConstants.getWallSulfurCost(wall.getTier());
-                    sulfur = Math.min(doorSulfur, frameSulfur);
+                    sulfur = getDoorwaySulfurCost(wall, doorsByDoorway);
                     walkCost = 2;
                 } else {
                     sulfur = RaidConstants.getWallSulfurCost(wall.getTier());
@@ -267,20 +269,51 @@ public class HouseGraph {
     }
 
     /** Shared edge-creation for horizontal pairs, extracted to avoid code duplication. */
-    private void addHorizontalEdges(TileNode a, TileNode b, BuildingBlock wall) {
+    private void addHorizontalEdges(TileNode a, TileNode b, BuildingBlock wall, Map<DoorwayKey, Door> doorsByDoorway) {
         if (wall == null) {
             addEdge(a, b, 1, 0, null);
             addEdge(b, a, 1, 0, null);
         } else if (wall.getType() == BuildingType.DOORWAY) {
-            int doorSulfur = (wall instanceof Wall) ? ((Wall) wall).getDoorType().getSulfurCost() : 0;
-            int frameSulfur = RaidConstants.getWallSulfurCost(wall.getTier());
-            addEdge(a, b, 2, Math.min(doorSulfur, frameSulfur), wall);
-            addEdge(b, a, 2, Math.min(doorSulfur, frameSulfur), wall);
+            int sulfur = getDoorwaySulfurCost(wall, doorsByDoorway);
+            addEdge(a, b, 2, sulfur, wall);
+            addEdge(b, a, 2, sulfur, wall);
         } else {
             int sulfur = RaidConstants.getWallSulfurCost(wall.getTier());
             addEdge(a, b, Double.MAX_VALUE, sulfur, wall);
             addEdge(b, a, Double.MAX_VALUE, sulfur, wall);
         }
+    }
+
+    private Map<DoorwayKey, Door> indexDoorsByDoorway(List<BuildingBlock> blocks) {
+        Map<DoorwayKey, Door> doors = new HashMap<>();
+        for (BuildingBlock block : blocks) {
+            if (block instanceof Door) {
+                Door door = (Door) block;
+                doors.put(new DoorwayKey(door.getX(), door.getY(), door.getZ(), door.getOrientation()), door);
+            }
+        }
+        return doors;
+    }
+
+    private int getDoorwaySulfurCost(BuildingBlock doorway, Map<DoorwayKey, Door> doorsByDoorway) {
+        int frameSulfur = RaidConstants.getWallSulfurCost(doorway.getTier());
+        int doorSulfur = getDoorSulfurCost(doorway, doorsByDoorway);
+        if (doorSulfur <= 0) {
+            return frameSulfur;
+        }
+        return Math.min(doorSulfur, frameSulfur);
+    }
+
+    private int getDoorSulfurCost(BuildingBlock doorway, Map<DoorwayKey, Door> doorsByDoorway) {
+        if (!(doorway instanceof Wall)) {
+            return 0;
+        }
+
+        Wall doorwayWall = (Wall) doorway;
+        Door door = doorsByDoorway.get(new DoorwayKey(
+            doorwayWall.getX(), doorwayWall.getY(), doorwayWall.getZ(), doorwayWall.getOrientation()));
+        DoorType doorType = door != null ? door.getDoorType() : doorwayWall.getDoorType();
+        return doorType != null ? doorType.getSulfurCost() : 0;
     }
 
     // === Graph Query Methods ===
@@ -357,6 +390,7 @@ public class HouseGraph {
     private void maybeAddTriangleEdge(Map<Integer, List<BuildingBlock>> wallsByFloor,
                                       WallSpatialIndex wallIndex,
                                       boolean useWallSpatialIndex,
+                                      Map<DoorwayKey, Door> doorsByDoorway,
                                       TileNode a,
                                       TileNode b,
                                       double threshold) {
@@ -366,7 +400,7 @@ public class HouseGraph {
         double distSq = dx * dx + dy * dy;
         if (distSq < threshold * threshold) {
             BuildingBlock wall = findWallBetween(wallsByFloor, wallIndex, useWallSpatialIndex, a, b);
-            addHorizontalEdges(a, b, wall);
+            addHorizontalEdges(a, b, wall, doorsByDoorway);
         }
     }
 
@@ -523,6 +557,40 @@ public class HouseGraph {
             }
         }
         return outerWalls;
+    }
+
+    private static final class DoorwayKey {
+        private final int x;
+        private final int y;
+        private final int z;
+        private final Orientation orientation;
+
+        DoorwayKey(double x, double y, int z, Orientation orientation) {
+            this.x = (int) Math.round(x);
+            this.y = (int) Math.round(y);
+            this.z = z;
+            this.orientation = orientation;
+        }
+
+        @Override
+        public boolean equals(Object o) {
+            if (this == o) return true;
+            if (!(o instanceof DoorwayKey)) return false;
+            DoorwayKey other = (DoorwayKey) o;
+            return x == other.x
+                && y == other.y
+                && z == other.z
+                && orientation == other.orientation;
+        }
+
+        @Override
+        public int hashCode() {
+            int result = x;
+            result = 31 * result + y;
+            result = 31 * result + z;
+            result = 31 * result + (orientation != null ? orientation.hashCode() : 0);
+            return result;
+        }
     }
 
     private static final class TileSpatialIndex {

@@ -9,6 +9,7 @@ import com.rustbuilder.model.structure.Foundation;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.core.Orientation;
+import com.rustbuilder.model.structure.Door;
 import com.rustbuilder.model.structure.TriangleFoundation;
 import com.rustbuilder.model.structure.Wall;
 import com.rustbuilder.service.physics.SnappingService;
@@ -128,6 +129,47 @@ public class SnappingServiceTest {
         assertEquals(60, result.x, 0.01);
         assertEquals(0, result.y, 0.01);
         assertEquals(Orientation.NORTH, result.orientation);
+    }
+
+    @Test
+    void doorSnapsToNearestDoorwayEdgeWhenMultipleDoorwaysShareTileCenter() {
+        Foundation foundation = new Foundation(0, 0, 0, 0);
+        gridModel.addBlock(foundation);
+
+        Wall northDoorway = new Wall(0, 0, 0, Orientation.NORTH);
+        northDoorway.setType(BuildingType.DOORWAY);
+        gridModel.addBlock(northDoorway);
+
+        Wall eastDoorway = new Wall(0, 0, 0, Orientation.EAST);
+        eastDoorway.setType(BuildingType.DOORWAY);
+        gridModel.addBlock(eastDoorway);
+
+        SnappingService.SnapResult result = snappingService.calculateSnap(60, 30, "DOOR", 0);
+
+        assertTrue(result.valid, "Door should snap to the doorway edge nearest the cursor");
+        assertEquals(0, result.x, 0.01);
+        assertEquals(0, result.y, 0.01);
+        assertEquals(Orientation.EAST, result.orientation);
+    }
+
+    @Test
+    void doorSnapAllowsDifferentDoorwayOrientationOnSameTile() {
+        Foundation foundation = new Foundation(0, 0, 0, 0);
+        gridModel.addBlock(foundation);
+
+        Wall northDoorway = new Wall(0, 0, 0, Orientation.NORTH);
+        northDoorway.setType(BuildingType.DOORWAY);
+        gridModel.addBlock(northDoorway);
+        gridModel.addBlock(new Door(0, 0, 0, Orientation.NORTH, com.rustbuilder.model.core.DoorType.SHEET_METAL));
+
+        Wall eastDoorway = new Wall(0, 0, 0, Orientation.EAST);
+        eastDoorway.setType(BuildingType.DOORWAY);
+        gridModel.addBlock(eastDoorway);
+
+        SnappingService.SnapResult result = snappingService.calculateSnap(60, 30, "DOOR", 0);
+
+        assertTrue(result.valid, "A north door should not block an east door on the same tile");
+        assertEquals(Orientation.EAST, result.orientation);
     }
 
     @Test

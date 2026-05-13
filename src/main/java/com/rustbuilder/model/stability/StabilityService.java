@@ -5,6 +5,8 @@ import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.core.Socket;
+import com.rustbuilder.model.structure.Door;
+import com.rustbuilder.model.structure.Wall;
 import com.rustbuilder.util.BuildingTypeUtils;
 import java.util.ArrayDeque;
 import java.util.HashSet;
@@ -153,12 +155,21 @@ public class StabilityService {
 
         // 7. Door inside a Doorway.
         if (supported.getType() == BuildingType.DOOR && supporter.getType() == BuildingType.DOORWAY) {
-            if (zDiff == 0 && distSq < 1.0) {
+            if (zDiff == 0 && distSq < 1.0 && isMatchingDoorway(supported, supporter)) {
                 return 1.0;
             }
         }
 
         return 0.0;
+    }
+
+    private static boolean isMatchingDoorway(BuildingBlock doorBlock, BuildingBlock doorwayBlock) {
+        if (!(doorBlock instanceof Door) || !(doorwayBlock instanceof Wall)) {
+            return false;
+        }
+        Door door = (Door) doorBlock;
+        Wall doorway = (Wall) doorwayBlock;
+        return door.getOrientation() == doorway.getOrientation();
     }
 
     private static boolean areSocketsConnected(BuildingBlock b1, BuildingBlock b2, boolean allowCenterConnection) {

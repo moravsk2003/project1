@@ -2,16 +2,23 @@ package com.rustbuilder.service;
 
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
 import com.rustbuilder.model.structure.Foundation;
 import com.rustbuilder.model.structure.Floor;
 import com.rustbuilder.model.structure.Wall;
+import com.rustbuilder.model.structure.Door;
+import com.rustbuilder.model.structure.TriangleFloor;
+import com.rustbuilder.model.structure.TriangleFoundation;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingTier;
+import com.rustbuilder.model.core.BuildingType;
+import com.rustbuilder.model.core.DoorType;
 import com.rustbuilder.model.core.Orientation;
+import com.rustbuilder.model.deployable.LootRoom;
 import com.rustbuilder.model.deployable.ToolCupboard;
 import com.rustbuilder.service.evaluator.HouseEvaluator;
 import com.rustbuilder.service.raid.RaidConstants;
@@ -30,6 +37,49 @@ class HouseEvaluatorTest {
     private <T extends BuildingBlock> T stone(T block) {
         block.setTier(BuildingTier.STONE);
         return block;
+    }
+
+    private Wall stoneDoorway(double x, double y, int z, Orientation orientation, DoorType doorType) {
+        Wall doorway = stone(new Wall(x, y, z, orientation));
+        doorway.setType(BuildingType.DOORWAY);
+        doorway.setDoorType(doorType);
+        return doorway;
+    }
+
+    private void addStoneOneByOneTcRoom(GridModel target) {
+        target.addBlockSilent(stone(new Foundation(0, 0, 0)));
+        target.addBlockSilent(stone(new Wall(0, 0, 0, Orientation.NORTH)));
+        target.addBlockSilent(stone(new Wall(0, 0, 0, Orientation.EAST)));
+        target.addBlockSilent(stone(new Wall(0, 0, 0, Orientation.SOUTH)));
+        target.addBlockSilent(stone(new Wall(0, 0, 0, Orientation.WEST)));
+        target.addBlockSilent(stone(new Floor(0, 0, 1, 0)));
+        target.addBlockSilent(new ToolCupboard(0, 0, 0, 0));
+    }
+
+    private void addStoneThreeByThreeByThreeShell(GridModel target) {
+        for (int x = 0; x < 3; x++) {
+            for (int y = 0; y < 3; y++) {
+                target.addBlockSilent(stone(new Foundation(x * 60, y * 60, 0)));
+                target.addBlockSilent(stone(new Floor(x * 60, y * 60, 1, 0)));
+                target.addBlockSilent(stone(new Floor(x * 60, y * 60, 2, 0)));
+                target.addBlockSilent(stone(new Floor(x * 60, y * 60, 3, 0)));
+            }
+        }
+
+        for (int z = 0; z < 3; z++) {
+            for (int i = 0; i < 3; i++) {
+                target.addBlockSilent(stone(new Wall(i * 60, 0, z, Orientation.NORTH)));
+                target.addBlockSilent(stone(new Wall(i * 60, 120, z, Orientation.SOUTH)));
+                target.addBlockSilent(stone(new Wall(0, i * 60, z, Orientation.WEST)));
+                target.addBlockSilent(stone(new Wall(120, i * 60, z, Orientation.EAST)));
+            }
+        }
+
+        target.addBlockSilent(stone(new Wall(60, 60, 0, Orientation.NORTH)));
+        target.addBlockSilent(stone(new Wall(60, 60, 0, Orientation.EAST)));
+        target.addBlockSilent(stone(new Wall(60, 60, 0, Orientation.SOUTH)));
+        target.addBlockSilent(stone(new Wall(60, 60, 0, Orientation.WEST)));
+        target.addBlockSilent(new ToolCupboard(60, 60, 0, 0));
     }
 
     /**
@@ -143,6 +193,60 @@ class HouseEvaluatorTest {
             "A TC enclosed by walls and roof should require raid cost");
         assertEquals(1, result.safeZone.closedBlocks,
             "A TC enclosed by walls and roof should count as one closed safe-zone tile");
+    }
+
+    @Test
+    void separateDoorBlockOverridesDoorwayDefaultForRaidCost() {
+        grid.addBlockSilent(stone(new Foundation(0, 0, 0)));
+        grid.addBlockSilent(stoneDoorway(0, 0, 0, Orientation.NORTH, DoorType.SHEET_METAL));
+        grid.addBlockSilent(new Door(0, 0, 0, Orientation.NORTH, DoorType.GARAGE));
+        grid.addBlockSilent(stone(new Wall(0, 0, 0, Orientation.EAST)));
+        grid.addBlockSilent(stone(new Wall(0, 0, 0, Orientation.SOUTH)));
+        grid.addBlockSilent(stone(new Wall(0, 0, 0, Orientation.WEST)));
+        grid.addBlockSilent(stone(new Floor(0, 0, 1, 0)));
+        grid.addBlockSilent(new ToolCupboard(0, 0, 0, 0));
+
+        HouseEvaluator.EvaluationResult result = evaluator.evaluate(grid);
+
+        assertEquals(DoorType.GARAGE.getSulfurCost(), result.raid.sulfurToTC,
+            "Raid graph should use the actual Door block type instead of the doorway frame fallback");
+    }
+
+    @Test
+    void triangularLootRoomWithThreeSeparateDoors_requiresDoorRaidCost() {
+        grid.addBlockSilent(stone(new TriangleFoundation(0, 0, 0, 0)));
+        grid.addBlockSilent(stone(new TriangleFloor(0, 0, 1, 0)));
+        grid.addBlockSilent(stoneDoorway(0, 0, 0, Orientation.TRIANGLE_BASE, DoorType.SHEET_METAL));
+        grid.addBlockSilent(stoneDoorway(0, 0, 0, Orientation.TRIANGLE_LEFT, DoorType.SHEET_METAL));
+        grid.addBlockSilent(stoneDoorway(0, 0, 0, Orientation.TRIANGLE_RIGHT, DoorType.SHEET_METAL));
+        grid.addBlockSilent(new Door(0, 0, 0, Orientation.TRIANGLE_BASE, DoorType.GARAGE));
+        grid.addBlockSilent(new Door(0, 0, 0, Orientation.TRIANGLE_LEFT, DoorType.GARAGE));
+        grid.addBlockSilent(new Door(0, 0, 0, Orientation.TRIANGLE_RIGHT, DoorType.GARAGE));
+        grid.addBlockSilent(new LootRoom(0, 0, 0, 0));
+
+        HouseEvaluator.EvaluationResult result = evaluator.evaluate(grid);
+
+        assertEquals(DoorType.GARAGE.getSulfurCost(), result.raid.sulfurToLootRoom,
+            "A roofed triangular loot room with three actual garage doors should not be treated as open");
+    }
+
+    @Test
+    void walledTcInLargerShell_requiresOuterAndInnerWallCost() {
+        GridModel oneByOne = new GridModel();
+        addStoneOneByOneTcRoom(oneByOne);
+
+        GridModel threeByThreeByThree = new GridModel();
+        addStoneThreeByThreeByThreeShell(threeByThreeByThree);
+
+        HouseEvaluator.EvaluationResult small = evaluator.evaluate(oneByOne);
+        HouseEvaluator.EvaluationResult large = evaluator.evaluate(threeByThreeByThree);
+
+        assertEquals(RaidConstants.getWallSulfurCost(BuildingTier.STONE), small.raid.sulfurToTC,
+            "The 1x1x1 room should require one stone wall breach");
+        assertEquals(RaidConstants.getWallSulfurCost(BuildingTier.STONE) * 2, large.raid.sulfurToTC,
+            "The 3x3x3 shell with a closed TC room should require an outer wall and an inner TC wall");
+        assertTrue(large.raid.sulfurToTC > small.raid.sulfurToTC,
+            "The larger shell is only more raid-resistant when the TC is actually compartmentalized");
     }
 
     @Test

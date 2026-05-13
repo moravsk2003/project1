@@ -11,6 +11,8 @@ import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.core.Socket;
+import com.rustbuilder.model.structure.Door;
+import com.rustbuilder.model.structure.Wall;
 import com.rustbuilder.service.evaluator.HouseEvaluator;
 import com.rustbuilder.service.physics.PlacementService;
 import com.rustbuilder.util.BuildingTypeUtils;
@@ -593,10 +595,11 @@ public class EpisodeRunner {
     }
 
     private static boolean isDoorInDoorway(BuildingBlock door, BuildingBlock doorway) {
-        return door.getType() == BuildingType.DOOR
-                && doorway.getType() == BuildingType.DOORWAY
+        return door instanceof Door
+                && doorway instanceof Wall
                 && door.getZ() == doorway.getZ()
-                && sameTilePosition(door, doorway);
+                && sameTilePosition(door, doorway)
+                && ((Door) door).getOrientation() == ((Wall) doorway).getOrientation();
     }
 
     private static boolean sameTilePosition(BuildingBlock a, BuildingBlock b) {

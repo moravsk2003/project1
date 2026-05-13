@@ -8,8 +8,11 @@ import org.junit.jupiter.api.Test;
 
 import com.rustbuilder.model.structure.Foundation;
 import com.rustbuilder.model.structure.Wall;
+import com.rustbuilder.model.structure.Door;
 import com.rustbuilder.model.structure.Floor;
 import com.rustbuilder.model.structure.TriangleFloor;
+import com.rustbuilder.model.core.BuildingType;
+import com.rustbuilder.model.core.DoorType;
 import com.rustbuilder.model.core.Orientation;
 import com.rustbuilder.core.action.BuildAction;
 import com.rustbuilder.config.GameConstants;
@@ -50,6 +53,30 @@ public class GridModelTest {
 
         Wall duplicateWall = new Wall(0, 0, 0, Orientation.NORTH);
         assertFalse(gridModel.canPlace(duplicateWall), "Should reject duplicate wall at same tile and orientation");
+    }
+
+    @Test
+    void canPlaceAllowsMultipleDoorsOnDifferentDoorwayOrientations() {
+        Foundation foundation = new Foundation(0, 0, 0, 0);
+        gridModel.addBlock(foundation);
+
+        Wall northDoorway = new Wall(0, 0, 0, Orientation.NORTH);
+        northDoorway.setType(BuildingType.DOORWAY);
+        gridModel.addBlock(northDoorway);
+
+        Wall eastDoorway = new Wall(0, 0, 0, Orientation.EAST);
+        eastDoorway.setType(BuildingType.DOORWAY);
+        gridModel.addBlock(eastDoorway);
+
+        Door northDoor = new Door(0, 0, 0, Orientation.NORTH, DoorType.SHEET_METAL);
+        assertTrue(gridModel.canPlace(northDoor), "First door should fit in matching north doorway");
+        gridModel.addBlock(northDoor);
+
+        Door eastDoor = new Door(0, 0, 0, Orientation.EAST, DoorType.SHEET_METAL);
+        assertTrue(gridModel.canPlace(eastDoor), "Different doorway orientations on one tile should each allow a door");
+
+        Door duplicateNorthDoor = new Door(0, 0, 0, Orientation.NORTH, DoorType.GARAGE);
+        assertFalse(gridModel.canPlace(duplicateNorthDoor), "Duplicate door orientation should still be rejected");
     }
 
     @Test

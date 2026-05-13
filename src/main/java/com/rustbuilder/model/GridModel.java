@@ -5,6 +5,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import com.rustbuilder.model.structure.Wall;
+import com.rustbuilder.model.structure.Door;
 import com.rustbuilder.model.stability.StabilityService;
 import com.rustbuilder.util.BuildingTypeUtils;
 import com.rustbuilder.config.GameConstants;
@@ -138,6 +139,11 @@ public class GridModel {
             com.rustbuilder.util.BuildingTypeUtils.isWall(block.getType()) && 
             b instanceof Wall && block instanceof Wall) {
             return ((Wall) b).getOrientation() == ((Wall) block).getOrientation();
+        }
+
+        if (b.getType() == BuildingType.DOOR && block.getType() == BuildingType.DOOR
+                && b instanceof Door && block instanceof Door) {
+            return ((Door) b).getOrientation() == ((Door) block).getOrientation();
         }
         return b.getType() == block.getType();
     }

@@ -7,6 +7,7 @@ import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.core.DoorType;
 import com.rustbuilder.model.core.Orientation;
 import com.rustbuilder.model.core.Socket;
+import com.rustbuilder.model.structure.Door;
 import com.rustbuilder.model.structure.Wall;
 import com.rustbuilder.util.BlockFactory;
 import com.rustbuilder.util.BuildingTypeUtils;
@@ -79,6 +80,10 @@ final class SocketPlacementResolver {
         boolean currentValid = isFreeFoundationTool(selectedTool);
         SocketPreference preference = socketPreference != null ? socketPreference : NO_PREFERENCE;
 
+        if ("DOOR".equals(selectedTool)) {
+            return resolveDoor(gridModel, aimX, aimY, currentFloor);
+        }
+
         double snapRadiusSq = GameConstants.SNAP_RADIUS * GameConstants.SNAP_RADIUS;
         ArrayList<Candidate> candidates = new ArrayList<>();
 
@@ -130,7 +135,7 @@ final class SocketPlacementResolver {
         Result closestResult = null;
         for (Candidate candidate : candidates) {
             Result result = resolveCandidate(
-                    gridModel, aimX, aimY, selectedTool, currentFloor, localBlocks, candidate.socket, candidate.block,
+                    gridModel, aimX, aimY, selectedTool, currentFloor, candidate.socket, candidate.block,
                     candidate.distSq);
             if (closestResult == null) {
                 closestResult = result;
@@ -151,8 +156,115 @@ final class SocketPlacementResolver {
         return new Result(ghostX, ghostY, ghostRotation, ghostOrientation, currentValid, null, null, -1.0);
     }
 
+    private static Result resolveDoor(GridModel gridModel, double aimX, double aimY, int currentFloor) {
+        double snapRadiusSq = GameConstants.SNAP_RADIUS * GameConstants.SNAP_RADIUS;
+        double searchRadius = GameConstants.TILE_SIZE * 2.5;
+        List<BuildingBlock> localBlocks = gridModel.getNearbyBlocks(aimX, aimY, currentFloor, searchRadius);
+
+        Wall bestDoorway = null;
+        Socket bestSocket = null;
+        double bestDistSq = Double.MAX_VALUE;
+
+        for (BuildingBlock block : localBlocks) {
+            if (block.getZ() != currentFloor || block.getType() != BuildingType.DOORWAY || !(block instanceof Wall)) {
+                continue;
+            }
+
+            Wall doorway = (Wall) block;
+            Socket edgeSocket = getDoorwayEdgeSocket(doorway);
+            if (edgeSocket == null) {
+                continue;
+            }
+
+            double distSq = distanceToDoorwaySq(doorway, aimX, aimY);
+            if (distSq < snapRadiusSq && distSq < bestDistSq) {
+                bestDoorway = doorway;
+                bestSocket = edgeSocket;
+                bestDistSq = distSq;
+            }
+        }
+
+        if (bestDoorway == null) {
+            return new Result(aimX - GameConstants.HALF_TILE, aimY - GameConstants.HALF_TILE,
+                    0, Orientation.NORTH, false, null, null, -1.0);
+        }
+
+        boolean doorExists = false;
+        for (BuildingBlock block : localBlocks) {
+            if (isDoorInDoorway(block, bestDoorway)) {
+                doorExists = true;
+                break;
+            }
+        }
+
+        return new Result(bestDoorway.getX(), bestDoorway.getY(), bestDoorway.getRotation(),
+                bestDoorway.getOrientation(), !doorExists, bestSocket, bestDoorway, bestDistSq);
+    }
+
+    private static Socket getDoorwayEdgeSocket(Wall doorway) {
+        for (Socket socket : doorway.getSockets()) {
+            if (socket.getSide() != Socket.CENTER_SIDE) {
+                return socket;
+            }
+        }
+        return null;
+    }
+
+    private static double distanceToDoorwaySq(Wall doorway, double aimX, double aimY) {
+        double[] points = doorway.getCollisionPoints();
+        if (points != null && points.length >= 4) {
+            double best = Double.MAX_VALUE;
+            int n = points.length / 2;
+            for (int i = 0; i < n; i++) {
+                double x1 = points[i * 2];
+                double y1 = points[i * 2 + 1];
+                double x2 = points[((i + 1) % n) * 2];
+                double y2 = points[((i + 1) % n) * 2 + 1];
+                best = Math.min(best, distanceToSegmentSq(aimX, aimY, x1, y1, x2, y2));
+            }
+            return best;
+        }
+
+        Socket edgeSocket = getDoorwayEdgeSocket(doorway);
+        if (edgeSocket == null) {
+            return Double.MAX_VALUE;
+        }
+        double dx = edgeSocket.getX() - aimX;
+        double dy = edgeSocket.getY() - aimY;
+        return dx * dx + dy * dy;
+    }
+
+    private static double distanceToSegmentSq(double px, double py, double x1, double y1, double x2, double y2) {
+        double dx = x2 - x1;
+        double dy = y2 - y1;
+        double lenSq = dx * dx + dy * dy;
+        if (lenSq <= 1e-9) {
+            double ox = px - x1;
+            double oy = py - y1;
+            return ox * ox + oy * oy;
+        }
+        double t = ((px - x1) * dx + (py - y1) * dy) / lenSq;
+        t = Math.max(0.0, Math.min(1.0, t));
+        double cx = x1 + t * dx;
+        double cy = y1 + t * dy;
+        double ox = px - cx;
+        double oy = py - cy;
+        return ox * ox + oy * oy;
+    }
+
+    private static boolean isDoorInDoorway(BuildingBlock block, Wall doorway) {
+        if (!(block instanceof Door)) {
+            return false;
+        }
+        Door door = (Door) block;
+        return door.getZ() == doorway.getZ()
+                && Math.abs(door.getX() - doorway.getX()) < 0.1
+                && Math.abs(door.getY() - doorway.getY()) < 0.1
+                && door.getOrientation() == doorway.getOrientation();
+    }
+
     private static Result resolveCandidate(GridModel gridModel, double aimX, double aimY, String selectedTool, int currentFloor,
-            List<BuildingBlock> localBlocks, Socket closestSocket, BuildingBlock closestBlock, double socketDistanceSq) {
+            Socket closestSocket, BuildingBlock closestBlock, double socketDistanceSq) {
         boolean currentValid = true;
         double ghostX = aimX - GameConstants.HALF_TILE;
         double ghostY = aimY - GameConstants.HALF_TILE;
@@ -268,26 +380,6 @@ final class SocketPlacementResolver {
             } else {
                 currentValid = false;
             }
-        } else if ("DOOR".equals(selectedTool)) {
-            if (closestBlock.getType() == BuildingType.DOORWAY && closestBlock instanceof Wall) {
-                Wall doorway = (Wall) closestBlock;
-                ghostX = doorway.getX();
-                ghostY = doorway.getY();
-                ghostRotation = doorway.getRotation();
-                ghostOrientation = doorway.getOrientation();
-
-                boolean doorExists = false;
-                for (BuildingBlock b : localBlocks) {
-                    if (b.getType() == BuildingType.DOOR && b.getZ() == closestBlock.getZ()
-                            && Math.abs(b.getX() - ghostX) < 0.1 && Math.abs(b.getY() - ghostY) < 0.1) {
-                        doorExists = true;
-                        break;
-                    }
-                }
-                currentValid = !doorExists;
-            } else {
-                currentValid = false;
-            }
         }
 
         if (currentValid && ("FLOOR".equals(selectedTool) || "TRIANGLE_FLOOR".equals(selectedTool))) {
@@ -344,10 +436,6 @@ final class SocketPlacementResolver {
     private static boolean isSocketEligibleForTool(BuildingBlock block, Socket socket, String selectedTool, int currentFloor) {
         BuildingType blockType = block.getType();
         int side = socket.getSide();
-
-        if ("DOOR".equals(selectedTool)) {
-            return blockType == BuildingType.DOORWAY && side == Socket.CENTER_SIDE;
-        }
 
         if ("TC".equals(selectedTool) || "WORKBENCH".equals(selectedTool) || "LOOT_ROOM".equals(selectedTool)) {
             return isHorizontalSurface(blockType) && side == Socket.CENTER_SIDE;
