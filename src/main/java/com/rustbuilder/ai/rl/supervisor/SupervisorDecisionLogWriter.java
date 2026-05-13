@@ -25,6 +25,7 @@ public class SupervisorDecisionLogWriter {
         "action",
         "applied",
         "reason",
+        "call_frequency",
         "proposed_epsilon",
         "has_reward_config",
         "epsilon",
@@ -45,7 +46,7 @@ public class SupervisorDecisionLogWriter {
             return;
         }
 
-        Path dir = RLModelManager.getModelDirectory(modelName);
+        Path dir = RLModelManager.getModelLlmDirectory(modelName);
         Path jsonlPath = dir.resolve(modelName + "_supervisor_decisions.jsonl");
         Path csvPath = dir.resolve(modelName + "_supervisor_decisions.csv");
         try {
@@ -85,6 +86,7 @@ public class SupervisorDecisionLogWriter {
         return String.format(Locale.US,
             "{\"timestamp\":\"%s\",\"model_name\":\"%s\",\"branch_id\":\"%s\","
                 + "\"episode\":%d,\"action\":\"%s\",\"applied\":%b,\"reason\":\"%s\","
+                + "\"call_frequency\":\"%s\","
                 + "\"epsilon\":%.6f,\"best_score\":%.6f,\"avg_eval_score\":%.6f,"
                 + "\"invalid_rate\":%.6f,\"current_total_reward\":%.6f}",
             escape(LocalDateTime.now().format(TS_FMT)),
@@ -94,6 +96,7 @@ public class SupervisorDecisionLogWriter {
             decision.getAction().name(),
             applied,
             escape(decision.getReason()),
+            escape(callFrequencyName(decision)),
             obs.epsilon,
             obs.bestScore,
             obs.avgEvalScore,
@@ -110,6 +113,7 @@ public class SupervisorDecisionLogWriter {
             csv(decision.getAction().name()),
             String.valueOf(applied),
             csv(decision.getReason()),
+            csv(callFrequencyName(decision)),
             decision.getProposedEpsilon() != null
                 ? String.format(Locale.US, "%.6f", decision.getProposedEpsilon())
                 : "",
@@ -124,6 +128,12 @@ public class SupervisorDecisionLogWriter {
                 ? String.format(Locale.US, "%.3f", obs.trainingRemainingMs / 1000.0)
                 : "",
             csv(obs.trainingDeadlineIso));
+    }
+
+    private static String callFrequencyName(SupervisorDecision decision) {
+        return decision.getProposedCallFrequency() != null
+            ? decision.getProposedCallFrequency().name()
+            : "";
     }
 
     private static String escape(String value) {

@@ -1,10 +1,12 @@
 package com.rustbuilder.ai.rl.supervisor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rustbuilder.ai.rl.RLRewardConfig;
 import com.rustbuilder.ai.rl.reward.RewardFormulaScope;
+import java.lang.reflect.Field;
 import java.util.Map;
 import org.junit.jupiter.api.Test;
 
@@ -47,6 +49,7 @@ class SupervisorJsonTest {
         assertTrue(json.contains("\"rewardFormulaContract\""));
         assertTrue(json.contains("\"socket_connections\""));
         assertTrue(json.contains("\"final_score\""));
+        assertTrue(json.contains("Always include reason and callFrequency"));
     }
 
     @Test
@@ -91,6 +94,97 @@ class SupervisorJsonTest {
 
         assertEquals(SupervisorAction.JUMP_TO_BRANCH, decision.getAction());
         assertEquals("branch_a", decision.getProposedModelName());
+    }
+
+    @Test
+    void parsesSupervisorCallFrequencyFromDecision() {
+        SupervisorDecision decision = SupervisorJson.decisionFromJson(
+            "{\"action\":\"KEEP_GOING\",\"callFrequency\":\"SOON\",\"reason\":\"review sooner\"}",
+            RLRewardConfig.createDefault());
+
+        assertEquals(SupervisorAction.KEEP_GOING, decision.getAction());
+        assertEquals(LlmSupervisorConfig.CallFrequency.SOON, decision.getProposedCallFrequency());
+    }
+
+    @Test
+    void detectsNativeGeminiSupervisorCommands() {
+        assertTrue(LlmSupervisorFactory.isNativeGeminiCommand("builtin:gemini"));
+        assertTrue(LlmSupervisorFactory.isNativeGeminiCommand(
+            "powershell -ExecutionPolicy Bypass -File scripts/llm_supervisor_gemini.ps1"));
+        assertTrue(LlmSupervisorFactory.isNativeGeminiCommand(
+            "python scripts/llm_supervisor_gemini.py"));
+        assertFalse(LlmSupervisorFactory.isNativeGeminiCommand("python scripts/custom_provider.py"));
+    }
+
+    @Test
+    void factoryUsesUiApiKeyForBuiltInGemini() throws Exception {
+        LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
+        config.setExternalCommand(LlmSupervisorFactory.BUILTIN_GEMINI_COMMAND);
+        config.setApiKey("ui-key-123");
+
+        LlmSupervisor supervisor = LlmSupervisorFactory.create(
+            config,
+            RLRewardConfig::createDefault,
+            Map.of());
+
+        assertTrue(supervisor instanceof GeminiLlmSupervisor);
+        Field apiKeyField = GeminiLlmSupervisor.class.getDeclaredField("apiKey");
+        apiKeyField.setAccessible(true);
+        assertEquals("ui-key-123", apiKeyField.get(supervisor));
+    }
+
+    @Test
+    void factoryKeepsOldGeminiScriptCommandsOnJavaPath() {
+        LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
+        config.setExternalCommand("powershell -ExecutionPolicy Bypass -File scripts/llm_supervisor_gemini.ps1");
+
+        LlmSupervisor supervisor = LlmSupervisorFactory.create(
+            config,
+            RLRewardConfig::createDefault,
+            Map.of("GEMINI_API_KEY", "env-key-123"));
+
+        assertTrue(supervisor instanceof GeminiLlmSupervisor);
+    }
+
+    @Test
+    void factoryUsesBuiltInGeminiWhenEnabledCommandIsBlank() {
+        LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
+        config.setExternalCommand("");
+
+        LlmSupervisor supervisor = LlmSupervisorFactory.create(
+            config,
+            RLRewardConfig::createDefault,
+            Map.of("GEMINI_API_KEY", "env-key-123"));
+
+        assertTrue(LlmSupervisorFactory.isNativeGeminiCommand(""));
+        assertTrue(supervisor instanceof GeminiLlmSupervisor);
+    }
+
+    @Test
+    void builtInGeminiDefaultsToGemmaFallback() throws Exception {
+        GeminiLlmSupervisor supervisor = new GeminiLlmSupervisor("ui-key-123", RLRewardConfig::createDefault);
+
+        Field fallbackField = GeminiLlmSupervisor.class.getDeclaredField("fallbackModel");
+        fallbackField.setAccessible(true);
+        assertEquals("gemma-4-31b-it", fallbackField.get(supervisor));
+    }
+
+    @Test
+    void callFrequencyAppliesPresetMultiplierToBaseEpisodes() {
+        LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
+        config.setCallIntervalEpisodes(1000);
+
+        config.setCallFrequency(LlmSupervisorConfig.CallFrequency.VERY_SOON);
+        assertEquals(250, config.getEffectiveCallIntervalEpisodes());
+
+        config.setCallFrequency(LlmSupervisorConfig.CallFrequency.SOON);
+        assertEquals(500, config.getEffectiveCallIntervalEpisodes());
+
+        config.setCallFrequency(LlmSupervisorConfig.CallFrequency.MEDIUM);
+        assertEquals(1000, config.getEffectiveCallIntervalEpisodes());
+
+        config.setCallFrequency(LlmSupervisorConfig.CallFrequency.LONG);
+        assertEquals(2000, config.getEffectiveCallIntervalEpisodes());
     }
 
     private SupervisorObservation observation(boolean trainingRunning) {

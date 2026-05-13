@@ -25,6 +25,25 @@ public final class RaidConstants {
         }
     }
 
+    public static int getCeilingSulfurCostFromBelow(BuildingTier tier) {
+        int baseCost = getWallSulfurCost(tier);
+        if (baseCost <= 0) {
+            return 0;
+        }
+        return (int) Math.ceil(baseCost / getCeilingWeakSideMultiplier(tier));
+    }
+
+    public static double getCeilingWeakSideMultiplier(BuildingTier tier) {
+        switch (tier) {
+            case WOOD:  return 5.0;
+            case STONE: return 3.0;
+            case METAL: return 2.0;
+            case HQM:   return 1.0;
+            case TWIG:
+            default:    return 1.0;
+        }
+    }
+
     public static int splashSulfurCostPerWall(BuildingTier tier, int adjacentWalls) {
         if (adjacentWalls < 2 || adjacentWalls > MAX_SPLASH_TARGETS) {
             return getWallSulfurCost(tier);

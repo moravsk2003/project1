@@ -247,9 +247,10 @@ public class HouseGraph {
                 TileNode below = findTileNode(block.getX(), block.getY(), block.getZ() - 1);
                 TileNode above = findTileNode(block.getX(), block.getY(), block.getZ());
                 if (below != null && above != null) {
-                    int sulfur = RaidConstants.getWallSulfurCost(block.getTier());
-                    addEdge(below, above, Double.MAX_VALUE, sulfur, block);
-                    addEdge(above, below, Double.MAX_VALUE, sulfur, block);
+                    int fromBelowSulfur = RaidConstants.getCeilingSulfurCostFromBelow(block.getTier());
+                    int fromAboveSulfur = RaidConstants.getWallSulfurCost(block.getTier());
+                    addEdge(below, above, Double.MAX_VALUE, fromBelowSulfur, block);
+                    addEdge(above, below, Double.MAX_VALUE, fromAboveSulfur, block);
                 }
             }
         }

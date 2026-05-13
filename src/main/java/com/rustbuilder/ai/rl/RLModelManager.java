@@ -110,16 +110,55 @@ public class RLModelManager {
         return dir;
     }
 
+    public static Path getModelMainDirectory(String modelName) {
+        return ensureDirectory(getModelDirectoryPath(modelName).resolve("main"));
+    }
+
+    public static Path getModelLlmDirectory(String modelName) {
+        return ensureDirectory(getModelDirectoryPath(modelName).resolve("llm"));
+    }
+
+    public static Path getModelBranchesDirectory(String modelName) {
+        return ensureDirectory(getModelDirectoryPath(modelName).resolve("branches"));
+    }
+
+    public static Path getBranchDirectory(String ownerModelName, String branchModelName) {
+        return ensureDirectory(getModelBranchesDirectory(ownerModelName).resolve(safeModelDirectoryName(branchModelName)));
+    }
+
+    private static Path ensureDirectory(Path dir) {
+        try {
+            Files.createDirectories(dir);
+        } catch (IOException e) {
+        }
+        return dir;
+    }
+
     public static Path resolveModelFile(String modelName, String fileName) {
-        return getModelDirectory(modelName).resolve(fileName);
+        return getModelMainDirectory(modelName).resolve(fileName);
     }
 
     public static Path findExistingModelFile(String modelName, String fileName) {
-        Path modelFile = getModelDirectoryPath(modelName).resolve(fileName);
-        if (Files.exists(modelFile)) {
-            return modelFile;
+        Path root = getModelDirectoryPath(modelName);
+        Path[] candidates = new Path[] {
+            root.resolve("main").resolve(fileName),
+            root.resolve(fileName),
+            getModelsDir().resolve(fileName)
+        };
+        for (Path candidate : candidates) {
+            if (Files.exists(candidate)) {
+                return candidate;
+            }
         }
-        return getModelsDir().resolve(fileName);
+        try (Stream<Path> files = Files.walk(getModelsDir(), 5)) {
+            return files
+                .filter(Files::isRegularFile)
+                .filter(p -> p.getFileName().toString().equals(fileName))
+                .findFirst()
+                .orElse(root.resolve("main").resolve(fileName));
+        } catch (IOException e) {
+            return root.resolve("main").resolve(fileName);
+        }
     }
 
     private static Path getModelDirectoryPath(String modelName) {
@@ -135,12 +174,17 @@ public class RLModelManager {
     }
 
     public static void saveModel(RLModel model, RLTrainingService rlService) throws IOException {
-        Path file = resolveModelFile(model.name, model.name + ".rmeta");
+        saveModel(model, rlService, getModelMainDirectory(model.name));
+    }
+
+    public static void saveModel(RLModel model, RLTrainingService rlService, Path outputDirectory) throws IOException {
+        Path dir = outputDirectory != null ? ensureDirectory(outputDirectory) : getModelMainDirectory(model.name);
+        Path file = dir.resolve(model.name + ".rmeta");
         try (ObjectOutputStream oos = new ObjectOutputStream(
                 new BufferedOutputStream(Files.newOutputStream(file)))) {
             oos.writeObject(model);
         }
-        Path netFile = resolveModelFile(model.name, model.name + ".rnet");
+        Path netFile = dir.resolve(model.name + ".rnet");
         rlService.getMultiDiscreteAgent().save(netFile.toString());
     }
 
@@ -168,8 +212,9 @@ public class RLModelManager {
     public static List<String> listModels() {
         Path dir = getModelsDir();
         Set<String> names = new LinkedHashSet<>();
-        try (Stream<Path> files = Files.list(dir)) {
+        try (Stream<Path> files = Files.walk(dir, 5)) {
             files
+                .filter(Files::isRegularFile)
                 .filter(p -> p.toString().endsWith(".rmeta"))
                 .map(p -> {
                     String fileName = p.getFileName().toString();
@@ -180,27 +225,7 @@ public class RLModelManager {
         } catch (IOException e) {
         }
 
-        try (Stream<Path> dirs = Files.list(dir)) {
-            dirs
-                .filter(Files::isDirectory)
-                .forEach(modelDir -> addNestedModelNames(modelDir, names));
-        } catch (IOException e) {
-        }
-
         return names.stream().sorted().collect(Collectors.toList());
-    }
-
-    private static void addNestedModelNames(Path modelDir, Set<String> names) {
-        try (Stream<Path> files = Files.list(modelDir)) {
-            files
-                .filter(p -> p.toString().endsWith(".rmeta"))
-                .map(p -> {
-                    String fileName = p.getFileName().toString();
-                    return fileName.substring(0, fileName.length() - 6); // remove .rmeta
-                })
-                .forEach(names::add);
-        } catch (IOException e) {
-        }
     }
 
     public static boolean deleteModel(String name) {

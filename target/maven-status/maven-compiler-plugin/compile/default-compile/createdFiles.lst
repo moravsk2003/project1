@@ -19,6 +19,7 @@ com\rustbuilder\model\stability\StabilityService.class
 com\rustbuilder\ai\rl\supervisor\SupervisorObservation.class
 com\rustbuilder\model\GridModel$LongBlockListMap.class
 com\rustbuilder\service\evaluator\LogisticsEvaluator$DistNode.class
+com\rustbuilder\ai\rl\supervisor\LlmSupervisorFactory.class
 com\rustbuilder\ai\rl\reward\RewardFormulaEvaluator.class
 com\rustbuilder\ai\rl\supervisor\SupervisorAction.class
 com\rustbuilder\ui\RLGeneratorDialog.class
@@ -61,6 +62,7 @@ com\rustbuilder\service\evaluator\RaidResistanceEvaluator$DistNode.class
 com\rustbuilder\ai\rl\supervisor\LlmSupervisorConfig.class
 com\rustbuilder\ai\rl\env\state\HybridV3StateEncoder.class
 com\rustbuilder\ai\rl\EpisodeRunner.class
+com\rustbuilder\ai\rl\RLTrainingService$TrainingLoadProfile.class
 com\rustbuilder\MainApp.class
 com\rustbuilder\service\evaluator\RaidResistanceEvaluator.class
 com\rustbuilder\service\evaluator\ResourceCostEvaluator$1.class
@@ -89,6 +91,7 @@ com\rustbuilder\core\package-info.class
 com\rustbuilder\model\structure\Foundation.class
 com\rustbuilder\ai\rl\supervisor\SimpleJson$Parser.class
 com\rustbuilder\ai\rl\EpisodeRunner$ComponentStats.class
+com\rustbuilder\ai\rl\supervisor\GeminiLlmSupervisor.class
 com\rustbuilder\model\stability\package-info.class
 com\rustbuilder\ai\rl\multidiscrete\MultiDiscretePhasePolicy.class
 com\rustbuilder\ai\rl\EpisodeResult.class
@@ -129,6 +132,7 @@ com\rustbuilder\model\GridModel.class
 com\rustbuilder\service\raid\RaidConstants$1.class
 com\rustbuilder\ai\rl\multidiscrete\MultiDiscretePhaseDecision.class
 com\rustbuilder\ui\hints\ContextHintPopup.class
+com\rustbuilder\ai\rl\supervisor\GeminiLlmSupervisor$ModelResult.class
 com\rustbuilder\ai\rl\supervisor\SupervisorDecision.class
 com\rustbuilder\ai\rl\env\spec\ActionSpaceSpec.class
 com\rustbuilder\controller\GameController.class
@@ -160,6 +164,7 @@ com\rustbuilder\ai\rl\env\spec\EncodingRuntimeConfig.class
 com\rustbuilder\ai\rl\multidiscrete\MultiDiscreteCreditAssignment.class
 com\rustbuilder\ai\core\TrainingMetrics.class
 com\rustbuilder\service\physics\SocketPlacementResolver.class
+com\rustbuilder\ai\rl\supervisor\LlmSupervisorConfig$CallFrequency.class
 com\rustbuilder\model\structure\TriangleFloor.class
 com\rustbuilder\service\evaluator\SafeZoneEvaluator.class
 com\rustbuilder\ui\RLGeneratorDialog$1.class

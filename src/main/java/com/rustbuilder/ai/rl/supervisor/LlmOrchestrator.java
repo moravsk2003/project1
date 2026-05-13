@@ -17,6 +17,7 @@ public class LlmOrchestrator {
     private final RLTrainingService rlService;
     private final SupervisorDecisionValidator decisionValidator = new SupervisorDecisionValidator();
     private final AtomicBoolean running = new AtomicBoolean(false);
+    private final AtomicBoolean idleDecisionInProgress = new AtomicBoolean(false);
     private Thread orchestratorThread;
     private volatile java.util.function.Consumer<String> statusCallback;
     private volatile java.util.function.Consumer<TrainingMetrics> trainingProgressCallback;
@@ -52,16 +53,16 @@ public class LlmOrchestrator {
         java.util.function.Consumer<String> cb = statusCallback != null ? statusCallback : s -> {};
         this.statusCallback = cb;
         this.trainingProgressCallback = trainingProgressCallback;
+        if (!idleDecisionInProgress.compareAndSet(false, true)) {
+            cb.accept("Orchestrator: LLM check already running.");
+            return;
+        }
         cb.accept("Orchestrator: contacting LLM...");
         Thread t = new Thread(() -> {
             try {
                 LlmSupervisorConfig config = rlService.getSupervisorConfig();
                 if (config == null || !config.isEnabled()) {
                     cb.accept("Orchestrator: supervisor is not enabled.");
-                    return;
-                }
-                if (config.getExternalCommand() == null || config.getExternalCommand().isBlank()) {
-                    cb.accept("Orchestrator: no command configured.");
                     return;
                 }
                 if (rlService.isTrainingRunning()) {
@@ -73,6 +74,8 @@ public class LlmOrchestrator {
                 processDecision(decision, obs, config, cb, 0);
             } catch (Exception e) {
                 cb.accept("[ORCHESTRATOR] Error: " + e.getMessage());
+            } finally {
+                idleDecisionInProgress.set(false);
             }
         });
         t.setDaemon(true);
@@ -86,14 +89,22 @@ public class LlmOrchestrator {
                 if (config != null && config.isEnabled()) {
                     // If training is NOT currently running
                     if (!rlService.isTrainingRunning()) {
+                        if (!idleDecisionInProgress.compareAndSet(false, true)) {
+                            Thread.sleep(IDLE_POLL_INTERVAL_MS);
+                            continue;
+                        }
                         // Create a special observation indicating idle state
-                        SupervisorObservation obs = rlService.createIdleSupervisorObservation("idle_check");
-                        
-                        SupervisorDecision decision = askLlm(config, obs);
-                        processDecision(decision, obs, config, msg -> {
-                            // RunLoop doesn't have a UI callback, but we can log via the status callback if set
-                            if (this.statusCallback != null) this.statusCallback.accept(msg);
-                        }, 0);
+                        try {
+                            SupervisorObservation obs = rlService.createIdleSupervisorObservation("idle_check");
+                            
+                            SupervisorDecision decision = askLlm(config, obs);
+                            processDecision(decision, obs, config, msg -> {
+                                // RunLoop doesn't have a UI callback, but we can log via the status callback if set
+                                if (this.statusCallback != null) this.statusCallback.accept(msg);
+                            }, 0);
+                        } finally {
+                            idleDecisionInProgress.set(false);
+                        }
                     }
                 }
                 
@@ -115,11 +126,11 @@ public class LlmOrchestrator {
 
     private SupervisorDecision askLlm(LlmSupervisorConfig config, SupervisorObservation obs) {
         try {
-            LlmSupervisor supervisor = new ExternalCommandLlmSupervisor(
-                config.getExternalCommand(),
+            LlmSupervisor supervisor = LlmSupervisorFactory.create(
+                config,
                 () -> rlService.getRewardConfig(),
                 createSupervisorEnvironmentOverrides(config));
-            return decisionValidator.validate(supervisor.review(obs), config, rlService.getRewardConfig());
+            return decisionValidator.validate(supervisor.review(obs), config, rlService.getRewardConfig(), obs);
         } catch (Exception e) {
             rlService.setLastSupervisorDecision(null, "Orchestrator Error: " + e.getMessage());
             return null;
@@ -140,6 +151,17 @@ public class LlmOrchestrator {
         String msg = String.format("[ORCHESTRATOR] action=%s, reason=%s", decision.getAction().name(), decision.getReason());
         cb.accept(msg);
         rlService.setLastSupervisorDecision(decision, msg);
+        if (decision.getProposedCallFrequency() != null && config.getApplyMode() == LlmSupervisorApplyMode.AUTO_APPLY) {
+            boolean frequencyApplied = rlService.applySupervisorCallFrequency(decision.getProposedCallFrequency());
+            if (frequencyApplied) {
+                LlmSupervisorConfig updatedConfig = rlService.getSupervisorConfig();
+                cb.accept(String.format(
+                    "[ORCHESTRATOR] LLM call frequency set to %s; effective interval %d episodes.",
+                    updatedConfig.getCallFrequency().name(),
+                    updatedConfig.getEffectiveCallIntervalEpisodes()));
+                config = updatedConfig;
+            }
+        }
 
         if (decision.getAction() == SupervisorAction.START_NEW_RUN || decision.getAction() == SupervisorAction.RESTART_TRAINING) {
             if (config.getApplyMode() != LlmSupervisorApplyMode.AUTO_APPLY) {
@@ -284,6 +306,14 @@ public class LlmOrchestrator {
     }
 
     private void startNewRun(SupervisorDecision decision) {
+        java.util.function.Consumer<String> cb = this.statusCallback;
+        if (rlService.isTrainingRunning()) {
+            if (cb != null) {
+                cb.accept("[ORCHESTRATOR] Start-run skipped: training is already running.");
+            }
+            return;
+        }
+
         Boolean use2dCnn = decision.getProposedUse2dCnn();
         boolean is2d = use2dCnn != null ? use2dCnn : false;
         
@@ -297,14 +327,18 @@ public class LlmOrchestrator {
             modelName = "auto_run_" + System.currentTimeMillis();
         }
         
+        LlmSupervisorConfig supervisorConfig = rlService.getSupervisorConfig();
+        long durationMs = supervisorConfig.getAutopilotTrainingDurationMs();
         RLTrainingConfig trainingConfig = new RLTrainingConfig(
             modelName.trim(), 100, 40, 1.0, 0.8, 1.2, 1.0, 0.5, 50,
-            rlService.getSupervisorConfig(), 0L, is2d);
+            supervisorConfig, durationMs, is2d);
             
-        java.util.function.Consumer<String> cb = this.statusCallback;
         java.util.function.Consumer<TrainingMetrics> trainingCb = this.trainingProgressCallback;
         if (cb != null) {
             cb.accept("[ORCHESTRATOR] Training started: " + trainingConfig.getModelName());
+            if (durationMs > 0) {
+                cb.accept("[ORCHESTRATOR] Autopilot run time limit: " + formatDuration(durationMs));
+            }
         }
 
         java.util.function.Consumer<com.rustbuilder.ai.core.TrainingMetrics> progressCb = null;
@@ -335,5 +369,20 @@ public class LlmOrchestrator {
                 cb.accept("[ORCHESTRATOR] Training ERROR: " + sw.toString());
             }
         }
+    }
+
+    private static String formatDuration(long ms) {
+        long safeMs = Math.max(0L, ms);
+        long totalSeconds = safeMs / 1000L;
+        long hours = totalSeconds / 3600L;
+        long minutes = (totalSeconds % 3600L) / 60L;
+        long seconds = totalSeconds % 60L;
+        if (hours > 0) {
+            return String.format("%dh %02dm", hours, minutes);
+        }
+        if (minutes > 0) {
+            return String.format("%dm %02ds", minutes, seconds);
+        }
+        return String.format("%ds", seconds);
     }
 }

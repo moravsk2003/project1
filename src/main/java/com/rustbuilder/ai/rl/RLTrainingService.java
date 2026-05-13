@@ -3,6 +3,7 @@ package com.rustbuilder.ai.rl;
 import com.rustbuilder.ai.core.TrainingMetrics;
 import java.util.LinkedHashMap;
 import java.util.LinkedList;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
 import java.util.function.Consumer;
@@ -25,6 +26,7 @@ import com.rustbuilder.ai.rl.supervisor.RLTrainingAnalyzer;
 import com.rustbuilder.ai.rl.supervisor.SupervisorDecision;
 import com.rustbuilder.ai.rl.supervisor.SupervisorDecisionLogWriter;
 import com.rustbuilder.ai.rl.supervisor.SupervisorDecisionValidator;
+import com.rustbuilder.ai.rl.supervisor.SimpleJson;
 import com.rustbuilder.ai.rl.supervisor.SupervisorJson;
 import com.rustbuilder.ai.rl.supervisor.SupervisorObservation;
 import com.rustbuilder.model.core.BuildingBlock;
@@ -111,6 +113,7 @@ public class RLTrainingService {
     private final double minEpsilon = 0.05;
     private final int targetUpdateFreq = 10;
     private static final int MEMORY_CAPACITY = 10000;
+    private static final int AUTOSAVE_INTERVAL_EPISODES = 100;
 
     // Runtime State
     private int episodesTrained = 0;
@@ -153,6 +156,7 @@ public class RLTrainingService {
     private long currentTrainingDurationMs = 0;
     private long trainingDeadlineMs = 0;
     private boolean trainingTimeLimitAnnounced = false;
+    private int lastAutosaveEpisode = 0;
     private String currentRunId;
     private String activeTrainingModelName = "";
     private int activeMaxStepsPerEpisode = 0;
@@ -166,6 +170,7 @@ public class RLTrainingService {
     private final LinkedList<Map<String, Object>> supervisorHistory = new LinkedList<>();
     private final Object branchExperimentLock = new Object();
     private volatile boolean branchExperimentRunning = false;
+    private volatile boolean branchReviewInProgress = false;
     private volatile String branchExperimentStatus = "No branch experiment yet.";
     private volatile Map<String, Object> latestBranchComparison = Map.of();
     private volatile RLRewardConfig latestBranchCandidateRewardConfig;
@@ -360,19 +365,24 @@ public class RLTrainingService {
             ? trainingStartTime + currentTrainingDurationMs
             : 0L;
         this.trainingTimeLimitAnnounced = false;
+        this.lastAutosaveEpisode = episodesTrained;
 
-        logger.setLogFile(modelName, true);
+        java.nio.file.Path trainingOutputDir = trainingConfig.getOutputDirectory() != null
+            ? trainingConfig.getOutputDirectory()
+            : RLModelManager.getModelMainDirectory(modelName);
+        logger.setLogFile(modelName, true, trainingOutputDir);
         logger.setRunContext(currentRunId,
             activeConfig.stateEncodingSpec.encoderVersion,
             activeConfig.stateEncodingSpec.voxelChannels,
             activeConfig.stateEncodingSpec.hasGlobalVector,
             activeConfig.stateEncodingSpec.globalFeatureCount);
 
-        String modelRunDir = RLModelManager.getModelDirectory(modelName).toString();
+        String modelRunDir = trainingOutputDir.toString();
         logger.writeRunMetadata(modelName, activeConfig,
             "default_config",
             "default_training",
-            modelRunDir, modelRunDir);
+            modelRunDir, modelRunDir,
+            trainingOutputDir);
 
         logger.init();
 
@@ -480,6 +490,7 @@ public class RLTrainingService {
                 TrainingMetrics metrics = createTrainingMetrics(
                     epoch + 1, epochs, ep + 1, episodes, result, episodeEvalScore);
                 maybeInvokeSupervisor(modelName, metrics, result);
+                maybeAutosaveModel(modelName, trainingConfig, "interval", false);
 
                 if (progressCallback != null && (ep % 5 == 0 || ep == episodes - 1)) {
                     progressCallback.accept(metrics);
@@ -504,8 +515,10 @@ public class RLTrainingService {
             if (epochCompleteCallback != null) {
                 epochCompleteCallback.run();
             }
+            maybeAutosaveModel(modelName, trainingConfig, "epoch " + (epoch + 1), true);
         }
         } finally {
+            maybeAutosaveModel(modelName, trainingConfig, "final", true);
             logger.close();
             totalTrainingTimeMs += System.currentTimeMillis() - trainingStartTime;
             currentTrainingDurationMs = 0L;
@@ -560,6 +573,42 @@ public class RLTrainingService {
         return trainingDeadlineMs > 0 && System.currentTimeMillis() >= trainingDeadlineMs;
     }
 
+    private void maybeAutosaveModel(String modelName, RLTrainingConfig trainingConfig, String reason, boolean force) {
+        if (modelName == null || modelName.isBlank() || trainingConfig == null || multiDiscreteAgent == null) {
+            return;
+        }
+        if (episodesTrained <= 0) {
+            return;
+        }
+        if (!force && episodesTrained - lastAutosaveEpisode < AUTOSAVE_INTERVAL_EPISODES) {
+            return;
+        }
+        if (force && episodesTrained == lastAutosaveEpisode) {
+            return;
+        }
+        try {
+            RLModelManager.RLModel snapshot = RLModelManager.createSnapshot(
+                modelName,
+                this,
+                trainingConfig.getLogisticsWeight(),
+                trainingConfig.getCostWeight(),
+                trainingConfig.getRaidWeight(),
+                trainingConfig.getWorkingAreaWeight(),
+                trainingConfig.getSafeZoneWeight());
+            RLModelManager.saveModel(snapshot, this, trainingConfig.getOutputDirectory());
+            lastAutosaveEpisode = episodesTrained;
+            lastSupervisorDecisionSummary = String.format(
+                "Autosaved model '%s' at episode %d (%s).",
+                modelName,
+                episodesTrained,
+                reason != null ? reason : "training");
+            emitSupervisorLog(lastSupervisorDecisionSummary);
+        } catch (Exception e) {
+            lastSupervisorDecisionSummary = "Autosave failed: " + e.getMessage();
+            emitSupervisorLog(lastSupervisorDecisionSummary);
+        }
+    }
+
     private long getCurrentTrainingElapsedMs() {
         return trainingStartTime > 0 ? Math.max(0L, System.currentTimeMillis() - trainingStartTime) : 0L;
     }
@@ -607,8 +656,11 @@ public class RLTrainingService {
         if (config == null || !config.isEnabled() || metrics == null) {
             return;
         }
+        if (branchExperimentRunning || branchReviewInProgress) {
+            return;
+        }
 
-        int interval = config.getCallIntervalEpisodes();
+        int interval = config.getEffectiveCallIntervalEpisodes();
         if (metrics.totalEpisodesTrained <= 0 || interval <= 0 || metrics.totalEpisodesTrained % interval != 0) {
             return;
         }
@@ -640,7 +692,7 @@ public class RLTrainingService {
             rawDecision = SupervisorDecision.keepGoing("Supervisor call failed: " + e.getMessage());
         }
 
-        SupervisorDecision decision = supervisorDecisionValidator.validate(rawDecision, config, getRewardConfig());
+        SupervisorDecision decision = supervisorDecisionValidator.validate(rawDecision, config, getRewardConfig(), observation);
         boolean applied = shouldApplySupervisorDecision(config, decision);
         if (applied) {
             applied = applySupervisorDecision(decision);
@@ -672,7 +724,13 @@ public class RLTrainingService {
         context.put("avgReward", metrics.avgReward);
         context.put("minEpsilon", minEpsilon);
         context.put("epsilonDecay", epsilonDecay);
-        context.put("supervisorCallIntervalEpisodes", config != null ? config.getCallIntervalEpisodes() : 0);
+        context.put("supervisorBaseCallIntervalEpisodes", config != null ? config.getCallIntervalEpisodes() : 0);
+        context.put("supervisorCallFrequency", config != null ? config.getCallFrequency().name() : "");
+        context.put("supervisorCallFrequencyMultiplier", config != null ? config.getCallFrequency().getMultiplier() : 1.0);
+        context.put("supervisorCallIntervalEpisodes", config != null ? config.getEffectiveCallIntervalEpisodes() : 0);
+        context.put("autopilotTrainingDurationMs", config != null ? config.getAutopilotTrainingDurationMs() : 0L);
+        context.put("autopilotTrainingDurationSeconds", config != null ? config.getAutopilotTrainingDurationMs() / 1000.0 : 0.0);
+        context.put("autopilotTrainingTimeLimitEnabled", config != null && config.getAutopilotTrainingDurationMs() > 0);
         context.put("encoderMode", encoderMode.name());
         context.put("use2dCnn", use2dCnn);
         context.put("useAimSectorLearning", useAimSectorLearning);
@@ -724,6 +782,7 @@ public class RLTrainingService {
             && finiteDelta(metrics.bestScore, lastSupervisorBestScore) <= 1e-9);
         trends.put("recentSupervisorHistory", java.util.List.copyOf(supervisorHistory));
         trends.put("branchExperimentRunning", branchExperimentRunning);
+        trends.put("branchReviewInProgress", branchReviewInProgress);
         trends.put("branchExperimentStatus", branchExperimentStatus);
         if (!latestBranchComparison.isEmpty()) {
             trends.put("latestBranchComparison", latestBranchComparison);
@@ -857,7 +916,8 @@ public class RLTrainingService {
         if (decision == null || decision.getAction() == null) {
             return false;
         }
-        return decision.getAction() == com.rustbuilder.ai.rl.supervisor.SupervisorAction.SET_EPSILON
+        return decision.getProposedCallFrequency() != null
+            || decision.getAction() == com.rustbuilder.ai.rl.supervisor.SupervisorAction.SET_EPSILON
             || decision.getAction() == com.rustbuilder.ai.rl.supervisor.SupervisorAction.REPLACE_REWARD_CONFIG
             || decision.getAction() == com.rustbuilder.ai.rl.supervisor.SupervisorAction.STOP_TRAINING
             || decision.getAction() == com.rustbuilder.ai.rl.supervisor.SupervisorAction.PROMOTE_BRANCH
@@ -884,10 +944,19 @@ public class RLTrainingService {
         if (reason == null || reason.isBlank()) {
             reason = "no reason";
         }
-        return String.format("Supervisor ep %d [%s]: %s, applied=%s, reason=%s",
+        String frequency = "";
+        if (decision.getProposedCallFrequency() != null) {
+            LlmSupervisorConfig.CallFrequency proposed = decision.getProposedCallFrequency();
+            frequency = String.format(Locale.US, ", callFrequency=%s x%.2f effective=%d",
+                proposed.name(),
+                proposed.getMultiplier(),
+                Math.max(1, (int) Math.round(config.getCallIntervalEpisodes() * proposed.getMultiplier())));
+        }
+        return String.format("Supervisor ep %d [%s]: %s%s, applied=%s, reason=%s",
             observation.totalEpisodesTrained,
             config.getApplyMode(),
             decision.getAction(),
+            frequency,
             applied ? "yes" : "no",
             reason);
     }
@@ -896,25 +965,26 @@ public class RLTrainingService {
         if (decision == null) {
             return false;
         }
+        boolean applied = applySupervisorCallFrequency(decision.getProposedCallFrequency());
 
         switch (decision.getAction()) {
             case SET_EPSILON:
                 if (decision.getProposedEpsilon() != null) {
-                    return startBranchExperiment(decision);
+                    return startBranchExperiment(decision) || applied;
                 }
                 break;
             case REPLACE_REWARD_CONFIG:
                 if (decision.getProposedRewardConfig() != null) {
-                    return startBranchExperiment(decision);
+                    return startBranchExperiment(decision) || applied;
                 }
                 break;
             case STOP_TRAINING:
                 requestStop();
                 return true;
             case PROMOTE_BRANCH:
-                return promoteLatestBranch();
+                return promoteLatestBranch() || applied;
             case JUMP_TO_BRANCH:
-                return requestBranchJump(decision.getProposedModelName(), decision.getReason());
+                return requestBranchJump(decision.getProposedModelName(), decision.getReason()) || applied;
             case START_NEW_RUN:
             case RESTART_TRAINING:
             case REQUEST_PROMOTION_CHECK:
@@ -922,7 +992,23 @@ public class RLTrainingService {
             default:
                 break;
         }
-        return false;
+        return applied;
+    }
+
+    public boolean applySupervisorCallFrequency(LlmSupervisorConfig.CallFrequency frequency) {
+        if (frequency == null || supervisorConfig == null || !supervisorConfig.isEnabled()) {
+            return false;
+        }
+        if (supervisorConfig.getCallFrequency() == frequency) {
+            return false;
+        }
+        supervisorConfig.setCallFrequency(frequency);
+        emitSupervisorLog(String.format(Locale.US,
+            "Supervisor call frequency set by LLM: %s x%.2f, effective interval %d episodes.",
+            frequency.name(),
+            frequency.getMultiplier(),
+            supervisorConfig.getEffectiveCallIntervalEpisodes()));
+        return true;
     }
 
     private boolean startBranchExperiment(SupervisorDecision decision) {
@@ -995,6 +1081,8 @@ public class RLTrainingService {
         try {
             RLTrainingConfig baselineConfig = branchConfig(sourceConfig, baselineName, "baseline", use2dCnn);
             RLTrainingConfig candidateConfig = branchConfig(sourceConfig, candidateName, candidateName, use2dCnn);
+            copyMainLogsToBranch(baselineConfig.getOutputDirectory());
+            copyMainLogsToBranch(candidateConfig.getOutputDirectory());
             baselineService = new RLTrainingService();
             candidateService = new RLTrainingService();
             baselineService.setEncoderMode(encoderMode);
@@ -1046,6 +1134,7 @@ public class RLTrainingService {
                 candidateEpsilon,
                 reason);
             rememberBranchExperiment(latestBranchComparison);
+            writeBranchExperimentLog(activeTrainingModelName, latestBranchComparison);
             branchExperimentStatus = String.format(
                 "Branch experiment finished: candidate=%s savedWinner=%s promoteRecommended=%s bestDelta=%.4f avgDelta=%.4f invalidDelta=%.4f",
                 candidateName,
@@ -1055,7 +1144,9 @@ public class RLTrainingService {
                 comparison.avgEvalDelta,
                 comparison.invalidRateDelta);
             emitSupervisorLog("[BRANCH] " + branchExperimentStatus);
-            requestBranchJump(savedWinnerModelName, "Automatic jump to saved winner branch after experiment.");
+            branchReviewInProgress = true;
+            branchExperimentRunning = false;
+            maybeInvokeSupervisorAfterBranchExperiment(activeTrainingModelName, baselineMetrics, candidateMetrics);
         } catch (Exception e) {
             branchExperimentStatus = "Branch experiment failed: " + e.getMessage();
             latestBranchComparison = Map.of("status", "failed", "error", e.getMessage() != null ? e.getMessage() : "");
@@ -1068,7 +1159,67 @@ public class RLTrainingService {
                 candidateService.getLlmOrchestrator().stop();
             }
             branchExperimentRunning = false;
+            branchReviewInProgress = false;
         }
+    }
+
+    private void maybeInvokeSupervisorAfterBranchExperiment(String modelName,
+                                                            TrainingMetrics baselineMetrics,
+                                                            TrainingMetrics candidateMetrics) {
+        LlmSupervisorConfig config = supervisorConfig;
+        if (config == null || !config.isEnabled()) {
+            return;
+        }
+        TrainingMetrics liveMetrics = getMetrics();
+        Map<String, Object> trendMetrics = buildSupervisorTrendMetrics(liveMetrics);
+        trendMetrics.put("supervisorTrigger", "BRANCH_EXPERIMENT_FINISHED");
+        trendMetrics.put("branchReviewInstruction",
+            "Review baseline and candidate branch results now. The timed supervisor interval was paused while both branches trained.");
+        trendMetrics.put("baselineBranchFinal", metricsMap(baselineMetrics));
+        trendMetrics.put("candidateBranchFinal", metricsMap(candidateMetrics));
+
+        SupervisorObservation observation = trainingAnalyzer.summarize(
+            config.getBranchId(),
+            liveMetrics,
+            null,
+            getRewardConfig(),
+            buildSupervisorTrainingContext(liveMetrics, config),
+            trendMetrics);
+
+        rememberSupervisorTrend(liveMetrics);
+        emitSupervisorLog(String.format(
+            "Supervisor branch review: baseline=%s candidate=%s winner=%s",
+            latestBranchComparison.getOrDefault("savedBaselineModelName", ""),
+            latestBranchComparison.getOrDefault("savedCandidateModelName", ""),
+            latestBranchComparison.getOrDefault("savedWinnerModelName", "")));
+        if (!waitForSupervisorRateLimit(observation)) {
+            return;
+        }
+
+        SupervisorDecision rawDecision;
+        try {
+            rawDecision = llmSupervisor.review(observation);
+        } catch (Exception e) {
+            emitSupervisorLog("Supervisor branch review failed: " + e.getMessage());
+            rawDecision = SupervisorDecision.keepGoing("Supervisor branch review failed: " + e.getMessage());
+        }
+
+        SupervisorDecision decision = supervisorDecisionValidator.validate(rawDecision, config, getRewardConfig(), observation);
+        boolean applied = shouldApplySupervisorDecision(config, decision);
+        if (applied) {
+            applied = applySupervisorDecision(decision);
+            clearPendingSupervisorDecision();
+        } else if (config.getApplyMode() == LlmSupervisorApplyMode.MANUAL_APPROVAL
+                && isManuallyApplicable(decision)) {
+            pendingSupervisorDecision = decision;
+            pendingSupervisorDecisionSummary = formatSupervisorDecisionSummary(observation, decision, false, config);
+            emitSupervisorLog("[PENDING] " + pendingSupervisorDecisionSummary);
+        } else if (config.getApplyMode() == LlmSupervisorApplyMode.LOG_ONLY) {
+            clearPendingSupervisorDecision();
+        }
+        lastSupervisorDecisionSummary = formatSupervisorDecisionSummary(observation, decision, applied, config);
+        emitSupervisorLog(lastSupervisorDecisionSummary);
+        supervisorDecisionLogWriter.write(modelName, observation, decision, applied);
     }
 
     private RLTrainingConfig branchConfig(RLTrainingConfig sourceConfig,
@@ -1080,8 +1231,15 @@ public class RLTrainingService {
             : new RLTrainingConfig(modelName, 100, Math.max(1, activeMaxStepsPerEpisode), 1.0, 0.8, 1.2, 1.0, 0.5, 3, LlmSupervisorConfig.disabled());
         LlmSupervisorConfig disabled = LlmSupervisorConfig.disabled();
         disabled.setBranchId(branchId);
-        int episodes = Math.max(10, Math.min(100, source.getEpisodesPerEpoch()));
-        int epochs = Math.max(1, Math.min(3, source.getEpochs()));
+        LlmSupervisorConfig sourceSupervisor = supervisorConfig != null && supervisorConfig.isEnabled()
+            ? supervisorConfig
+            : source.getSupervisorConfig();
+        int episodes = sourceSupervisor != null && sourceSupervisor.getEffectiveCallIntervalEpisodes() > 0
+            ? sourceSupervisor.getEffectiveCallIntervalEpisodes()
+            : source.getEpisodesPerEpoch();
+        episodes = Math.max(1, episodes);
+        int epochs = 1;
+        java.nio.file.Path outputDirectory = RLModelManager.getBranchDirectory(branchOwnerModelName(source), modelName);
         return new RLTrainingConfig(
             modelName,
             episodes,
@@ -1094,7 +1252,49 @@ public class RLTrainingService {
             epochs,
             disabled,
             0L,
-            use2dCnnBranch);
+            use2dCnnBranch,
+            outputDirectory);
+    }
+
+    private String branchOwnerModelName(RLTrainingConfig source) {
+        if (activeTrainingModelName != null && !activeTrainingModelName.isBlank()) {
+            return activeTrainingModelName;
+        }
+        if (source != null && source.getModelName() != null && !source.getModelName().isBlank()) {
+            return source.getModelName();
+        }
+        return "autopilot";
+    }
+
+    private void copyMainLogsToBranch(java.nio.file.Path branchOutputDirectory) {
+        if (branchOutputDirectory == null) {
+            return;
+        }
+        String owner = branchOwnerModelName(activeTrainingConfig);
+        java.nio.file.Path mainDir = RLModelManager.getModelMainDirectory(owner);
+        java.nio.file.Path inheritedDir = branchOutputDirectory.resolve("inherited_main");
+        try {
+            java.nio.file.Files.createDirectories(inheritedDir);
+            try (java.util.stream.Stream<java.nio.file.Path> files = java.nio.file.Files.list(mainDir)) {
+                files
+                    .filter(java.nio.file.Files::isRegularFile)
+                    .filter(path -> {
+                        String name = path.getFileName().toString();
+                        return name.endsWith(".csv") || name.endsWith(".json");
+                    })
+                    .forEach(path -> {
+                        try {
+                            java.nio.file.Files.copy(
+                                path,
+                                inheritedDir.resolve(path.getFileName()),
+                                java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                        } catch (Exception ignored) {
+                        }
+                    });
+            }
+        } catch (Exception e) {
+            emitSupervisorLog("[BRANCH] Could not copy inherited main logs: " + e.getMessage());
+        }
     }
 
     private Map<String, Object> branchComparisonMap(String baselineName,
@@ -1146,7 +1346,7 @@ public class RLTrainingService {
             config.getRaidWeight(),
             config.getWorkingAreaWeight(),
             config.getSafeZoneWeight());
-        RLModelManager.saveModel(snapshot, branchService);
+        RLModelManager.saveModel(snapshot, branchService, config.getOutputDirectory());
         knownBranchModelNames.add(branchModelName);
         return branchModelName;
     }
@@ -1163,7 +1363,7 @@ public class RLTrainingService {
             config.getRaidWeight(),
             config.getWorkingAreaWeight(),
             config.getSafeZoneWeight());
-        RLModelManager.saveModel(snapshot, this);
+        RLModelManager.saveModel(snapshot, this, RLModelManager.getBranchDirectory(branchOwnerModelName(config), branchModelName));
         knownBranchModelNames.add(branchModelName);
         return branchModelName;
     }
@@ -1178,6 +1378,89 @@ public class RLTrainingService {
                 branchHistory.removeFirst();
             }
         }
+    }
+
+    private void writeBranchExperimentLog(String modelName, Map<String, Object> comparison) {
+        if (comparison == null || comparison.isEmpty()) {
+            return;
+        }
+        String safeModelName = modelName == null || modelName.isBlank() ? "autopilot" : modelName.trim();
+        java.nio.file.Path dir = RLModelManager.getModelLlmDirectory(safeModelName);
+        java.nio.file.Path jsonlPath = dir.resolve(safeModelName + "_branch_experiments.jsonl");
+        java.nio.file.Path csvPath = dir.resolve(safeModelName + "_branch_experiments.csv");
+        String timestamp = java.time.LocalDateTime.now().toString();
+        try {
+            Map<String, Object> jsonLine = new LinkedHashMap<>();
+            jsonLine.put("timestamp", timestamp);
+            jsonLine.put("comparison", comparison);
+            java.nio.file.Files.writeString(jsonlPath,
+                SimpleJson.stringify(jsonLine) + System.lineSeparator(),
+                java.nio.charset.StandardCharsets.UTF_8,
+                java.nio.file.StandardOpenOption.CREATE,
+                java.nio.file.StandardOpenOption.APPEND);
+
+            boolean needsHeader = !java.nio.file.Files.exists(csvPath) || java.nio.file.Files.size(csvPath) == 0;
+            StringBuilder csv = new StringBuilder();
+            if (needsHeader) {
+                csv.append(String.join(",",
+                    "timestamp",
+                    "baseline_model",
+                    "candidate_model",
+                    "saved_baseline_model",
+                    "saved_candidate_model",
+                    "saved_winner_model",
+                    "saved_winner_branch",
+                    "promote_recommended",
+                    "best_score_delta",
+                    "avg_eval_delta",
+                    "invalid_rate_delta",
+                    "comparison_reason")).append(System.lineSeparator());
+            }
+            csv.append(String.join(",",
+                csv(timestamp),
+                csv(stringMapValue(comparison, "baselineModelName")),
+                csv(stringMapValue(comparison, "candidateModelName")),
+                csv(stringMapValue(comparison, "savedBaselineModelName")),
+                csv(stringMapValue(comparison, "savedCandidateModelName")),
+                csv(stringMapValue(comparison, "savedWinnerModelName")),
+                csv(stringMapValue(comparison, "savedWinnerBranch")),
+                csv(String.valueOf(comparison.getOrDefault("promoteRecommended", false))),
+                csv(String.format(Locale.US, "%.6f", numberMapValue(comparison, "bestScoreDelta"))),
+                csv(String.format(Locale.US, "%.6f", numberMapValue(comparison, "avgEvalDelta"))),
+                csv(String.format(Locale.US, "%.6f", numberMapValue(comparison, "invalidRateDelta"))),
+                csv(stringMapValue(comparison, "comparisonReason")))).append(System.lineSeparator());
+            java.nio.file.Files.writeString(csvPath,
+                csv.toString(),
+                java.nio.charset.StandardCharsets.UTF_8,
+                java.nio.file.StandardOpenOption.CREATE,
+                java.nio.file.StandardOpenOption.APPEND);
+            emitSupervisorLog("[BRANCH] Branch comparison logged to " + jsonlPath);
+        } catch (Exception e) {
+            emitSupervisorLog("[BRANCH] Branch comparison log failed: " + e.getMessage());
+        }
+    }
+
+    private static String stringMapValue(Map<String, Object> map, String key) {
+        Object value = map != null ? map.get(key) : null;
+        return value != null ? String.valueOf(value) : "";
+    }
+
+    private static double numberMapValue(Map<String, Object> map, String key) {
+        Object value = map != null ? map.get(key) : null;
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        return 0.0;
+    }
+
+    private static String csv(String value) {
+        if (value == null) {
+            return "";
+        }
+        return "\"" + value
+            .replace("\"", "\"\"")
+            .replace("\r", " ")
+            .replace("\n", " ") + "\"";
     }
 
     private java.util.List<Map<String, Object>> branchHistorySnapshot() {

@@ -11,14 +11,46 @@ public class LlmSupervisorConfig implements Serializable, Cloneable {
     public static final int DEFAULT_CALL_INTERVAL_EPISODES = 1000;
     private static final int MIN_CALL_INTERVAL_EPISODES = 1;
 
+    public enum CallFrequency {
+        VERY_SOON("Very soon", 0.25),
+        SOON("Soon", 0.5),
+        MEDIUM("Medium", 1.0),
+        LONG("Long", 2.0);
+
+        private final String label;
+        private final double multiplier;
+
+        CallFrequency(String label, double multiplier) {
+            this.label = label;
+            this.multiplier = multiplier;
+        }
+
+        public double getMultiplier() {
+            return multiplier;
+        }
+
+        @Override
+        public String toString() {
+            return label + " (x" + formatMultiplier(multiplier) + ")";
+        }
+
+        private static String formatMultiplier(double value) {
+            return value == Math.rint(value)
+                ? String.valueOf((int) value)
+                : String.valueOf(value);
+        }
+    }
+
     private boolean enabled;
     private int callIntervalEpisodes = DEFAULT_CALL_INTERVAL_EPISODES;
+    private CallFrequency callFrequency = CallFrequency.MEDIUM;
     private String branchId = "candidate";
     private boolean allowEpsilonChanges = true;
     private boolean allowRewardConfigChanges = true;
     private String externalCommand = "";
     private transient String apiKey = "";
     private LlmSupervisorApplyMode applyMode = LlmSupervisorApplyMode.AUTO_APPLY;
+    private long autopilotTrainingDurationMs = 0L;
 
     public static LlmSupervisorConfig disabled() {
         LlmSupervisorConfig config = new LlmSupervisorConfig();
@@ -47,6 +79,19 @@ public class LlmSupervisorConfig implements Serializable, Cloneable {
 
     public void setCallIntervalEpisodes(int callIntervalEpisodes) {
         this.callIntervalEpisodes = Math.max(MIN_CALL_INTERVAL_EPISODES, callIntervalEpisodes);
+    }
+
+    public CallFrequency getCallFrequency() {
+        return callFrequency != null ? callFrequency : CallFrequency.MEDIUM;
+    }
+
+    public void setCallFrequency(CallFrequency callFrequency) {
+        this.callFrequency = callFrequency != null ? callFrequency : CallFrequency.MEDIUM;
+    }
+
+    public int getEffectiveCallIntervalEpisodes() {
+        return Math.max(MIN_CALL_INTERVAL_EPISODES,
+            (int) Math.round(getCallIntervalEpisodes() * getCallFrequency().getMultiplier()));
     }
 
     public String getBranchId() {
@@ -95,6 +140,14 @@ public class LlmSupervisorConfig implements Serializable, Cloneable {
 
     public void setApplyMode(LlmSupervisorApplyMode applyMode) {
         this.applyMode = applyMode != null ? applyMode : LlmSupervisorApplyMode.AUTO_APPLY;
+    }
+
+    public long getAutopilotTrainingDurationMs() {
+        return Math.max(0L, autopilotTrainingDurationMs);
+    }
+
+    public void setAutopilotTrainingDurationMs(long autopilotTrainingDurationMs) {
+        this.autopilotTrainingDurationMs = Math.max(0L, autopilotTrainingDurationMs);
     }
 
     @Override

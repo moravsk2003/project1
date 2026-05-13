@@ -115,13 +115,17 @@ public final class SupervisorJson {
             map.put("historicalReport", obs.historicalReport);
         }
         map.put("responseContract",
-            "Return one JSON object. The action must be one of allowedActions. Include reason. For SET_EPSILON include epsilon. For REPLACE_REWARD_CONFIG include only changed rewardConfig fields and/or rewardTerms. For START_NEW_RUN or JUMP_TO_BRANCH include modelName.");
+            "Return one JSON object. The action must be one of allowedActions. Always include reason and callFrequency. callFrequency must be VERY_SOON, SOON, MEDIUM, or LONG and selects the next review cadence. For SET_EPSILON include epsilon. For REPLACE_REWARD_CONFIG include only changed rewardConfig fields and/or rewardTerms. For START_NEW_RUN or JUMP_TO_BRANCH include modelName.");
         return SimpleJson.stringify(map);
     }
 
-    private static List<String> allowedActions(SupervisorObservation obs) {
+    static List<String> allowedActionsFor(SupervisorObservation obs) {
         Object running = obs.trainingContext != null ? obs.trainingContext.get("trainingRunning") : null;
         return Boolean.FALSE.equals(running) ? IDLE_ACTIONS : TRAINING_ACTIONS;
+    }
+
+    private static List<String> allowedActions(SupervisorObservation obs) {
+        return allowedActionsFor(obs);
     }
 
     private static Map<String, Object> rewardFormulaContract() {
@@ -143,12 +147,14 @@ public final class SupervisorJson {
         Map<String, Object> map = (Map<String, Object>) parsedMap;
         SupervisorAction action = parseAction(stringValue(map.get("action")));
         String reason = stringValue(map.get("reason"));
+        LlmSupervisorConfig.CallFrequency callFrequency = parseCallFrequency(stringValue(map.get("callFrequency")));
 
         if (action == SupervisorAction.SET_EPSILON) {
             Double epsilon = doubleValue(map.get("epsilon"));
-            return epsilon != null
+            SupervisorDecision decision = epsilon != null
                 ? SupervisorDecision.setEpsilon(epsilon, reason)
                 : SupervisorDecision.keepGoing("SET_EPSILON decision had no epsilon.");
+            return withCallFrequency(decision, callFrequency);
         }
 
         if (action == SupervisorAction.REPLACE_REWARD_CONFIG) {
@@ -157,14 +163,14 @@ public final class SupervisorJson {
                 : RLRewardConfig.createDefault();
             applyRewardConfigPatch(rewardConfig, map.get("rewardConfig"));
             applyRewardTerms(rewardConfig, map.get("rewardTerms"));
-            return SupervisorDecision.replaceRewardConfig(rewardConfig, reason);
+            return withCallFrequency(SupervisorDecision.replaceRewardConfig(rewardConfig, reason), callFrequency);
         }
 
         if (action == SupervisorAction.STOP_TRAINING) {
-            return SupervisorDecision.stopTraining(reason);
+            return withCallFrequency(SupervisorDecision.stopTraining(reason), callFrequency);
         }
         if (action == SupervisorAction.REQUEST_PROMOTION_CHECK) {
-            return SupervisorDecision.requestPromotionCheck(reason);
+            return withCallFrequency(SupervisorDecision.requestPromotionCheck(reason), callFrequency);
         }
         
         if (action == SupervisorAction.START_NEW_RUN || action == SupervisorAction.RESTART_TRAINING) {
@@ -179,9 +185,9 @@ public final class SupervisorJson {
             String modelName = stringValue(map.get("modelName"));
             
             if (action == SupervisorAction.START_NEW_RUN) {
-                return SupervisorDecision.startNewRun(use2dCnn, rewardConfig, modelName, reason);
+                return withCallFrequency(SupervisorDecision.startNewRun(use2dCnn, rewardConfig, modelName, reason), callFrequency);
             } else {
-                return SupervisorDecision.restartTraining(use2dCnn, rewardConfig, modelName, reason);
+                return withCallFrequency(SupervisorDecision.restartTraining(use2dCnn, rewardConfig, modelName, reason), callFrequency);
             }
         }
         
@@ -189,18 +195,23 @@ public final class SupervisorJson {
             String reportModelName = stringValue(map.get("reportModelName"));
             Integer startEpoch = integerValue(map.get("reportStartEpoch"));
             Integer endEpoch = integerValue(map.get("reportEndEpoch"));
-            return SupervisorDecision.requestHistoricalReport(reportModelName, startEpoch, endEpoch, reason);
+            return withCallFrequency(SupervisorDecision.requestHistoricalReport(reportModelName, startEpoch, endEpoch, reason), callFrequency);
         }
 
         if (action == SupervisorAction.PROMOTE_BRANCH) {
-            return SupervisorDecision.promoteBranch(reason);
+            return withCallFrequency(SupervisorDecision.promoteBranch(reason), callFrequency);
         }
 
         if (action == SupervisorAction.JUMP_TO_BRANCH) {
-            return SupervisorDecision.jumpToBranch(stringValue(map.get("modelName")), reason);
+            return withCallFrequency(SupervisorDecision.jumpToBranch(stringValue(map.get("modelName")), reason), callFrequency);
         }
         
-        return SupervisorDecision.keepGoing(reason);
+        return withCallFrequency(SupervisorDecision.keepGoing(reason), callFrequency);
+    }
+
+    private static SupervisorDecision withCallFrequency(SupervisorDecision decision,
+                                                        LlmSupervisorConfig.CallFrequency callFrequency) {
+        return callFrequency != null ? decision.withCallFrequency(callFrequency) : decision;
     }
 
     private static Integer integerValue(Object val) {
@@ -221,6 +232,18 @@ public final class SupervisorJson {
             return SupervisorAction.valueOf(action.trim().toUpperCase());
         } catch (IllegalArgumentException e) {
             return SupervisorAction.KEEP_GOING;
+        }
+    }
+
+    private static LlmSupervisorConfig.CallFrequency parseCallFrequency(String value) {
+        if (value == null || value.isBlank()) {
+            return null;
+        }
+        String normalized = value.trim().toUpperCase().replace('-', '_').replace(' ', '_');
+        try {
+            return LlmSupervisorConfig.CallFrequency.valueOf(normalized);
+        } catch (IllegalArgumentException ignored) {
+            return null;
         }
     }
 

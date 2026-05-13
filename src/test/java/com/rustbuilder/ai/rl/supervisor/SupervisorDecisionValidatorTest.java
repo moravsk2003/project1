@@ -3,6 +3,7 @@ package com.rustbuilder.ai.rl.supervisor;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import com.rustbuilder.ai.rl.RLRewardConfig;
+import java.util.Map;
 import org.junit.jupiter.api.Test;
 
 class SupervisorDecisionValidatorTest {
@@ -14,12 +15,14 @@ class SupervisorDecisionValidatorTest {
         LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
 
         SupervisorDecision decision = validator.validate(
-            SupervisorDecision.setEpsilon(5.0, "explore less"),
+            SupervisorDecision.setEpsilon(5.0, "explore less")
+                .withCallFrequency(LlmSupervisorConfig.CallFrequency.VERY_SOON),
             config,
             RLRewardConfig.createDefault());
 
         assertEquals(SupervisorAction.SET_EPSILON, decision.getAction());
         assertEquals(1.0, decision.getProposedEpsilon(), 0.0);
+        assertEquals(LlmSupervisorConfig.CallFrequency.VERY_SOON, decision.getProposedCallFrequency());
     }
 
     @Test
@@ -105,5 +108,78 @@ class SupervisorDecisionValidatorTest {
 
         assertEquals(SupervisorAction.JUMP_TO_BRANCH, decision.getAction());
         assertEquals("known_branch_1", decision.getProposedModelName());
+    }
+
+    @Test
+    void rejectsIdleOnlyActionsDuringTrainingObservation() {
+        LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
+
+        SupervisorDecision decision = validator.validate(
+            SupervisorDecision.startNewRun(false, RLRewardConfig.createDefault(), "new_run", "restart"),
+            config,
+            RLRewardConfig.createDefault(),
+            observation(true));
+
+        assertEquals(SupervisorAction.KEEP_GOING, decision.getAction());
+    }
+
+    @Test
+    void allowsStartRunForIdleObservation() {
+        LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
+
+        SupervisorDecision decision = validator.validate(
+            SupervisorDecision.startNewRun(false, RLRewardConfig.createDefault(), "new_run", "start"),
+            config,
+            RLRewardConfig.createDefault(),
+            observation(false));
+
+        assertEquals(SupervisorAction.START_NEW_RUN, decision.getAction());
+    }
+
+    private SupervisorObservation observation(boolean trainingRunning) {
+        return new SupervisorObservation(
+            "candidate",
+            10,
+            -1.0,
+            0.1,
+            0.2,
+            1.0,
+            -0.5,
+            2.0,
+            0.0,
+            0,
+            10,
+            0.99,
+            0.1,
+            32,
+            5,
+            true,
+            1,
+            6,
+            true,
+            1,
+            6,
+            0.1,
+            0.2,
+            0.3,
+            0.4,
+            0.5,
+            100,
+            "MAX_STEPS",
+            "step",
+            "final",
+            "2026-05-12T00:00:00Z",
+            "2026-05-12T00:01:00Z",
+            "2026-05-12T01:00:00Z",
+            60_000L,
+            3_540_000L,
+            true,
+            false,
+            Map.of(),
+            Map.of(),
+            null,
+            Map.of("trainingRunning", trainingRunning),
+            Map.of(),
+            null);
     }
 }

@@ -1,6 +1,7 @@
 package com.rustbuilder.ai.rl;
 
 import com.rustbuilder.ai.rl.supervisor.LlmSupervisorConfig;
+import java.nio.file.Path;
 
 /**
  * Immutable training-run configuration used by RLTrainingService.
@@ -18,6 +19,7 @@ public final class RLTrainingConfig {
     private final LlmSupervisorConfig supervisorConfig;
     private final long trainingDurationMs;
     private final boolean use2dCnn;
+    private final Path outputDirectory;
 
     public RLTrainingConfig(String modelName,
                             int episodesPerEpoch,
@@ -45,6 +47,24 @@ public final class RLTrainingConfig {
                             LlmSupervisorConfig supervisorConfig,
                             long trainingDurationMs,
                             boolean use2dCnn) {
+        this(modelName, episodesPerEpoch, maxStepsPerEpisode, logisticsWeight, costWeight,
+            raidWeight, workingAreaWeight, safeZoneWeight, epochs, supervisorConfig,
+            trainingDurationMs, use2dCnn, null);
+    }
+
+    public RLTrainingConfig(String modelName,
+                            int episodesPerEpoch,
+                            int maxStepsPerEpisode,
+                            double logisticsWeight,
+                            double costWeight,
+                            double raidWeight,
+                            double workingAreaWeight,
+                            double safeZoneWeight,
+                            int epochs,
+                            LlmSupervisorConfig supervisorConfig,
+                            long trainingDurationMs,
+                            boolean use2dCnn,
+                            Path outputDirectory) {
         this.modelName = modelName;
         this.episodesPerEpoch = episodesPerEpoch;
         this.maxStepsPerEpisode = maxStepsPerEpisode;
@@ -59,6 +79,7 @@ public final class RLTrainingConfig {
             : LlmSupervisorConfig.disabled();
         this.trainingDurationMs = Math.max(0L, trainingDurationMs);
         this.use2dCnn = use2dCnn;
+        this.outputDirectory = outputDirectory;
     }
 
     public String getModelName() {
@@ -107,5 +128,9 @@ public final class RLTrainingConfig {
     
     public boolean isUse2dCnn() {
         return use2dCnn;
+    }
+
+    public Path getOutputDirectory() {
+        return outputDirectory;
     }
 }

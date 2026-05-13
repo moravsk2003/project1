@@ -88,7 +88,11 @@ public class RLTrainingLogger {
      * @param multiDiscrete {@code true} selects the multi-discrete suffix, {@code false} the legacy suffix
      */
     public void setLogFile(String modelName, boolean multiDiscrete) {
-        Path dir = RLModelManager.getModelDirectory(modelName);
+        setLogFile(modelName, multiDiscrete, RLModelManager.getModelMainDirectory(modelName));
+    }
+
+    public void setLogFile(String modelName, boolean multiDiscrete, Path outputDirectory) {
+        Path dir = outputDirectory != null ? outputDirectory : RLModelManager.getModelMainDirectory(modelName);
         try {
             Files.createDirectories(dir);
         } catch (IOException e) {
@@ -243,7 +247,15 @@ public class RLTrainingLogger {
     public void writeRunMetadata(String modelName, com.rustbuilder.ai.rl.env.spec.EncodingRuntimeConfig config,
                                  String rewardConfigName, String trainingConfigName,
                                  String logsDir, String modelsDir) {
-        Path dir = RLModelManager.getModelDirectory(modelName);
+        writeRunMetadata(modelName, config, rewardConfigName, trainingConfigName, logsDir, modelsDir,
+            RLModelManager.getModelMainDirectory(modelName));
+    }
+
+    public void writeRunMetadata(String modelName, com.rustbuilder.ai.rl.env.spec.EncodingRuntimeConfig config,
+                                 String rewardConfigName, String trainingConfigName,
+                                 String logsDir, String modelsDir,
+                                 Path outputDirectory) {
+        Path dir = outputDirectory != null ? outputDirectory : RLModelManager.getModelMainDirectory(modelName);
         Path metaPath = dir.resolve(modelName + "_run_metadata.json");
 
         try (PrintWriter pw = new PrintWriter(new FileWriter(metaPath.toFile()))) {

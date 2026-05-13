@@ -1,15 +1,16 @@
 package com.rustbuilder.ui;
 
 import java.io.IOException;
+import java.util.Locale;
 
 import com.rustbuilder.ai.core.TrainingMetrics;
 import com.rustbuilder.ai.rl.RLModelManager;
 import com.rustbuilder.ai.rl.RLModelManager.RLModel;
 import com.rustbuilder.ai.rl.RLTrainingConfig;
 import com.rustbuilder.ai.rl.RLTrainingService;
-import com.rustbuilder.ai.rl.supervisor.ExternalCommandLlmSupervisor;
 import com.rustbuilder.ai.rl.supervisor.LlmSupervisorApplyMode;
 import com.rustbuilder.ai.rl.supervisor.LlmSupervisorConfig;
+import com.rustbuilder.ai.rl.supervisor.LlmSupervisorFactory;
 import com.rustbuilder.ai.rl.supervisor.NoOpLlmSupervisor;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.BuildingBlock;
@@ -86,6 +87,7 @@ public class RLGeneratorDialog {
     private Label loadProfileLabel;
     private CheckBox supervisorEnabledCheck;
     private Spinner<Integer> supervisorIntervalSpinner;
+    private TextField supervisorTimeLimitField;
     private PasswordField supervisorApiKeyField;
     private TextField supervisorCommandField;
     private ComboBox<LlmSupervisorApplyMode> supervisorApplyModeComboBox;
@@ -337,11 +339,11 @@ public class RLGeneratorDialog {
         grid.add(epochsSpinner, 1, 2);
 
         Label timeLimitLabel = bodyLabel("Time limit:");
-        HintUtils.attachHint(timeLimitLabel, "Training time limit", "Optional wall-clock budget. Examples: 30m, 2h, 01:30. Empty or 0 means no time limit.");
+        HintUtils.attachHint(timeLimitLabel, "Manual training time limit", "Optional wall-clock budget for the Train button only. Examples: 30m, 2h, 01:30. Empty or 0 means no time limit.");
         grid.add(timeLimitLabel, 0, 3);
         trainingTimeLimitField = new TextField();
         trainingTimeLimitField.setPromptText("0, 30m, 2h, 01:30");
-        HintUtils.attachHint(trainingTimeLimitField, "Training time limit", "Training stops cleanly after this duration, and the LLM supervisor sees elapsed time, current time, remaining time, and deadline.");
+        HintUtils.attachHint(trainingTimeLimitField, "Manual training time limit", "Used only for manual Train runs. LLM/autopilot runs use the time limit in the LLM Supervisor block.");
         grid.add(trainingTimeLimitField, 1, 3);
 
         box.getChildren().add(grid);
@@ -423,7 +425,7 @@ public class RLGeneratorDialog {
         HBox intervalRow = new HBox(8);
         intervalRow.setAlignment(Pos.CENTER_LEFT);
         Label intervalLabel = bodyLabel("Call every episodes:");
-        HintUtils.attachHint(intervalLabel, "Supervisor frequency", "How often the LLM supervisor is called. Default is every 1000 trained episodes.");
+        HintUtils.attachHint(intervalLabel, "Supervisor base interval", "Base episode count for LLM checks. The LLM may adjust future cadence with a safe preset.");
 
         supervisorIntervalSpinner = new Spinner<>(1, 1_000_000,
             config.getCallIntervalEpisodes() > 0
@@ -432,7 +434,19 @@ public class RLGeneratorDialog {
             100);
         supervisorIntervalSpinner.setEditable(true);
         supervisorIntervalSpinner.setPrefWidth(130);
-        HintUtils.attachHint(supervisorIntervalSpinner.getEditor(), "Supervisor frequency", "Default: 1000 episodes. Lower values react faster but can slow training.");
+        HintUtils.attachHint(supervisorIntervalSpinner.getEditor(), "Supervisor base interval", "Default: 1000 episodes. LLM can choose very soon, soon, medium, or long cadence from this base.");
+
+        HBox supervisorTimeRow = new HBox(8);
+        supervisorTimeRow.setAlignment(Pos.CENTER_LEFT);
+        Label supervisorTimeLabel = bodyLabel("Run time limit:");
+        HintUtils.attachHint(supervisorTimeLabel, "Autopilot time limit", "Optional wall-clock budget used only when the LLM starts a run. Examples: 30m, 2h, 01:30.");
+        supervisorTimeLimitField = new TextField();
+        supervisorTimeLimitField.setPromptText("0, 30m, 2h, 01:30");
+        supervisorTimeLimitField.setText(config.getAutopilotTrainingDurationMs() > 0
+            ? formatDuration(config.getAutopilotTrainingDurationMs())
+            : "");
+        supervisorTimeLimitField.setPrefWidth(170);
+        HintUtils.attachHint(supervisorTimeLimitField, "Autopilot time limit", "Used only by Start Auto-Pilot / Trigger Check and idle LLM-started runs. Manual Train uses the time limit in Training Parameters.");
 
         HBox modeRow = new HBox(8);
         modeRow.setAlignment(Pos.CENTER_LEFT);
@@ -447,7 +461,7 @@ public class RLGeneratorDialog {
         HBox apiKeyRow = new HBox(8);
         apiKeyRow.setAlignment(Pos.CENTER_LEFT);
         Label apiKeyLabel = bodyLabel("API key:");
-        HintUtils.attachHint(apiKeyLabel, "Supervisor API key", "Optional key passed only to the external command environment. It is not saved in model metadata.");
+        HintUtils.attachHint(apiKeyLabel, "Supervisor API key", "Optional Gemini/API key for the built-in Java adapter or external command. It is not saved in model metadata.");
         supervisorApiKeyField = new PasswordField();
         supervisorApiKeyField.setPromptText("Optional Gemini/API key...");
         // Restore API key saved in memory for this session
@@ -455,7 +469,7 @@ public class RLGeneratorDialog {
             supervisorApiKeyField.setText(savedApiKey);
         }
         HBox.setHgrow(supervisorApiKeyField, Priority.ALWAYS);
-        HintUtils.attachHint(supervisorApiKeyField, "Supervisor API key", "For Gemini, this becomes GEMINI_API_KEY and GOOGLE_API_KEY for the wrapper process.");
+        HintUtils.attachHint(supervisorApiKeyField, "Supervisor API key", "For built-in Gemini, Java uses this key directly. External commands also receive it as GEMINI_API_KEY and GOOGLE_API_KEY.");
 
         Button saveApiKeyBtn = styledBtn("💾", "#27ae60");
         saveApiKeyBtn.setMinWidth(36);
@@ -471,16 +485,17 @@ public class RLGeneratorDialog {
         HBox commandRow = new HBox(8);
         commandRow.setAlignment(Pos.CENTER_LEFT);
         Label commandLabel = bodyLabel("Command:");
-        HintUtils.attachHint(commandLabel, "Supervisor command", "Optional external command. It receives observation JSON on stdin and returns decision JSON on stdout.");
-        String defaultCommand = "powershell -ExecutionPolicy Bypass -File scripts/llm_supervisor_gemini.ps1";
+        HintUtils.attachHint(commandLabel, "Supervisor command", "Use builtin:gemini for the Java Gemini adapter, or a custom external command that receives observation JSON on stdin and returns decision JSON on stdout.");
+        String defaultCommand = LlmSupervisorFactory.BUILTIN_GEMINI_COMMAND;
         String existingCommand = config.getExternalCommand();
         supervisorCommandField = new TextField(
             (existingCommand == null || existingCommand.isBlank()) ? defaultCommand : existingCommand);
-        supervisorCommandField.setPromptText("Optional command/script...");
+        supervisorCommandField.setPromptText(LlmSupervisorFactory.BUILTIN_GEMINI_COMMAND);
         HBox.setHgrow(supervisorCommandField, Priority.ALWAYS);
-        HintUtils.attachHint(supervisorCommandField, "Supervisor command", "Use a local script/wrapper for your LLM provider. Leave empty to run the safe no-op supervisor.");
+        HintUtils.attachHint(supervisorCommandField, "Supervisor command", "Default is Java-native Gemini. Leave empty to run the safe no-op supervisor, or enter a custom script/command.");
 
         intervalRow.getChildren().addAll(intervalLabel, supervisorIntervalSpinner);
+        supervisorTimeRow.getChildren().addAll(supervisorTimeLabel, supervisorTimeLimitField);
         modeRow.getChildren().addAll(modeLabel, supervisorApplyModeComboBox);
         apiKeyRow.getChildren().addAll(apiKeyLabel, supervisorApiKeyField, saveApiKeyBtn);
         commandRow.getChildren().addAll(commandLabel, supervisorCommandField);
@@ -489,7 +504,9 @@ public class RLGeneratorDialog {
         HintUtils.attachHint(triggerLlmButton, "Почати авто-пілот", "Негайно відправити стан системи до LLM для аналізу (якщо навчання не запущено).");
         triggerLlmButton.setOnAction(e -> {
             supervisorEnabledCheck.setSelected(true);
-            applySupervisorConfigFromUI(currentModelName == null ? "auto_run" : currentModelName);
+            if (!applySupervisorConfigFromUI(currentModelName == null ? "auto_run" : currentModelName, true)) {
+                return;
+            }
             rlService.getLlmOrchestrator().forceCheck(this::appendLlmStatus, this::onTrainingProgress);
         });
 
@@ -500,7 +517,7 @@ public class RLGeneratorDialog {
         HBox llmActionRow = new HBox(8);
         llmActionRow.getChildren().addAll(triggerLlmButton, supervisorApplyPendingButton);
 
-        box.getChildren().addAll(supervisorEnabledCheck, intervalRow, modeRow, apiKeyRow, commandRow, llmActionRow);
+        box.getChildren().addAll(supervisorEnabledCheck, intervalRow, supervisorTimeRow, modeRow, apiKeyRow, commandRow, llmActionRow);
         return box;
     }
 
@@ -665,7 +682,7 @@ public class RLGeneratorDialog {
         double rw = raidSlider.getValue();
         double ww = workingAreaSlider.getValue();
         double safeZoneW = safeZoneSlider.getValue();
-        applySupervisorConfigFromUI(modelName);
+        applySupervisorConfigFromUI(modelName, false);
         if (trainingDurationMs > 0) {
             appendStatus("Training time limit: " + formatDuration(trainingDurationMs));
         }
@@ -743,7 +760,17 @@ public class RLGeneratorDialog {
         if (trainingTimeLimitField == null) {
             return 0L;
         }
-        String raw = trainingTimeLimitField.getText();
+        return parseDurationMs(trainingTimeLimitField.getText());
+    }
+
+    private long parseSupervisorTrainingDurationMs() {
+        if (supervisorTimeLimitField == null) {
+            return 0L;
+        }
+        return parseDurationMs(supervisorTimeLimitField.getText());
+    }
+
+    private long parseDurationMs(String raw) {
         if (raw == null || raw.trim().isEmpty()) {
             return 0L;
         }
@@ -801,16 +828,32 @@ public class RLGeneratorDialog {
         statusLabel.setText("Status: Ready");
     }
 
-    private void applySupervisorConfigFromUI(String modelName) {
+    private boolean applySupervisorConfigFromUI(String modelName, boolean validateAutopilotTimeLimit) {
         if (supervisorEnabledCheck == null || supervisorIntervalSpinner == null) {
-            return;
+            return true;
         }
 
         LlmSupervisorConfig config = rlService.getSupervisorConfig();
         config.setEnabled(supervisorEnabledCheck.isSelected());
         config.setCallIntervalEpisodes(supervisorIntervalSpinner.getValue());
+        long autopilotDurationMs = parseSupervisorTrainingDurationMs();
+        if (autopilotDurationMs < 0) {
+            if (validateAutopilotTimeLimit) {
+                showAlert("LLM run time limit should be empty, 0, minutes, or values like 30m, 2h, 01:30.");
+                return false;
+            }
+        } else {
+            config.setAutopilotTrainingDurationMs(autopilotDurationMs);
+        }
         config.setBranchId(modelName + "_candidate");
-        config.setExternalCommand(supervisorCommandField != null ? supervisorCommandField.getText() : "");
+        String command = supervisorCommandField != null ? supervisorCommandField.getText() : "";
+        if (config.isEnabled() && (command == null || command.isBlank())) {
+            command = LlmSupervisorFactory.BUILTIN_GEMINI_COMMAND;
+            if (supervisorCommandField != null) {
+                supervisorCommandField.setText(command);
+            }
+        }
+        config.setExternalCommand(command);
         config.setApiKey(supervisorApiKeyField != null ? supervisorApiKeyField.getText() : "");
         config.setApplyMode(supervisorApplyModeComboBox != null
             ? supervisorApplyModeComboBox.getValue()
@@ -819,23 +862,40 @@ public class RLGeneratorDialog {
         installSupervisorProvider(config);
 
         if (config.isEnabled()) {
-            appendLlmStatus(String.format("LLM Supervisor enabled: every %d episodes.", config.getCallIntervalEpisodes()));
+            appendLlmStatus(String.format(Locale.US,
+                "LLM Supervisor enabled: every %d episodes (base %d, current cadence %s x %.2f; LLM may change it).",
+                config.getEffectiveCallIntervalEpisodes(),
+                config.getCallIntervalEpisodes(),
+                config.getCallFrequency().name(),
+                config.getCallFrequency().getMultiplier()));
+            if (validateAutopilotTimeLimit && config.getAutopilotTrainingDurationMs() > 0) {
+                appendLlmStatus("LLM autopilot run time limit: " + formatDuration(config.getAutopilotTrainingDurationMs()));
+            }
         } else {
-            appendLlmStatus(String.format("LLM Supervisor disabled (default interval %d episodes).", config.getCallIntervalEpisodes()));
+            appendLlmStatus(String.format(Locale.US, "LLM Supervisor disabled (effective interval %d episodes).",
+                config.getEffectiveCallIntervalEpisodes()));
         }
+        return true;
     }
 
     private void installSupervisorProvider(LlmSupervisorConfig config) {
-        if (config.isEnabled() && !config.getExternalCommand().isBlank()) {
+        if (config.isEnabled()) {
             try {
                 java.util.Map<String, String> environmentOverrides = createSupervisorEnvironmentOverrides(config);
-                rlService.setLlmSupervisor(new ExternalCommandLlmSupervisor(
-                    config.getExternalCommand(),
+                rlService.setLlmSupervisor(LlmSupervisorFactory.create(
+                    config,
                     rlService::getRewardConfig,
                     environmentOverrides));
-                appendLlmStatus(environmentOverrides.isEmpty()
-                    ? "LLM Supervisor command connected."
-                    : "LLM Supervisor command connected with UI API key.");
+                boolean nativeGemini = LlmSupervisorFactory.isNativeGeminiCommand(config.getExternalCommand());
+                if (nativeGemini) {
+                    appendLlmStatus(environmentOverrides.isEmpty()
+                        ? "LLM Supervisor Java Gemini connected."
+                        : "LLM Supervisor Java Gemini connected with UI API key.");
+                } else {
+                    appendLlmStatus(environmentOverrides.isEmpty()
+                        ? "LLM Supervisor command connected."
+                        : "LLM Supervisor command connected with UI API key.");
+                }
             } catch (IllegalArgumentException ex) {
                 rlService.setLlmSupervisor(new NoOpLlmSupervisor());
                 appendLlmStatus("LLM Supervisor command rejected: " + ex.getMessage());
@@ -1201,6 +1261,11 @@ public class RLGeneratorDialog {
         LlmSupervisorConfig config = rlService.getSupervisorConfig();
         supervisorEnabledCheck.setSelected(config.isEnabled());
         supervisorIntervalSpinner.getValueFactory().setValue(config.getCallIntervalEpisodes());
+        if (supervisorTimeLimitField != null) {
+            supervisorTimeLimitField.setText(config.getAutopilotTrainingDurationMs() > 0
+                ? formatDuration(config.getAutopilotTrainingDurationMs())
+                : "");
+        }
         if (supervisorCommandField != null) {
             supervisorCommandField.setText(config.getExternalCommand());
         }

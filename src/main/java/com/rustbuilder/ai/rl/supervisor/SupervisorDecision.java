@@ -15,6 +15,7 @@ public final class SupervisorDecision {
     private final Integer reportStartEpoch;
     private final Integer reportEndEpoch;
     private final String reason;
+    private final LlmSupervisorConfig.CallFrequency proposedCallFrequency;
 
     private SupervisorDecision(SupervisorAction action,
                                Double proposedEpsilon,
@@ -25,6 +26,28 @@ public final class SupervisorDecision {
                                Integer reportStartEpoch,
                                Integer reportEndEpoch,
                                String reason) {
+        this(action,
+            proposedEpsilon,
+            proposedRewardConfig,
+            proposedUse2dCnn,
+            proposedModelName,
+            reportModelName,
+            reportStartEpoch,
+            reportEndEpoch,
+            reason,
+            null);
+    }
+
+    private SupervisorDecision(SupervisorAction action,
+                               Double proposedEpsilon,
+                               RLRewardConfig proposedRewardConfig,
+                               Boolean proposedUse2dCnn,
+                               String proposedModelName,
+                               String reportModelName,
+                               Integer reportStartEpoch,
+                               Integer reportEndEpoch,
+                               String reason,
+                               LlmSupervisorConfig.CallFrequency proposedCallFrequency) {
         this.action = action != null ? action : SupervisorAction.KEEP_GOING;
         this.proposedEpsilon = proposedEpsilon;
         this.proposedRewardConfig = proposedRewardConfig != null ? proposedRewardConfig.clone() : null;
@@ -34,6 +57,7 @@ public final class SupervisorDecision {
         this.reportStartEpoch = reportStartEpoch;
         this.reportEndEpoch = reportEndEpoch;
         this.reason = reason != null ? reason : "";
+        this.proposedCallFrequency = proposedCallFrequency;
     }
 
     public static SupervisorDecision keepGoing(String reason) {
@@ -76,6 +100,19 @@ public final class SupervisorDecision {
         return new SupervisorDecision(SupervisorAction.JUMP_TO_BRANCH, null, null, null, modelName, null, null, null, reason);
     }
 
+    public SupervisorDecision withCallFrequency(LlmSupervisorConfig.CallFrequency callFrequency) {
+        return new SupervisorDecision(action,
+            proposedEpsilon,
+            proposedRewardConfig,
+            proposedUse2dCnn,
+            proposedModelName,
+            reportModelName,
+            reportStartEpoch,
+            reportEndEpoch,
+            reason,
+            callFrequency);
+    }
+
     public SupervisorAction getAction() {
         return action;
     }
@@ -110,5 +147,9 @@ public final class SupervisorDecision {
 
     public Integer getReportEndEpoch() {
         return reportEndEpoch;
+    }
+
+    public LlmSupervisorConfig.CallFrequency getProposedCallFrequency() {
+        return proposedCallFrequency;
     }
 }

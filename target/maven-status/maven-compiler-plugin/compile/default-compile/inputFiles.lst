@@ -127,6 +127,8 @@ D:\project\src\main\java\com\rustbuilder\ai\rl\multidiscrete\MultiDiscretePhaseP
 D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\SupervisorDecision.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\LlmSupervisor.java
 D:\project\src\main\java\com\rustbuilder\model\structure\TriangleFoundation.java
+D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\LlmSupervisorFactory.java
 D:\project\src\main\java\com\rustbuilder\service\evaluator\WorkingAreaEvaluator.java
+D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\GeminiLlmSupervisor.java
 D:\project\src\main\java\com\rustbuilder\service\physics\PlacementService.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\multidiscrete\MultiDiscretePhaseContext.java

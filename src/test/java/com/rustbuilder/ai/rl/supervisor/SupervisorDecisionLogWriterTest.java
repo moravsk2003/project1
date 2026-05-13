@@ -12,13 +12,15 @@ import org.junit.jupiter.api.Test;
 class SupervisorDecisionLogWriterTest {
     private static final String MODEL_NAME = "codex_supervisor_log_writer_test";
     private static final Path MODEL_DIR = RLModelManager.getModelDirectory(MODEL_NAME);
-    private static final Path CSV_PATH = MODEL_DIR.resolve(MODEL_NAME + "_supervisor_decisions.csv");
-    private static final Path JSONL_PATH = MODEL_DIR.resolve(MODEL_NAME + "_supervisor_decisions.jsonl");
+    private static final Path LLM_DIR = RLModelManager.getModelLlmDirectory(MODEL_NAME);
+    private static final Path CSV_PATH = LLM_DIR.resolve(MODEL_NAME + "_supervisor_decisions.csv");
+    private static final Path JSONL_PATH = LLM_DIR.resolve(MODEL_NAME + "_supervisor_decisions.jsonl");
 
     @AfterEach
     void cleanup() throws Exception {
         Files.deleteIfExists(CSV_PATH);
         Files.deleteIfExists(JSONL_PATH);
+        Files.deleteIfExists(LLM_DIR);
         Files.deleteIfExists(MODEL_DIR);
     }
 

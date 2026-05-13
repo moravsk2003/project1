@@ -14,6 +14,7 @@ import com.rustbuilder.model.core.BuildingTier;
 import com.rustbuilder.model.core.Orientation;
 import com.rustbuilder.model.deployable.ToolCupboard;
 import com.rustbuilder.service.evaluator.HouseEvaluator;
+import com.rustbuilder.service.raid.RaidConstants;
 
 class HouseEvaluatorTest {
 
@@ -142,6 +143,33 @@ class HouseEvaluatorTest {
             "A TC enclosed by walls and roof should require raid cost");
         assertEquals(1, result.safeZone.closedBlocks,
             "A TC enclosed by walls and roof should count as one closed safe-zone tile");
+    }
+
+    @Test
+    void ceilingRaidFromBelow_usesTierWeakSideMultiplier() {
+        grid.addBlockSilent(stone(new Foundation(0, 0, 0)));
+        grid.addBlockSilent(stone(new Floor(0, 0, 1, 0)));
+        grid.addBlockSilent(stone(new Floor(0, 0, 2, 0)));
+        grid.addBlockSilent(stone(new Wall(0, 0, 1, Orientation.NORTH)));
+        grid.addBlockSilent(stone(new Wall(0, 0, 1, Orientation.EAST)));
+        grid.addBlockSilent(stone(new Wall(0, 0, 1, Orientation.SOUTH)));
+        grid.addBlockSilent(stone(new Wall(0, 0, 1, Orientation.WEST)));
+        grid.addBlockSilent(new ToolCupboard(0, 0, 1, 0));
+
+        HouseEvaluator.EvaluationResult result = evaluator.evaluate(grid);
+
+        assertEquals(RaidConstants.getCeilingSulfurCostFromBelow(BuildingTier.STONE), result.raid.sulfurToTC,
+            "Raiding a stone ceiling from below should use the 3x weak-side cost");
+    }
+
+    @Test
+    void ceilingWeakSideMultiplier_dependsOnMaterialTier() {
+        assertEquals(50, RaidConstants.getCeilingSulfurCostFromBelow(BuildingTier.WOOD),
+            "Wood ceilings should be 5x easier from below");
+        assertEquals(1467, RaidConstants.getCeilingSulfurCostFromBelow(BuildingTier.STONE),
+            "Stone ceilings should be 3x easier from below");
+        assertEquals(4400, RaidConstants.getCeilingSulfurCostFromBelow(BuildingTier.METAL),
+            "Metal ceilings should be 2x easier from below");
     }
 
     /**

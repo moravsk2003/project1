@@ -6,15 +6,15 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
-final class SimpleJson {
+public final class SimpleJson {
     private SimpleJson() {
     }
 
-    static Object parse(String json) {
+    public static Object parse(String json) {
         return new Parser(json).parse();
     }
 
-    static String stringify(Object value) {
+    public static String stringify(Object value) {
         if (value == null) {
             return "null";
         }
