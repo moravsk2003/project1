@@ -180,10 +180,17 @@ public class RLModelManager {
         Path modelDir = modelsDir.resolve(safeModelName);
         Path mainDir = modelDir.resolve("main");
         Path llmDir = modelDir.resolve("llm");
+        Path legacyTopLevelMeta = modelsDir.resolve(safeModelName + ".rmeta");
+        Path legacyTopLevelNet = modelsDir.resolve(safeModelName + ".rnet");
+        if (!Files.exists(modelDir)
+                && !Files.isRegularFile(legacyTopLevelMeta)
+                && !Files.isRegularFile(legacyTopLevelNet)) {
+            return;
+        }
         try {
             Files.createDirectories(modelDir);
-            moveLegacyRootFile(modelsDir.resolve(safeModelName + ".rmeta"), mainDir);
-            moveLegacyRootFile(modelsDir.resolve(safeModelName + ".rnet"), mainDir);
+            moveLegacyRootFile(legacyTopLevelMeta, mainDir);
+            moveLegacyRootFile(legacyTopLevelNet, mainDir);
             try (Stream<Path> files = Files.list(modelDir)) {
                 files
                     .filter(Files::isRegularFile)
@@ -196,6 +203,7 @@ public class RLModelManager {
     private static Path legacyDestinationDir(Path path, Path mainDir, Path llmDir) {
         String name = path.getFileName().toString();
         return name.contains("_supervisor_decisions")
+            || name.contains("_supervisor_debug")
             || name.contains("_branch_experiments")
             ? llmDir
             : mainDir;

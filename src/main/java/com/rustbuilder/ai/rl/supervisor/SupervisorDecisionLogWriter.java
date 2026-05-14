@@ -2,6 +2,7 @@ package com.rustbuilder.ai.rl.supervisor;
 
 import com.rustbuilder.ai.rl.RLModelManager;
 
+import java.io.BufferedReader;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -9,7 +10,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardOpenOption;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 
@@ -19,7 +22,7 @@ import java.util.Map;
 public class SupervisorDecisionLogWriter {
     private static final DateTimeFormatter TS_FMT =
         DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-    private static final String CSV_HEADER = String.join(",",
+    private static final List<String> CSV_COLUMNS = List.of(
         "timestamp",
         "model_name",
         "branch_id",
@@ -43,6 +46,7 @@ public class SupervisorDecisionLogWriter {
         "training_elapsed_seconds",
         "training_remaining_seconds",
         "training_deadline");
+    private static final String CSV_HEADER = String.join(",", CSV_COLUMNS);
 
     public void write(String modelName, SupervisorObservation observation, SupervisorDecision decision) {
         write(modelName, observation, decision, true);
@@ -92,18 +96,106 @@ public class SupervisorDecisionLogWriter {
                                SupervisorObservation obs,
                                SupervisorDecision decision,
                                boolean applied) throws IOException {
-        boolean needsHeader = !Files.exists(path) || Files.size(path) == 0;
-        StringBuilder sb = new StringBuilder();
-        if (needsHeader) {
-            sb.append(CSV_HEADER).append(System.lineSeparator());
-        }
-        sb.append(toCsvLine(modelName, obs, decision, applied)).append(System.lineSeparator());
-        Files.writeString(path, sb.toString(),
+        ensureCsvHeader(path);
+        Files.writeString(path, toCsvLine(modelName, obs, decision, applied) + System.lineSeparator(),
             StandardCharsets.UTF_8,
             StandardOpenOption.WRITE,
-            Files.exists(path)
-                ? StandardOpenOption.APPEND
-                : StandardOpenOption.CREATE);
+            StandardOpenOption.CREATE,
+            StandardOpenOption.APPEND);
+    }
+
+    private void ensureCsvHeader(Path path) throws IOException {
+        if (!Files.exists(path) || Files.size(path) == 0) {
+            Files.writeString(path, CSV_HEADER + System.lineSeparator(),
+                StandardCharsets.UTF_8,
+                StandardOpenOption.WRITE,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING);
+            return;
+        }
+
+        String currentHeader;
+        try (BufferedReader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+            currentHeader = reader.readLine();
+        }
+        if (currentHeader == null) {
+            Files.writeString(path, CSV_HEADER + System.lineSeparator(),
+                StandardCharsets.UTF_8,
+                StandardOpenOption.WRITE,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING);
+            return;
+        }
+        if (CSV_HEADER.equals(currentHeader)) {
+            return;
+        }
+
+        List<String> lines = Files.readAllLines(path, StandardCharsets.UTF_8);
+        if (lines.isEmpty()) {
+            Files.writeString(path, CSV_HEADER + System.lineSeparator(),
+                StandardCharsets.UTF_8,
+                StandardOpenOption.WRITE,
+                StandardOpenOption.CREATE,
+                StandardOpenOption.TRUNCATE_EXISTING);
+            return;
+        }
+
+        List<String> oldColumns = parseCsvLine(lines.get(0));
+        List<String> upgraded = new ArrayList<>(lines.size());
+        upgraded.add(CSV_HEADER);
+        for (int i = 1; i < lines.size(); i++) {
+            upgraded.add(reorderCsvLine(oldColumns, lines.get(i)));
+        }
+        Files.write(path, upgraded, StandardCharsets.UTF_8);
+    }
+
+    private String reorderCsvLine(List<String> oldColumns, String line) {
+        List<String> values = parseCsvLine(line);
+        Map<String, String> byColumn = new LinkedHashMap<>();
+        for (int i = 0; i < oldColumns.size(); i++) {
+            byColumn.put(oldColumns.get(i), i < values.size() ? values.get(i) : "");
+        }
+
+        List<String> reordered = new ArrayList<>(CSV_COLUMNS.size());
+        for (String column : CSV_COLUMNS) {
+            reordered.add(csvOrEmpty(byColumn.get(column)));
+        }
+        return String.join(",", reordered);
+    }
+
+    private static List<String> parseCsvLine(String line) {
+        List<String> values = new ArrayList<>();
+        if (line == null) {
+            values.add("");
+            return values;
+        }
+        StringBuilder current = new StringBuilder();
+        boolean quoted = false;
+        for (int i = 0; i < line.length(); i++) {
+            char ch = line.charAt(i);
+            if (ch == '"') {
+                if (quoted && i + 1 < line.length() && line.charAt(i + 1) == '"') {
+                    current.append('"');
+                    i++;
+                } else {
+                    quoted = !quoted;
+                }
+            } else if (ch == ',' && !quoted) {
+                values.add(current.toString());
+                current.setLength(0);
+            } else {
+                current.append(ch);
+            }
+        }
+        values.add(current.toString());
+        return values;
+    }
+
+    private static String csvOrEmpty(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        return csv(value);
     }
 
     private String toJsonLine(String modelName, SupervisorObservation obs, SupervisorDecision decision, boolean applied) {

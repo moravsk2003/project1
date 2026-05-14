@@ -7,13 +7,18 @@ call :find_java
 call :find_maven
 if errorlevel 1 goto :end
 
-where nvidia-smi >nul 2>nul
-if "%ERRORLEVEL%"=="0" (
+set "PROFILE=cpu"
+if /I "%~1"=="cuda" set "PROFILE=cuda"
+if /I "%~1"=="gpu" set "PROFILE=cuda"
+if /I "%RUSTBUILDER_BACKEND%"=="cuda" set "PROFILE=cuda"
+
+if "%PROFILE%"=="cuda" (
     set "PROFILE=cuda"
-    echo NVIDIA GPU detected. Running Rust Base Builder with CUDA backend...
+    echo Running Rust Base Builder with CUDA backend...
 ) else (
     set "PROFILE=cpu"
-    echo NVIDIA GPU was not detected. Running Rust Base Builder with CPU backend...
+    echo Running Rust Base Builder with CPU backend...
+    echo Use run.bat gpu or run_gpu.bat to opt in to the CUDA backend.
 )
 
 echo Using Maven: %MVN_CMD%

@@ -33,10 +33,14 @@ class RLModelManagerTest {
         Path legacyMeta = modelDir.resolve(MODEL_NAME + ".rmeta");
         Path legacyTrainingLog = modelDir.resolve(MODEL_NAME + "_multi_discrete_training.csv");
         Path legacySupervisorLog = modelDir.resolve(MODEL_NAME + "_supervisor_decisions.jsonl");
+        Path legacySupervisorDebugLog = modelDir.resolve(MODEL_NAME + "_supervisor_debug.jsonl");
+        Path legacyBranchExperimentLog = modelDir.resolve(MODEL_NAME + "_branch_experiments.csv");
         Path legacyTopLevelNet = RLModelManager.getModelsDir().resolve(MODEL_NAME + ".rnet");
         Files.writeString(legacyMeta, "metadata");
         Files.writeString(legacyTrainingLog, "training");
         Files.writeString(legacySupervisorLog, "supervisor");
+        Files.writeString(legacySupervisorDebugLog, "debug");
+        Files.writeString(legacyBranchExperimentLog, "branch");
         Files.writeString(legacyTopLevelNet, "network");
 
         assertTrue(RLModelManager.listModels().contains(MODEL_NAME));
@@ -48,10 +52,31 @@ class RLModelManagerTest {
         assertTrue(Files.exists(mainDir.resolve(MODEL_NAME + ".rnet")));
         assertTrue(Files.exists(mainDir.resolve(MODEL_NAME + "_multi_discrete_training.csv")));
         assertTrue(Files.exists(llmDir.resolve(MODEL_NAME + "_supervisor_decisions.jsonl")));
+        assertTrue(Files.exists(llmDir.resolve(MODEL_NAME + "_supervisor_debug.jsonl")));
+        assertTrue(Files.exists(llmDir.resolve(MODEL_NAME + "_branch_experiments.csv")));
         assertFalse(Files.exists(legacyMeta));
         assertFalse(Files.exists(legacyTrainingLog));
         assertFalse(Files.exists(legacySupervisorLog));
+        assertFalse(Files.exists(legacySupervisorDebugLog));
+        assertFalse(Files.exists(legacyBranchExperimentLog));
         assertFalse(Files.exists(legacyTopLevelNet));
+    }
+
+    @Test
+    void branchLookupDoesNotCreateTopLevelBranchDirectory() throws Exception {
+        Path branchDir = RLModelManager.getBranchDirectory(LINEAGE_OWNER, LINEAGE_BRANCH);
+        Path branchMetadata = branchDir.resolve(LINEAGE_BRANCH + ".rmeta");
+        Path topLevelBranchDir = RLModelManager.getModelsDir().resolve(LINEAGE_BRANCH);
+        Files.writeString(branchMetadata, "metadata");
+
+        assertFalse(Files.exists(topLevelBranchDir));
+        assertTrue(RLModelManager.listModels().contains(LINEAGE_BRANCH));
+        assertFalse(Files.exists(topLevelBranchDir));
+
+        Path found = RLModelManager.findExistingModelFile(LINEAGE_BRANCH, LINEAGE_BRANCH + ".rmeta");
+
+        assertEquals(branchMetadata.normalize(), found.normalize());
+        assertFalse(Files.exists(topLevelBranchDir));
     }
 
     @Test
