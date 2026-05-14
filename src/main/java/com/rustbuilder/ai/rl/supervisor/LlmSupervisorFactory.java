@@ -28,7 +28,7 @@ public final class LlmSupervisorFactory {
         }
 
         if (isNativeGeminiCommand(command)) {
-            return new GeminiLlmSupervisor(resolveApiKey(config, environmentOverrides), currentRewardConfigSupplier);
+            return new GeminiLlmSupervisor(resolveApiKey(config, environmentOverrides), config, currentRewardConfigSupplier);
         }
 
         return new ExternalCommandLlmSupervisor(command, currentRewardConfigSupplier, environmentOverrides);

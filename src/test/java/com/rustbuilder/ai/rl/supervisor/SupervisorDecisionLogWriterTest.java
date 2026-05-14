@@ -15,11 +15,13 @@ class SupervisorDecisionLogWriterTest {
     private static final Path LLM_DIR = RLModelManager.getModelLlmDirectory(MODEL_NAME);
     private static final Path CSV_PATH = LLM_DIR.resolve(MODEL_NAME + "_supervisor_decisions.csv");
     private static final Path JSONL_PATH = LLM_DIR.resolve(MODEL_NAME + "_supervisor_decisions.jsonl");
+    private static final Path DEBUG_PATH = LLM_DIR.resolve(MODEL_NAME + "_supervisor_debug.jsonl");
 
     @AfterEach
     void cleanup() throws Exception {
         Files.deleteIfExists(CSV_PATH);
         Files.deleteIfExists(JSONL_PATH);
+        Files.deleteIfExists(DEBUG_PATH);
         Files.deleteIfExists(LLM_DIR);
         Files.deleteIfExists(MODEL_DIR);
     }
@@ -32,7 +34,27 @@ class SupervisorDecisionLogWriterTest {
 
         String csv = Files.readString(CSV_PATH);
         assertTrue(csv.contains("timestamp,model_name,branch_id,episode,action,applied,reason"));
+        assertTrue(csv.contains("confidence,risk_level,change_magnitude,requires_branch_test,expected_effect"));
         assertTrue(csv.contains("\"codex_supervisor_log_writer_test\",\"candidate\",10,\"KEEP_GOING\",false,\"keep, \"\"learning\"\"\""));
+    }
+
+    @Test
+    void writesSupervisorDebugJsonWhenDiagnosticsProvided() throws Exception {
+        SupervisorDecisionLogWriter writer = new SupervisorDecisionLogWriter();
+
+        writer.write(
+            MODEL_NAME,
+            observation(),
+            SupervisorDecision.keepGoing("keep learning"),
+            true,
+            java.util.Map.of(
+                "provider", "builtin:gemini",
+                "stages", java.util.List.of(java.util.Map.of("selectedModel", "gemma-4-31b-it"))));
+
+        String debug = Files.readString(DEBUG_PATH);
+        assertTrue(debug.contains("\"diagnostics\""));
+        assertTrue(debug.contains("\"provider\":\"builtin:gemini\""));
+        assertTrue(debug.contains("\"selectedModel\":\"gemma-4-31b-it\""));
     }
 
     private SupervisorObservation observation() {

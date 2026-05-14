@@ -66,7 +66,24 @@ class SupervisorDecisionValidatorTest {
         RLRewardConfig sanitized = decision.getProposedRewardConfig();
         assertEquals(SupervisorAction.REPLACE_REWARD_CONFIG, decision.getAction());
         assertEquals(0.25, sanitized.basePlacementReward, 0.0);
-        assertEquals(-100.0, sanitized.penaltyCollision, 0.0);
+        assertEquals(-0.75, sanitized.penaltyCollision, 0.0);
+    }
+
+    @Test
+    void experimentalCautionAllowsWiderRewardConfigChanges() {
+        LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
+        config.setCautionLevel(LlmSupervisorConfig.CautionLevel.EXPERIMENTAL);
+
+        RLRewardConfig proposed = RLRewardConfig.createDefault();
+        proposed.raidBonusMultiplier = 500.0;
+
+        SupervisorDecision decision = validator.validate(
+            SupervisorDecision.replaceRewardConfig(proposed, "large experiment"),
+            config,
+            RLRewardConfig.createDefault());
+
+        assertEquals(SupervisorAction.REPLACE_REWARD_CONFIG, decision.getAction());
+        assertEquals(100.0, decision.getProposedRewardConfig().raidBonusMultiplier, 0.0);
     }
 
     @Test
@@ -94,7 +111,21 @@ class SupervisorDecisionValidatorTest {
 
         assertEquals(SupervisorAction.START_NEW_RUN, decision.getAction());
         assertEquals("auto_run_2d", decision.getProposedModelName());
-        assertEquals(100.0, decision.getProposedRewardConfig().raidBonusMultiplier, 0.0);
+        assertEquals(45.0, decision.getProposedRewardConfig().raidBonusMultiplier, 0.0);
+    }
+
+    @Test
+    void clampsEpsilonDeltaByCautionWhenObservationExists() {
+        LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
+
+        SupervisorDecision decision = validator.validate(
+            SupervisorDecision.setEpsilon(0.0, "explore much less"),
+            config,
+            RLRewardConfig.createDefault(),
+            observation(true));
+
+        assertEquals(SupervisorAction.SET_EPSILON, decision.getAction());
+        assertEquals(0.84, decision.getProposedEpsilon(), 1e-9);
     }
 
     @Test

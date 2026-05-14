@@ -64,7 +64,9 @@ public class RLDualTrainingCoordinator {
         }
     }
 
-    private RLTrainingConfig withoutSupervisor(RLTrainingConfig config) {
+    RLTrainingConfig withoutSupervisor(RLTrainingConfig config) {
+        LlmSupervisorConfig disabled = LlmSupervisorConfig.disabled();
+        disabled.setBranchId(config.getSupervisorConfig().getBranchId());
         return new RLTrainingConfig(
             config.getModelName(),
             config.getEpisodesPerEpoch(),
@@ -75,9 +77,10 @@ public class RLDualTrainingCoordinator {
             config.getWorkingAreaWeight(),
             config.getSafeZoneWeight(),
             config.getEpochs(),
-            LlmSupervisorConfig.disabled(),
+            disabled,
             config.getTrainingDurationMs(),
-            config.isUse2dCnn()
+            config.isUse2dCnn(),
+            config.getOutputDirectory()
         );
     }
 

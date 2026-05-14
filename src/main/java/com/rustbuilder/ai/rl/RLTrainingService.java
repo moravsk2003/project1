@@ -18,6 +18,7 @@ import com.rustbuilder.ai.rl.env.spec.EncodingRuntimeConfig;
 import com.rustbuilder.ai.rl.supervisor.LlmSupervisor;
 import com.rustbuilder.ai.rl.supervisor.LlmSupervisorApplyMode;
 import com.rustbuilder.ai.rl.supervisor.LlmSupervisorConfig;
+import com.rustbuilder.ai.rl.supervisor.LlmSupervisorDiagnostics;
 import com.rustbuilder.ai.rl.supervisor.LlmSupervisorRateLimiter;
 import com.rustbuilder.ai.rl.supervisor.NoOpLlmSupervisor;
 import com.rustbuilder.ai.rl.supervisor.RLBranchComparator;
@@ -168,6 +169,7 @@ public class RLTrainingService {
     private double lastSupervisorAvgReward = Double.NaN;
     private RLTrainingConfig activeTrainingConfig;
     private final LinkedList<Map<String, Object>> supervisorHistory = new LinkedList<>();
+    private final LinkedList<Map<String, Object>> supervisorDecisionMemory = new LinkedList<>();
     private final Object branchExperimentLock = new Object();
     private volatile boolean branchExperimentRunning = false;
     private volatile boolean branchReviewInProgress = false;
@@ -177,6 +179,7 @@ public class RLTrainingService {
     private volatile Double latestBranchCandidateEpsilon;
     private volatile String latestBranchCandidateModelName = "";
     private volatile String pendingBranchSwitchModelName = "";
+    private volatile String pendingBranchSwitchOwnerModelName = "";
     private volatile boolean pendingBranchSwitchRequested = false;
     private final LinkedList<Map<String, Object>> branchHistory = new LinkedList<>();
     private final java.util.Set<String> knownBranchModelNames =
@@ -692,6 +695,7 @@ public class RLTrainingService {
             rawDecision = SupervisorDecision.keepGoing("Supervisor call failed: " + e.getMessage());
         }
 
+        Map<String, Object> diagnostics = supervisorDiagnostics();
         SupervisorDecision decision = supervisorDecisionValidator.validate(rawDecision, config, getRewardConfig(), observation);
         boolean applied = shouldApplySupervisorDecision(config, decision);
         if (applied) {
@@ -707,7 +711,8 @@ public class RLTrainingService {
         }
         lastSupervisorDecisionSummary = formatSupervisorDecisionSummary(observation, decision, applied, config);
         emitSupervisorLog(lastSupervisorDecisionSummary);
-        supervisorDecisionLogWriter.write(modelName, observation, decision, applied);
+        supervisorDecisionLogWriter.write(modelName, observation, decision, applied, diagnostics);
+        rememberSupervisorDecision(observation, decision, applied, diagnostics);
     }
 
     private Map<String, Object> buildSupervisorTrainingContext(TrainingMetrics metrics, LlmSupervisorConfig config) {
@@ -728,6 +733,10 @@ public class RLTrainingService {
         context.put("supervisorCallFrequency", config != null ? config.getCallFrequency().name() : "");
         context.put("supervisorCallFrequencyMultiplier", config != null ? config.getCallFrequency().getMultiplier() : 1.0);
         context.put("supervisorCallIntervalEpisodes", config != null ? config.getEffectiveCallIntervalEpisodes() : 0);
+        context.put("supervisorCautionLevel", config != null ? config.getCautionLevel().name() : "");
+        context.put("supervisorDecisionMode", config != null ? config.getDecisionMode().name() : "");
+        context.put("supervisorPrimaryModel", config != null ? config.getPrimaryModel() : "");
+        context.put("supervisorFallbackModel", config != null ? config.getFallbackModel() : "");
         context.put("autopilotTrainingDurationMs", config != null ? config.getAutopilotTrainingDurationMs() : 0L);
         context.put("autopilotTrainingDurationSeconds", config != null ? config.getAutopilotTrainingDurationMs() / 1000.0 : 0.0);
         context.put("autopilotTrainingTimeLimitEnabled", config != null && config.getAutopilotTrainingDurationMs() > 0);
@@ -758,11 +767,19 @@ public class RLTrainingService {
             null,
             getRewardConfig(),
             buildIdleSupervisorTrainingContext(metrics, config),
-            Map.of(
-                "supervisorChecks", supervisorChecks,
-                "episodesSinceLastSupervisor", lastSupervisorEpisode > 0
-                    ? Math.max(0, metrics.totalEpisodesTrained - lastSupervisorEpisode)
-                    : 0));
+            idleSupervisorTrendMetrics(metrics));
+    }
+
+    private Map<String, Object> idleSupervisorTrendMetrics(TrainingMetrics metrics) {
+        Map<String, Object> trends = new LinkedHashMap<>();
+        trends.put("supervisorChecks", supervisorChecks);
+        trends.put("episodesSinceLastSupervisor", lastSupervisorEpisode > 0
+            ? Math.max(0, metrics.totalEpisodesTrained - lastSupervisorEpisode)
+            : 0);
+        trends.put("recentSupervisorDecisions", supervisorDecisionMemorySnapshot());
+        trends.put("branchHistory", branchHistorySnapshot());
+        trends.put("knownBranchModelNames", availableBranchModelNamesSnapshot());
+        return trends;
     }
 
     private Map<String, Object> buildSupervisorTrendMetrics(TrainingMetrics metrics) {
@@ -781,6 +798,7 @@ public class RLTrainingService {
         trends.put("stalledBySupervisorBestScore", supervisorChecks > 0
             && finiteDelta(metrics.bestScore, lastSupervisorBestScore) <= 1e-9);
         trends.put("recentSupervisorHistory", java.util.List.copyOf(supervisorHistory));
+        trends.put("recentSupervisorDecisions", supervisorDecisionMemorySnapshot());
         trends.put("branchExperimentRunning", branchExperimentRunning);
         trends.put("branchReviewInProgress", branchReviewInProgress);
         trends.put("branchExperimentStatus", branchExperimentStatus);
@@ -818,6 +836,7 @@ public class RLTrainingService {
         lastSupervisorAvgEvalScore = Double.NaN;
         lastSupervisorAvgReward = Double.NaN;
         supervisorHistory.clear();
+        supervisorDecisionMemory.clear();
     }
 
     private Map<String, Object> buildTrainingObjective() {
@@ -854,6 +873,128 @@ public class RLTrainingService {
         while (supervisorHistory.size() > 10) {
             supervisorHistory.removeFirst();
         }
+    }
+
+    private Map<String, Object> supervisorDiagnostics() {
+        LlmSupervisor supervisor = this.llmSupervisor;
+        if (supervisor instanceof LlmSupervisorDiagnostics diagnostics) {
+            Map<String, Object> map = diagnostics.getLastDiagnostics();
+            return map != null ? map : Map.of();
+        }
+        return Map.of();
+    }
+
+    private void rememberSupervisorDecision(SupervisorObservation observation,
+                                            SupervisorDecision decision,
+                                            boolean applied,
+                                            Map<String, Object> diagnostics) {
+        if (observation == null || decision == null) {
+            return;
+        }
+        synchronized (supervisorDecisionMemory) {
+            if (!supervisorDecisionMemory.isEmpty()) {
+                Map<String, Object> previous = supervisorDecisionMemory.getLast();
+                previous.put("effectAfterDecision", effectSince(previous, observation));
+            }
+
+            Map<String, Object> entry = new LinkedHashMap<>();
+            entry.put("episode", observation.totalEpisodesTrained);
+            entry.put("action", decision.getAction().name());
+            entry.put("applied", applied);
+            entry.put("reason", decision.getReason());
+            entry.put("callFrequency", decision.getProposedCallFrequency() != null
+                ? decision.getProposedCallFrequency().name()
+                : "");
+            if (decision.getProposedEpsilon() != null) {
+                entry.put("proposedEpsilon", decision.getProposedEpsilon());
+            }
+            entry.put("hasRewardConfig", decision.getProposedRewardConfig() != null);
+            if (decision.getConfidence() != null) {
+                entry.put("confidence", decision.getConfidence());
+            }
+            if (!decision.getRiskLevel().isBlank()) {
+                entry.put("riskLevel", decision.getRiskLevel());
+            }
+            if (!decision.getChangeMagnitude().isBlank()) {
+                entry.put("changeMagnitude", decision.getChangeMagnitude());
+            }
+            if (!decision.getExpectedEffect().isBlank()) {
+                entry.put("expectedEffect", decision.getExpectedEffect());
+            }
+            if (decision.getRequiresBranchTest() != null) {
+                entry.put("requiresBranchTest", decision.getRequiresBranchTest());
+            }
+            Object selectedModel = selectedModelFromDiagnostics(diagnostics);
+            if (selectedModel != null) {
+                entry.put("selectedModel", selectedModel);
+            }
+            entry.put("observationEpisode", observation.totalEpisodesTrained);
+            entry.put("observationBestScore", observation.bestScore);
+            entry.put("observationAvgEvalScore", observation.avgEvalScore);
+            entry.put("observationInvalidActionRate", observation.invalidActionRate);
+            entry.put("observationEpsilon", observation.epsilon);
+            entry.put("observationBestBaseBlocks", observation.bestBaseBlocks);
+            entry.put("observationBestBaseHasTC", observation.bestBaseHasTC);
+
+            supervisorDecisionMemory.addLast(entry);
+            while (supervisorDecisionMemory.size() > 10) {
+                supervisorDecisionMemory.removeFirst();
+            }
+        }
+    }
+
+    private Object selectedModelFromDiagnostics(Map<String, Object> diagnostics) {
+        if (diagnostics == null || diagnostics.isEmpty()) {
+            return null;
+        }
+        Object stagesObject = diagnostics.get("stages");
+        if (!(stagesObject instanceof java.util.List<?> stages) || stages.isEmpty()) {
+            return null;
+        }
+        Object last = stages.get(stages.size() - 1);
+        if (last instanceof Map<?, ?> stage) {
+            Object selected = stage.get("selectedModel");
+            return selected != null ? selected : null;
+        }
+        return null;
+    }
+
+    private Map<String, Object> effectSince(Map<String, Object> previous, SupervisorObservation current) {
+        Map<String, Object> effect = new LinkedHashMap<>();
+        effect.put("episodesElapsed", current.totalEpisodesTrained - intMapValue(previous, "observationEpisode"));
+        effect.put("bestScoreDelta", current.bestScore - doubleMapValue(previous, "observationBestScore"));
+        effect.put("avgEvalScoreDelta", current.avgEvalScore - doubleMapValue(previous, "observationAvgEvalScore"));
+        effect.put("invalidActionRateDelta", current.invalidActionRate - doubleMapValue(previous, "observationInvalidActionRate"));
+        effect.put("epsilonDelta", current.epsilon - doubleMapValue(previous, "observationEpsilon"));
+        effect.put("bestBaseBlocksDelta", current.bestBaseBlocks - intMapValue(previous, "observationBestBaseBlocks"));
+        effect.put("bestBaseStillHasTC", current.bestBaseHasTC);
+        return effect;
+    }
+
+    private java.util.List<Map<String, Object>> supervisorDecisionMemorySnapshot() {
+        synchronized (supervisorDecisionMemory) {
+            java.util.List<Map<String, Object>> copy = new java.util.ArrayList<>(supervisorDecisionMemory.size());
+            for (Map<String, Object> entry : supervisorDecisionMemory) {
+                copy.add(new LinkedHashMap<>(entry));
+            }
+            return copy;
+        }
+    }
+
+    private static double doubleMapValue(Map<String, Object> map, String key) {
+        Object value = map != null ? map.get(key) : null;
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        return 0.0;
+    }
+
+    private static int intMapValue(Map<String, Object> map, String key) {
+        Object value = map != null ? map.get(key) : null;
+        if (value instanceof Number number) {
+            return number.intValue();
+        }
+        return 0;
     }
 
     private double finiteDelta(double current, double previous) {
@@ -1204,6 +1345,7 @@ public class RLTrainingService {
             rawDecision = SupervisorDecision.keepGoing("Supervisor branch review failed: " + e.getMessage());
         }
 
+        Map<String, Object> diagnostics = supervisorDiagnostics();
         SupervisorDecision decision = supervisorDecisionValidator.validate(rawDecision, config, getRewardConfig(), observation);
         boolean applied = shouldApplySupervisorDecision(config, decision);
         if (applied) {
@@ -1219,7 +1361,8 @@ public class RLTrainingService {
         }
         lastSupervisorDecisionSummary = formatSupervisorDecisionSummary(observation, decision, applied, config);
         emitSupervisorLog(lastSupervisorDecisionSummary);
-        supervisorDecisionLogWriter.write(modelName, observation, decision, applied);
+        supervisorDecisionLogWriter.write(modelName, observation, decision, applied, diagnostics);
+        rememberSupervisorDecision(observation, decision, applied, diagnostics);
     }
 
     private RLTrainingConfig branchConfig(RLTrainingConfig sourceConfig,
@@ -1328,8 +1471,24 @@ public class RLTrainingService {
         map.put("comparisonReason", comparison.reason);
         map.put("baseline", metricsMap(baseline));
         map.put("candidate", metricsMap(candidate));
+        map.put("baselineLogEvidence", branchLogEvidence(baselineName));
+        map.put("candidateLogEvidence", branchLogEvidence(candidateName));
         map.put("nextAllowedDecision", "Return PROMOTE_BRANCH to apply the candidate reward config, or KEEP_GOING/REPLACE_REWARD_CONFIG to keep exploring.");
         return map;
+    }
+
+    private Map<String, Object> branchLogEvidence(String branchModelName) {
+        Map<String, Object> evidence = new LinkedHashMap<>();
+        String owner = branchOwnerModelName(activeTrainingConfig);
+        java.nio.file.Path dir = RLModelManager.getBranchDirectory(owner, branchModelName);
+        evidence.put("directory", dir.toString());
+        evidence.put("hasEpisodesCsv", java.nio.file.Files.exists(dir.resolve(branchModelName + "_episodes.csv")));
+        evidence.put("hasTrainingCsv", java.nio.file.Files.exists(dir.resolve(branchModelName + "_multi_discrete_training.csv")));
+        evidence.put("hasPerformanceCsv", java.nio.file.Files.exists(dir.resolve(branchModelName + "_performance_tmp.csv")));
+        evidence.put("hasRunMetadata", java.nio.file.Files.exists(dir.resolve(branchModelName + "_run_metadata.json")));
+        evidence.put("hasSnapshot", java.nio.file.Files.exists(dir.resolve(branchModelName + ".rmeta"))
+            && java.nio.file.Files.exists(dir.resolve(branchModelName + ".rnet")));
+        return evidence;
     }
 
     private String saveBranchModel(RLTrainingService branchService,
@@ -1515,19 +1674,13 @@ public class RLTrainingService {
     }
 
     public boolean promoteLatestBranch() {
-        RLRewardConfig candidate = latestBranchCandidateRewardConfig;
-        if (candidate == null) {
-            branchExperimentStatus = "No candidate branch reward config available to promote.";
+        String candidateModelName = latestBranchCandidateModelName;
+        if (candidateModelName == null || candidateModelName.isBlank() || !isKnownBranchModelName(candidateModelName)) {
+            branchExperimentStatus = "No saved candidate branch model available to promote.";
             emitSupervisorLog("[BRANCH] " + branchExperimentStatus);
             return false;
         }
-        setRewardConfig(candidate);
-        if (latestBranchCandidateEpsilon != null) {
-            setEpsilon(latestBranchCandidateEpsilon);
-        }
-        branchExperimentStatus = "Promoted candidate branch reward config: " + latestBranchCandidateModelName;
-        emitSupervisorLog("[BRANCH] " + branchExperimentStatus);
-        return true;
+        return requestBranchJump(candidateModelName, "Promote candidate branch to main");
     }
 
     public boolean requestBranchJump(String modelName, String reason) {
@@ -1537,9 +1690,11 @@ public class RLTrainingService {
             emitSupervisorLog("[BRANCH] " + branchExperimentStatus);
             return false;
         }
+        String ownerModelName = activeMainOwnerForBranch(safeModelName);
         pendingBranchSwitchModelName = safeModelName;
+        pendingBranchSwitchOwnerModelName = ownerModelName;
         pendingBranchSwitchRequested = true;
-        branchExperimentStatus = "Queued branch jump to " + safeModelName
+        branchExperimentStatus = "Queued branch jump to " + safeModelName + " as main " + ownerModelName
             + (reason != null && !reason.isBlank() ? " (" + reason + ")" : "");
         emitSupervisorLog("[BRANCH] " + branchExperimentStatus);
         if (trainingRunning) {
@@ -1554,23 +1709,42 @@ public class RLTrainingService {
             return false;
         }
         String modelName = pendingBranchSwitchModelName;
+        String ownerModelName = pendingBranchSwitchOwnerModelName;
         pendingBranchSwitchRequested = false;
         pendingBranchSwitchModelName = "";
+        pendingBranchSwitchOwnerModelName = "";
         if (modelName == null || modelName.isBlank()) {
             return false;
         }
+        if (ownerModelName == null || ownerModelName.isBlank()) {
+            ownerModelName = activeMainOwnerForBranch(modelName);
+        }
         try {
-            String previousModel = activeTrainingModelName == null || activeTrainingModelName.isBlank()
-                ? "live"
-                : activeTrainingModelName;
+            String previousModel = ownerModelName == null || ownerModelName.isBlank() ? "live" : ownerModelName;
             LlmSupervisorConfig previousSupervisorConfig = getSupervisorConfig();
             String savedPrevious = saveLiveBranchModel(safeBranchModelName(previousModel + "_before_jump_" + System.currentTimeMillis()));
+            copyMainLogsToBranch(RLModelManager.getBranchDirectory(ownerModelName, savedPrevious));
             RLModelManager.RLModel model = RLModelManager.loadMetadata(modelName);
             RLModelManager.restoreFromModel(this, model);
             RLModelManager.loadNetworkWeights(modelName, this);
             setSupervisorConfig(previousSupervisorConfig);
-            activeTrainingModelName = modelName;
-            branchExperimentStatus = "Jumped to branch " + modelName + "; previous live branch saved as " + savedPrevious;
+            int lineageEpisodes = RLModelManager.promoteBranchLineageToMain(ownerModelName, modelName);
+            if (lineageEpisodes > getEpisodesTrained()) {
+                setEpisodesTrained(lineageEpisodes);
+            }
+            RLModelManager.RLModel mainSnapshot = RLModelManager.createSnapshot(
+                ownerModelName,
+                this,
+                activeTrainingConfig != null ? activeTrainingConfig.getLogisticsWeight() : model.logisticsWeight,
+                activeTrainingConfig != null ? activeTrainingConfig.getCostWeight() : model.costWeight,
+                activeTrainingConfig != null ? activeTrainingConfig.getRaidWeight() : model.raidWeight,
+                activeTrainingConfig != null ? activeTrainingConfig.getWorkingAreaWeight() : model.workingAreaWeight,
+                activeTrainingConfig != null ? activeTrainingConfig.getSafeZoneWeight() : model.safeZoneWeight);
+            RLModelManager.saveModel(mainSnapshot, this, RLModelManager.getModelMainDirectory(ownerModelName));
+            activeTrainingModelName = ownerModelName;
+            branchExperimentStatus = "Jumped to branch " + modelName
+                + "; main " + ownerModelName + " now follows that lineage"
+                + "; previous live branch saved as " + savedPrevious;
             emitSupervisorLog("[BRANCH] " + branchExperimentStatus);
             return true;
         } catch (Exception e) {
@@ -1578,6 +1752,28 @@ public class RLTrainingService {
             emitSupervisorLog("[BRANCH] " + branchExperimentStatus);
             return false;
         }
+    }
+
+    private String activeMainOwnerForBranch(String branchModelName) {
+        String active = activeTrainingModelName != null ? activeTrainingModelName.trim() : "";
+        if (!active.isBlank() && !isBranchLikeModelName(active)) {
+            return active;
+        }
+        if (activeTrainingConfig != null
+                && activeTrainingConfig.getModelName() != null
+                && !activeTrainingConfig.getModelName().isBlank()
+                && !isBranchLikeModelName(activeTrainingConfig.getModelName())) {
+            return activeTrainingConfig.getModelName().trim();
+        }
+        String derived = deriveOwnerFromBranchModelName(branchModelName);
+        return !derived.isBlank() ? derived : "autopilot";
+    }
+
+    private String deriveOwnerFromBranchModelName(String branchModelName) {
+        String name = branchModelName != null ? branchModelName.trim() : "";
+        return name
+            .replaceFirst("_(baseline|candidate|before_jump)_\\d+$", "")
+            .trim();
     }
 
     public String getSupervisorBranchStatus() {

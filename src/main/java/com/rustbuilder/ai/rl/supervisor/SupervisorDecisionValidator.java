@@ -44,8 +44,15 @@ public class SupervisorDecisionValidator {
                 if (epsilon == null || epsilon.isNaN() || epsilon.isInfinite()) {
                     return SupervisorDecision.keepGoing("Invalid epsilon proposal.");
                 }
-                return preserveCallFrequency(
-                    SupervisorDecision.setEpsilon(clamp(epsilon, MIN_EPSILON, MAX_EPSILON), decision.getReason()),
+                double sanitizedEpsilon = clamp(epsilon, MIN_EPSILON, MAX_EPSILON);
+                if (observation != null) {
+                    double deltaLimit = epsilonDeltaLimit(config);
+                    sanitizedEpsilon = clamp(sanitizedEpsilon,
+                        Math.max(MIN_EPSILON, observation.epsilon - deltaLimit),
+                        Math.min(MAX_EPSILON, observation.epsilon + deltaLimit));
+                }
+                return preserveMetadata(
+                    SupervisorDecision.setEpsilon(sanitizedEpsilon, decision.getReason()),
                     decision);
 
             case REPLACE_REWARD_CONFIG:
@@ -56,8 +63,8 @@ public class SupervisorDecisionValidator {
                 if (rewardConfig == null) {
                     return SupervisorDecision.keepGoing("Invalid reward config proposal.");
                 }
-                return preserveCallFrequency(SupervisorDecision.replaceRewardConfig(
-                    sanitizeRewardConfig(rewardConfig, currentRewardConfig),
+                return preserveMetadata(SupervisorDecision.replaceRewardConfig(
+                    sanitizeRewardConfig(rewardConfig, currentRewardConfig, config),
                     decision.getReason()), decision);
 
             case START_NEW_RUN:
@@ -67,33 +74,33 @@ public class SupervisorDecisionValidator {
                     return SupervisorDecision.keepGoing(decision.getAction() + " decision had no safe modelName.");
                 }
                 RLRewardConfig startConfig = config.isAllowRewardConfigChanges()
-                    ? sanitizeRewardConfig(decision.getProposedRewardConfig(), currentRewardConfig)
+                    ? sanitizeRewardConfig(decision.getProposedRewardConfig(), currentRewardConfig, config)
                     : (currentRewardConfig != null ? currentRewardConfig.clone() : RLRewardConfig.createDefault());
                 SupervisorDecision startDecision = decision.getAction() == SupervisorAction.START_NEW_RUN
                     ? SupervisorDecision.startNewRun(decision.getProposedUse2dCnn(), startConfig, modelName, decision.getReason())
                     : SupervisorDecision.restartTraining(decision.getProposedUse2dCnn(), startConfig, modelName, decision.getReason());
-                return preserveCallFrequency(startDecision, decision);
+                return preserveMetadata(startDecision, decision);
 
             case REQUEST_HISTORICAL_REPORT:
                 String reportModelName = sanitizeModelName(decision.getReportModelName());
                 if (reportModelName.isBlank()) {
                     return SupervisorDecision.keepGoing("REQUEST_HISTORICAL_REPORT decision had no safe reportModelName.");
                 }
-                return preserveCallFrequency(SupervisorDecision.requestHistoricalReport(
+                return preserveMetadata(SupervisorDecision.requestHistoricalReport(
                     reportModelName,
                     sanitizeEpoch(decision.getReportStartEpoch()),
                     sanitizeEpoch(decision.getReportEndEpoch()),
                     decision.getReason()), decision);
 
             case PROMOTE_BRANCH:
-                return preserveCallFrequency(SupervisorDecision.promoteBranch(decision.getReason()), decision);
+                return preserveMetadata(SupervisorDecision.promoteBranch(decision.getReason()), decision);
 
             case JUMP_TO_BRANCH:
                 String branchModelName = sanitizeModelName(decision.getProposedModelName());
                 if (branchModelName.isBlank()) {
                     return SupervisorDecision.keepGoing("JUMP_TO_BRANCH decision had no safe modelName.");
                 }
-                return preserveCallFrequency(SupervisorDecision.jumpToBranch(branchModelName, decision.getReason()), decision);
+                return preserveMetadata(SupervisorDecision.jumpToBranch(branchModelName, decision.getReason()), decision);
 
             case STOP_TRAINING:
             case REQUEST_PROMOTION_CHECK:
@@ -107,14 +114,23 @@ public class SupervisorDecisionValidator {
         return Math.max(min, Math.min(max, value));
     }
 
-    private static SupervisorDecision preserveCallFrequency(SupervisorDecision sanitized,
-                                                            SupervisorDecision source) {
-        return source.getProposedCallFrequency() != null
+    private static SupervisorDecision preserveMetadata(SupervisorDecision sanitized,
+                                                       SupervisorDecision source) {
+        SupervisorDecision result = source.getProposedCallFrequency() != null
             ? sanitized.withCallFrequency(source.getProposedCallFrequency())
             : sanitized;
+        return result.withAnalysisMetadata(
+            source.getConfidence(),
+            source.getRiskLevel(),
+            source.getExpectedEffect(),
+            source.getRollbackPlan(),
+            source.getChangeMagnitude(),
+            source.getRequiresBranchTest());
     }
 
-    private RLRewardConfig sanitizeRewardConfig(RLRewardConfig proposed, RLRewardConfig currentRewardConfig) {
+    private RLRewardConfig sanitizeRewardConfig(RLRewardConfig proposed,
+                                                RLRewardConfig currentRewardConfig,
+                                                LlmSupervisorConfig config) {
         RLRewardConfig sanitized = currentRewardConfig != null
             ? currentRewardConfig.clone()
             : RLRewardConfig.createDefault();
@@ -131,7 +147,12 @@ public class SupervisorDecisionValidator {
                 if (Double.isNaN(proposedValue) || Double.isInfinite(proposedValue)) {
                     continue;
                 }
-                field.setDouble(sanitized, clamp(proposedValue, -MAX_ABS_REWARD_VALUE, MAX_ABS_REWARD_VALUE));
+                double currentValue = field.getDouble(sanitized);
+                double deltaLimit = rewardDeltaLimit(config, currentValue);
+                double deltaClamped = clamp(proposedValue,
+                    currentValue - deltaLimit,
+                    currentValue + deltaLimit);
+                field.setDouble(sanitized, clamp(deltaClamped, -MAX_ABS_REWARD_VALUE, MAX_ABS_REWARD_VALUE));
             } catch (IllegalAccessException ignored) {
                 // Public config fields should be accessible; keep current value if reflection fails.
             }
@@ -141,6 +162,31 @@ public class SupervisorDecisionValidator {
             : new RewardFormulaSet();
 
         return sanitized;
+    }
+
+    private static double epsilonDeltaLimit(LlmSupervisorConfig config) {
+        LlmSupervisorConfig.CautionLevel level = config != null
+            ? config.getCautionLevel()
+            : LlmSupervisorConfig.CautionLevel.BALANCED;
+        return switch (level) {
+            case CONSERVATIVE -> 0.05;
+            case BALANCED -> 0.15;
+            case BOLD -> 0.35;
+            case EXPERIMENTAL -> 1.0;
+        };
+    }
+
+    private static double rewardDeltaLimit(LlmSupervisorConfig config, double currentValue) {
+        LlmSupervisorConfig.CautionLevel level = config != null
+            ? config.getCautionLevel()
+            : LlmSupervisorConfig.CautionLevel.BALANCED;
+        double abs = Math.abs(currentValue);
+        return switch (level) {
+            case CONSERVATIVE -> Math.max(0.10, abs * 0.20);
+            case BALANCED -> Math.max(0.50, abs * 0.50);
+            case BOLD -> Math.max(2.00, abs * 1.50);
+            case EXPERIMENTAL -> Math.max(10.00, abs * 5.00);
+        };
     }
 
     private static String sanitizeModelName(String value) {

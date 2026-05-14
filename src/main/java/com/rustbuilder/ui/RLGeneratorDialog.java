@@ -8,6 +8,7 @@ import com.rustbuilder.ai.rl.RLModelManager;
 import com.rustbuilder.ai.rl.RLModelManager.RLModel;
 import com.rustbuilder.ai.rl.RLTrainingConfig;
 import com.rustbuilder.ai.rl.RLTrainingService;
+import com.rustbuilder.ai.rl.supervisor.GeminiLlmSupervisor;
 import com.rustbuilder.ai.rl.supervisor.LlmSupervisorApplyMode;
 import com.rustbuilder.ai.rl.supervisor.LlmSupervisorConfig;
 import com.rustbuilder.ai.rl.supervisor.LlmSupervisorFactory;
@@ -26,6 +27,7 @@ import javafx.scene.control.Button;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.ComboBox;
 import javafx.scene.control.Label;
+import javafx.scene.control.ListCell;
 import javafx.scene.control.PasswordField;
 import javafx.scene.control.ProgressBar;
 import javafx.scene.control.ScrollPane;
@@ -90,7 +92,11 @@ public class RLGeneratorDialog {
     private TextField supervisorTimeLimitField;
     private PasswordField supervisorApiKeyField;
     private TextField supervisorCommandField;
+    private TextField supervisorPrimaryModelField;
+    private TextField supervisorFallbackModelField;
     private ComboBox<LlmSupervisorApplyMode> supervisorApplyModeComboBox;
+    private ComboBox<LlmSupervisorConfig.CautionLevel> supervisorCautionComboBox;
+    private ComboBox<LlmSupervisorConfig.DecisionMode> supervisorDecisionModeComboBox;
     private Button supervisorApplyPendingButton;
     private CheckBox use2dCnnCheck;
     
@@ -458,6 +464,41 @@ public class RLGeneratorDialog {
         supervisorApplyModeComboBox.setPrefWidth(170);
         HintUtils.attachHint(supervisorApplyModeComboBox, "Supervisor apply mode", "Use Log Only first when testing a new LLM prompt or command.");
 
+        HBox cautionRow = new HBox(8);
+        cautionRow.setAlignment(Pos.CENTER_LEFT);
+        Label cautionLabel = bodyLabel("LLM caution:");
+        HintUtils.attachHint(cautionLabel, "LLM caution", "Controls how boldly the supervisor may propose epsilon, reward, branch, and stop decisions.");
+        supervisorCautionComboBox = new ComboBox<>();
+        supervisorCautionComboBox.getItems().setAll(LlmSupervisorConfig.CautionLevel.values());
+        supervisorCautionComboBox.setValue(config.getCautionLevel());
+        supervisorCautionComboBox.setPrefWidth(190);
+        supervisorCautionComboBox.setCellFactory(list -> new ListCell<>() {
+            @Override
+            protected void updateItem(LlmSupervisorConfig.CautionLevel item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty || item == null ? null : item + " - " + item.getDescription());
+            }
+        });
+        supervisorCautionComboBox.setButtonCell(new ListCell<>() {
+            @Override
+            protected void updateItem(LlmSupervisorConfig.CautionLevel item, boolean empty) {
+                super.updateItem(item, empty);
+                setText(empty || item == null ? null : item.toString());
+            }
+        });
+        HintUtils.attachHint(supervisorCautionComboBox, "LLM caution",
+            "Safe: tiny live changes. Balanced: bounded default. Bold: larger branch-tested hypotheses. Research: aggressive experiments with validator clamps.");
+
+        HBox decisionModeRow = new HBox(8);
+        decisionModeRow.setAlignment(Pos.CENTER_LEFT);
+        Label decisionModeLabel = bodyLabel("Decision mode:");
+        HintUtils.attachHint(decisionModeLabel, "Supervisor decision mode", "Two-stage for big changes asks the LLM to analyze first, then finalize risky decisions.");
+        supervisorDecisionModeComboBox = new ComboBox<>();
+        supervisorDecisionModeComboBox.getItems().setAll(LlmSupervisorConfig.DecisionMode.values());
+        supervisorDecisionModeComboBox.setValue(config.getDecisionMode());
+        supervisorDecisionModeComboBox.setPrefWidth(220);
+        HintUtils.attachHint(supervisorDecisionModeComboBox, "Supervisor decision mode", "Default: two-stage only for high-impact decisions.");
+
         HBox apiKeyRow = new HBox(8);
         apiKeyRow.setAlignment(Pos.CENTER_LEFT);
         Label apiKeyLabel = bodyLabel("API key:");
@@ -494,11 +535,27 @@ public class RLGeneratorDialog {
         HBox.setHgrow(supervisorCommandField, Priority.ALWAYS);
         HintUtils.attachHint(supervisorCommandField, "Supervisor command", "Default is Java-native Gemini. Leave empty to run the safe no-op supervisor, or enter a custom script/command.");
 
+        HBox modelRow = new HBox(8);
+        modelRow.setAlignment(Pos.CENTER_LEFT);
+        Label primaryModelLabel = bodyLabel("Primary:");
+        HintUtils.attachHint(primaryModelLabel, "Primary model", "Built-in Gemini primary model. Empty uses " + GeminiLlmSupervisor.DEFAULT_MODEL + ".");
+        supervisorPrimaryModelField = new TextField(config.getPrimaryModel());
+        supervisorPrimaryModelField.setPromptText(GeminiLlmSupervisor.DEFAULT_MODEL);
+        HBox.setHgrow(supervisorPrimaryModelField, Priority.ALWAYS);
+        Label fallbackModelLabel = bodyLabel("Fallback:");
+        HintUtils.attachHint(fallbackModelLabel, "Fallback model", "Used when the primary model fails or returns invalid JSON. Empty uses " + GeminiLlmSupervisor.DEFAULT_FALLBACK_MODEL + ".");
+        supervisorFallbackModelField = new TextField(config.getFallbackModel());
+        supervisorFallbackModelField.setPromptText(GeminiLlmSupervisor.DEFAULT_FALLBACK_MODEL);
+        HBox.setHgrow(supervisorFallbackModelField, Priority.ALWAYS);
+
         intervalRow.getChildren().addAll(intervalLabel, supervisorIntervalSpinner);
         supervisorTimeRow.getChildren().addAll(supervisorTimeLabel, supervisorTimeLimitField);
         modeRow.getChildren().addAll(modeLabel, supervisorApplyModeComboBox);
+        cautionRow.getChildren().addAll(cautionLabel, supervisorCautionComboBox);
+        decisionModeRow.getChildren().addAll(decisionModeLabel, supervisorDecisionModeComboBox);
         apiKeyRow.getChildren().addAll(apiKeyLabel, supervisorApiKeyField, saveApiKeyBtn);
         commandRow.getChildren().addAll(commandLabel, supervisorCommandField);
+        modelRow.getChildren().addAll(primaryModelLabel, supervisorPrimaryModelField, fallbackModelLabel, supervisorFallbackModelField);
 
         Button triggerLlmButton = styledBtn("Start Auto-Pilot / Trigger Check", "#f39c12");
         HintUtils.attachHint(triggerLlmButton, "Почати авто-пілот", "Негайно відправити стан системи до LLM для аналізу (якщо навчання не запущено).");
@@ -517,7 +574,8 @@ public class RLGeneratorDialog {
         HBox llmActionRow = new HBox(8);
         llmActionRow.getChildren().addAll(triggerLlmButton, supervisorApplyPendingButton);
 
-        box.getChildren().addAll(supervisorEnabledCheck, intervalRow, supervisorTimeRow, modeRow, apiKeyRow, commandRow, llmActionRow);
+        box.getChildren().addAll(supervisorEnabledCheck, intervalRow, supervisorTimeRow,
+            modeRow, cautionRow, decisionModeRow, apiKeyRow, commandRow, modelRow, llmActionRow);
         return box;
     }
 
@@ -858,16 +916,26 @@ public class RLGeneratorDialog {
         config.setApplyMode(supervisorApplyModeComboBox != null
             ? supervisorApplyModeComboBox.getValue()
             : LlmSupervisorApplyMode.AUTO_APPLY);
+        config.setCautionLevel(supervisorCautionComboBox != null
+            ? supervisorCautionComboBox.getValue()
+            : LlmSupervisorConfig.CautionLevel.BALANCED);
+        config.setDecisionMode(supervisorDecisionModeComboBox != null
+            ? supervisorDecisionModeComboBox.getValue()
+            : LlmSupervisorConfig.DecisionMode.TWO_STAGE_HIGH_IMPACT);
+        config.setPrimaryModel(supervisorPrimaryModelField != null ? supervisorPrimaryModelField.getText() : "");
+        config.setFallbackModel(supervisorFallbackModelField != null ? supervisorFallbackModelField.getText() : "");
         rlService.setSupervisorConfig(config);
         installSupervisorProvider(config);
 
         if (config.isEnabled()) {
             appendLlmStatus(String.format(Locale.US,
-                "LLM Supervisor enabled: every %d episodes (base %d, current cadence %s x %.2f; LLM may change it).",
+                "LLM Supervisor enabled: every %d episodes (base %d, cadence %s x %.2f, caution %s, decision %s).",
                 config.getEffectiveCallIntervalEpisodes(),
                 config.getCallIntervalEpisodes(),
                 config.getCallFrequency().name(),
-                config.getCallFrequency().getMultiplier()));
+                config.getCallFrequency().getMultiplier(),
+                config.getCautionLevel().name(),
+                config.getDecisionMode().name()));
             if (validateAutopilotTimeLimit && config.getAutopilotTrainingDurationMs() > 0) {
                 appendLlmStatus("LLM autopilot run time limit: " + formatDuration(config.getAutopilotTrainingDurationMs()));
             }
@@ -1274,6 +1342,18 @@ public class RLGeneratorDialog {
         }
         if (supervisorApplyModeComboBox != null) {
             supervisorApplyModeComboBox.setValue(config.getApplyMode());
+        }
+        if (supervisorCautionComboBox != null) {
+            supervisorCautionComboBox.setValue(config.getCautionLevel());
+        }
+        if (supervisorDecisionModeComboBox != null) {
+            supervisorDecisionModeComboBox.setValue(config.getDecisionMode());
+        }
+        if (supervisorPrimaryModelField != null) {
+            supervisorPrimaryModelField.setText(config.getPrimaryModel());
+        }
+        if (supervisorFallbackModelField != null) {
+            supervisorFallbackModelField.setText(config.getFallbackModel());
         }
     }
 

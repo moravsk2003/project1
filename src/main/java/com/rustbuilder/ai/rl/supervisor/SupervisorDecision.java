@@ -16,6 +16,12 @@ public final class SupervisorDecision {
     private final Integer reportEndEpoch;
     private final String reason;
     private final LlmSupervisorConfig.CallFrequency proposedCallFrequency;
+    private final Double confidence;
+    private final String riskLevel;
+    private final String expectedEffect;
+    private final String rollbackPlan;
+    private final String changeMagnitude;
+    private final Boolean requiresBranchTest;
 
     private SupervisorDecision(SupervisorAction action,
                                Double proposedEpsilon,
@@ -35,6 +41,12 @@ public final class SupervisorDecision {
             reportStartEpoch,
             reportEndEpoch,
             reason,
+            null,
+            null,
+            null,
+            null,
+            null,
+            null,
             null);
     }
 
@@ -47,7 +59,13 @@ public final class SupervisorDecision {
                                Integer reportStartEpoch,
                                Integer reportEndEpoch,
                                String reason,
-                               LlmSupervisorConfig.CallFrequency proposedCallFrequency) {
+                               LlmSupervisorConfig.CallFrequency proposedCallFrequency,
+                               Double confidence,
+                               String riskLevel,
+                               String expectedEffect,
+                               String rollbackPlan,
+                               String changeMagnitude,
+                               Boolean requiresBranchTest) {
         this.action = action != null ? action : SupervisorAction.KEEP_GOING;
         this.proposedEpsilon = proposedEpsilon;
         this.proposedRewardConfig = proposedRewardConfig != null ? proposedRewardConfig.clone() : null;
@@ -58,6 +76,12 @@ public final class SupervisorDecision {
         this.reportEndEpoch = reportEndEpoch;
         this.reason = reason != null ? reason : "";
         this.proposedCallFrequency = proposedCallFrequency;
+        this.confidence = confidence;
+        this.riskLevel = riskLevel != null ? riskLevel : "";
+        this.expectedEffect = expectedEffect != null ? expectedEffect : "";
+        this.rollbackPlan = rollbackPlan != null ? rollbackPlan : "";
+        this.changeMagnitude = changeMagnitude != null ? changeMagnitude : "";
+        this.requiresBranchTest = requiresBranchTest;
     }
 
     public static SupervisorDecision keepGoing(String reason) {
@@ -110,7 +134,37 @@ public final class SupervisorDecision {
             reportStartEpoch,
             reportEndEpoch,
             reason,
-            callFrequency);
+            callFrequency,
+            confidence,
+            riskLevel,
+            expectedEffect,
+            rollbackPlan,
+            changeMagnitude,
+            requiresBranchTest);
+    }
+
+    public SupervisorDecision withAnalysisMetadata(Double confidence,
+                                                   String riskLevel,
+                                                   String expectedEffect,
+                                                   String rollbackPlan,
+                                                   String changeMagnitude,
+                                                   Boolean requiresBranchTest) {
+        return new SupervisorDecision(action,
+            proposedEpsilon,
+            proposedRewardConfig,
+            proposedUse2dCnn,
+            proposedModelName,
+            reportModelName,
+            reportStartEpoch,
+            reportEndEpoch,
+            reason,
+            proposedCallFrequency,
+            confidence,
+            riskLevel,
+            expectedEffect,
+            rollbackPlan,
+            changeMagnitude,
+            requiresBranchTest);
     }
 
     public SupervisorAction getAction() {
@@ -151,5 +205,29 @@ public final class SupervisorDecision {
 
     public LlmSupervisorConfig.CallFrequency getProposedCallFrequency() {
         return proposedCallFrequency;
+    }
+
+    public Double getConfidence() {
+        return confidence;
+    }
+
+    public String getRiskLevel() {
+        return riskLevel;
+    }
+
+    public String getExpectedEffect() {
+        return expectedEffect;
+    }
+
+    public String getRollbackPlan() {
+        return rollbackPlan;
+    }
+
+    public String getChangeMagnitude() {
+        return changeMagnitude;
+    }
+
+    public Boolean getRequiresBranchTest() {
+        return requiresBranchTest;
     }
 }

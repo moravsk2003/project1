@@ -107,6 +107,27 @@ class SupervisorJsonTest {
     }
 
     @Test
+    void parsesSupervisorAnalysisMetadata() {
+        SupervisorDecision decision = SupervisorJson.decisionFromJson(
+            "{\"action\":\"SET_EPSILON\",\"epsilon\":0.2,\"reason\":\"careful change\","
+                + "\"confidence\":0.72,"
+                + "\"riskLevel\":\"medium\","
+                + "\"expectedEffect\":\"less random wandering\","
+                + "\"rollbackPlan\":\"restore epsilon\","
+                + "\"changeMagnitude\":\"small\","
+                + "\"requiresBranchTest\":true}",
+            RLRewardConfig.createDefault());
+
+        assertEquals(SupervisorAction.SET_EPSILON, decision.getAction());
+        assertEquals(0.72, decision.getConfidence(), 0.0);
+        assertEquals("medium", decision.getRiskLevel());
+        assertEquals("less random wandering", decision.getExpectedEffect());
+        assertEquals("restore epsilon", decision.getRollbackPlan());
+        assertEquals("small", decision.getChangeMagnitude());
+        assertTrue(decision.getRequiresBranchTest());
+    }
+
+    @Test
     void detectsNativeGeminiSupervisorCommands() {
         assertTrue(LlmSupervisorFactory.isNativeGeminiCommand("builtin:gemini"));
         assertTrue(LlmSupervisorFactory.isNativeGeminiCommand(
@@ -167,6 +188,26 @@ class SupervisorJsonTest {
         Field fallbackField = GeminiLlmSupervisor.class.getDeclaredField("fallbackModel");
         fallbackField.setAccessible(true);
         assertEquals("gemma-4-31b-it", fallbackField.get(supervisor));
+    }
+
+    @Test
+    void builtInGeminiUsesConfiguredPrimaryAndFallbackModels() throws Exception {
+        LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
+        config.setExternalCommand(LlmSupervisorFactory.BUILTIN_GEMINI_COMMAND);
+        config.setPrimaryModel("gemini-custom");
+        config.setFallbackModel("gemma-custom");
+
+        LlmSupervisor supervisor = LlmSupervisorFactory.create(
+            config,
+            RLRewardConfig::createDefault,
+            Map.of("GEMINI_API_KEY", "env-key-123"));
+
+        Field modelField = GeminiLlmSupervisor.class.getDeclaredField("model");
+        Field fallbackField = GeminiLlmSupervisor.class.getDeclaredField("fallbackModel");
+        modelField.setAccessible(true);
+        fallbackField.setAccessible(true);
+        assertEquals("gemini-custom", modelField.get(supervisor));
+        assertEquals("gemma-custom", fallbackField.get(supervisor));
     }
 
     @Test

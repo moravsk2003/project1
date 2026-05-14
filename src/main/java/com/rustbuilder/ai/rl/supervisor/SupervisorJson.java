@@ -115,7 +115,7 @@ public final class SupervisorJson {
             map.put("historicalReport", obs.historicalReport);
         }
         map.put("responseContract",
-            "Return one JSON object. The action must be one of allowedActions. Always include reason and callFrequency. callFrequency must be VERY_SOON, SOON, MEDIUM, or LONG and selects the next review cadence. For SET_EPSILON include epsilon. For REPLACE_REWARD_CONFIG include only changed rewardConfig fields and/or rewardTerms. For START_NEW_RUN or JUMP_TO_BRANCH include modelName.");
+            "Return one JSON object. The action must be one of allowedActions. Always include reason and callFrequency. callFrequency must be VERY_SOON, SOON, MEDIUM, or LONG and selects the next review cadence. For SET_EPSILON include epsilon. For REPLACE_REWARD_CONFIG include only changed rewardConfig fields and/or rewardTerms. For START_NEW_RUN or JUMP_TO_BRANCH include modelName. For important changes include confidence, riskLevel, expectedEffect, rollbackPlan, changeMagnitude, and requiresBranchTest.");
         return SimpleJson.stringify(map);
     }
 
@@ -154,7 +154,7 @@ public final class SupervisorJson {
             SupervisorDecision decision = epsilon != null
                 ? SupervisorDecision.setEpsilon(epsilon, reason)
                 : SupervisorDecision.keepGoing("SET_EPSILON decision had no epsilon.");
-            return withCallFrequency(decision, callFrequency);
+            return withMetadata(withCallFrequency(decision, callFrequency), map);
         }
 
         if (action == SupervisorAction.REPLACE_REWARD_CONFIG) {
@@ -163,14 +163,14 @@ public final class SupervisorJson {
                 : RLRewardConfig.createDefault();
             applyRewardConfigPatch(rewardConfig, map.get("rewardConfig"));
             applyRewardTerms(rewardConfig, map.get("rewardTerms"));
-            return withCallFrequency(SupervisorDecision.replaceRewardConfig(rewardConfig, reason), callFrequency);
+            return withMetadata(withCallFrequency(SupervisorDecision.replaceRewardConfig(rewardConfig, reason), callFrequency), map);
         }
 
         if (action == SupervisorAction.STOP_TRAINING) {
-            return withCallFrequency(SupervisorDecision.stopTraining(reason), callFrequency);
+            return withMetadata(withCallFrequency(SupervisorDecision.stopTraining(reason), callFrequency), map);
         }
         if (action == SupervisorAction.REQUEST_PROMOTION_CHECK) {
-            return withCallFrequency(SupervisorDecision.requestPromotionCheck(reason), callFrequency);
+            return withMetadata(withCallFrequency(SupervisorDecision.requestPromotionCheck(reason), callFrequency), map);
         }
         
         if (action == SupervisorAction.START_NEW_RUN || action == SupervisorAction.RESTART_TRAINING) {
@@ -185,9 +185,9 @@ public final class SupervisorJson {
             String modelName = stringValue(map.get("modelName"));
             
             if (action == SupervisorAction.START_NEW_RUN) {
-                return withCallFrequency(SupervisorDecision.startNewRun(use2dCnn, rewardConfig, modelName, reason), callFrequency);
+                return withMetadata(withCallFrequency(SupervisorDecision.startNewRun(use2dCnn, rewardConfig, modelName, reason), callFrequency), map);
             } else {
-                return withCallFrequency(SupervisorDecision.restartTraining(use2dCnn, rewardConfig, modelName, reason), callFrequency);
+                return withMetadata(withCallFrequency(SupervisorDecision.restartTraining(use2dCnn, rewardConfig, modelName, reason), callFrequency), map);
             }
         }
         
@@ -195,23 +195,36 @@ public final class SupervisorJson {
             String reportModelName = stringValue(map.get("reportModelName"));
             Integer startEpoch = integerValue(map.get("reportStartEpoch"));
             Integer endEpoch = integerValue(map.get("reportEndEpoch"));
-            return withCallFrequency(SupervisorDecision.requestHistoricalReport(reportModelName, startEpoch, endEpoch, reason), callFrequency);
+            return withMetadata(withCallFrequency(SupervisorDecision.requestHistoricalReport(reportModelName, startEpoch, endEpoch, reason), callFrequency), map);
         }
 
         if (action == SupervisorAction.PROMOTE_BRANCH) {
-            return withCallFrequency(SupervisorDecision.promoteBranch(reason), callFrequency);
+            return withMetadata(withCallFrequency(SupervisorDecision.promoteBranch(reason), callFrequency), map);
         }
 
         if (action == SupervisorAction.JUMP_TO_BRANCH) {
-            return withCallFrequency(SupervisorDecision.jumpToBranch(stringValue(map.get("modelName")), reason), callFrequency);
+            return withMetadata(withCallFrequency(SupervisorDecision.jumpToBranch(stringValue(map.get("modelName")), reason), callFrequency), map);
         }
         
-        return withCallFrequency(SupervisorDecision.keepGoing(reason), callFrequency);
+        return withMetadata(withCallFrequency(SupervisorDecision.keepGoing(reason), callFrequency), map);
     }
 
     private static SupervisorDecision withCallFrequency(SupervisorDecision decision,
                                                         LlmSupervisorConfig.CallFrequency callFrequency) {
         return callFrequency != null ? decision.withCallFrequency(callFrequency) : decision;
+    }
+
+    private static SupervisorDecision withMetadata(SupervisorDecision decision, Map<String, Object> map) {
+        if (decision == null || map == null) {
+            return decision;
+        }
+        return decision.withAnalysisMetadata(
+            doubleValue(map.get("confidence")),
+            stringValue(map.get("riskLevel")),
+            stringValue(map.get("expectedEffect")),
+            stringValue(map.get("rollbackPlan")),
+            stringValue(map.get("changeMagnitude")),
+            booleanValue(map.get("requiresBranchTest")));
     }
 
     private static Integer integerValue(Object val) {

@@ -1,0 +1,20 @@
+# Created at 2026-05-14T11:25:50.670
+D:\project\target\surefire-reports\TEST-com.rustbuilder.ai.rl.supervisor.SupervisorJsonTest.xml (The requested operation cannot be performed on a file with a user-mapped section open)
+java.io.FileNotFoundException: D:\project\target\surefire-reports\TEST-com.rustbuilder.ai.rl.supervisor.SupervisorJsonTest.xml (The requested operation cannot be performed on a file with a user-mapped section open)
+	at java.base/java.io.FileOutputStream.open0(Native Method)
+	at java.base/java.io.FileOutputStream.open(FileOutputStream.java:255)
+	at java.base/java.io.FileOutputStream.<init>(FileOutputStream.java:210)
+	at java.base/java.io.FileOutputStream.<init>(FileOutputStream.java:171)
+	at org.apache.maven.plugin.surefire.report.StatelessXmlReporter.getOutputStream(StatelessXmlReporter.java:364)
+	at org.apache.maven.plugin.surefire.report.StatelessXmlReporter.testSetCompleted(StatelessXmlReporter.java:150)
+	at org.apache.maven.plugin.surefire.report.StatelessXmlReporter.testSetCompleted(StatelessXmlReporter.java:85)
+	at org.apache.maven.plugin.surefire.report.TestSetRunListener.testSetCompleted(TestSetRunListener.java:193)
+	at org.apache.maven.plugin.surefire.booterclient.output.ForkClient$TestSetCompletedListener.handle(ForkClient.java:143)
+	at org.apache.maven.plugin.surefire.booterclient.output.ForkClient$TestSetCompletedListener.handle(ForkClient.java:127)
+	at org.apache.maven.plugin.surefire.booterclient.output.ForkedProcessEventNotifier.notifyEvent(ForkedProcessEventNotifier.java:197)
+	at org.apache.maven.plugin.surefire.booterclient.output.ForkClient.handleEvent(ForkClient.java:303)
+	at org.apache.maven.plugin.surefire.booterclient.output.ForkClient.handleEvent(ForkClient.java:59)
+	at org.apache.maven.plugin.surefire.booterclient.output.ThreadedStreamConsumer$Pumper.run(ThreadedStreamConsumer.java:86)
+	at java.base/java.lang.Thread.run(Thread.java:1474)
+
+

@@ -9,7 +9,9 @@ import java.io.Serializable;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Set;
@@ -107,15 +109,20 @@ public class RLModelManager {
             Files.createDirectories(dir);
         } catch (IOException e) {
         }
+        normalizeLegacyModelDirectory(modelName);
         return dir;
     }
 
     public static Path getModelMainDirectory(String modelName) {
-        return ensureDirectory(getModelDirectoryPath(modelName).resolve("main"));
+        Path dir = ensureDirectory(getModelDirectoryPath(modelName).resolve("main"));
+        normalizeLegacyModelDirectory(modelName);
+        return dir;
     }
 
     public static Path getModelLlmDirectory(String modelName) {
-        return ensureDirectory(getModelDirectoryPath(modelName).resolve("llm"));
+        Path dir = ensureDirectory(getModelDirectoryPath(modelName).resolve("llm"));
+        normalizeLegacyModelDirectory(modelName);
+        return dir;
     }
 
     public static Path getModelBranchesDirectory(String modelName) {
@@ -139,9 +146,11 @@ public class RLModelManager {
     }
 
     public static Path findExistingModelFile(String modelName, String fileName) {
+        normalizeLegacyModelDirectory(modelName);
         Path root = getModelDirectoryPath(modelName);
         Path[] candidates = new Path[] {
             root.resolve("main").resolve(fileName),
+            root.resolve("llm").resolve(fileName),
             root.resolve(fileName),
             getModelsDir().resolve(fileName)
         };
@@ -163,6 +172,47 @@ public class RLModelManager {
 
     private static Path getModelDirectoryPath(String modelName) {
         return getModelsDir().resolve(safeModelDirectoryName(modelName));
+    }
+
+    private static void normalizeLegacyModelDirectory(String modelName) {
+        String safeModelName = safeModelDirectoryName(modelName);
+        Path modelsDir = getModelsDir();
+        Path modelDir = modelsDir.resolve(safeModelName);
+        Path mainDir = modelDir.resolve("main");
+        Path llmDir = modelDir.resolve("llm");
+        try {
+            Files.createDirectories(modelDir);
+            moveLegacyRootFile(modelsDir.resolve(safeModelName + ".rmeta"), mainDir);
+            moveLegacyRootFile(modelsDir.resolve(safeModelName + ".rnet"), mainDir);
+            try (Stream<Path> files = Files.list(modelDir)) {
+                files
+                    .filter(Files::isRegularFile)
+                    .forEach(path -> moveLegacyRootFile(path, legacyDestinationDir(path, mainDir, llmDir)));
+            }
+        } catch (IOException e) {
+        }
+    }
+
+    private static Path legacyDestinationDir(Path path, Path mainDir, Path llmDir) {
+        String name = path.getFileName().toString();
+        return name.contains("_supervisor_decisions")
+            || name.contains("_branch_experiments")
+            ? llmDir
+            : mainDir;
+    }
+
+    private static void moveLegacyRootFile(Path source, Path destinationDir) {
+        if (source == null || destinationDir == null || !Files.isRegularFile(source)) {
+            return;
+        }
+        try {
+            Files.createDirectories(destinationDir);
+            Path target = destinationDir.resolve(source.getFileName());
+            if (!Files.exists(target)) {
+                Files.move(source, target);
+            }
+        } catch (IOException e) {
+        }
     }
 
     private static String safeModelDirectoryName(String modelName) {
@@ -209,6 +259,128 @@ public class RLModelManager {
         }
     }
 
+    public static Path findModelStorageDirectory(String modelName) {
+        Path metadata = findExistingModelFile(modelName, modelName + ".rmeta");
+        if (Files.exists(metadata) && metadata.getParent() != null) {
+            return metadata.getParent();
+        }
+        return getModelMainDirectory(modelName);
+    }
+
+    public static int promoteBranchLineageToMain(String ownerModelName, String branchModelName) throws IOException {
+        String ownerName = safeFileModelName(ownerModelName);
+        String branchName = safeFileModelName(branchModelName);
+        if (ownerName.isBlank() || branchName.isBlank()) {
+            return 0;
+        }
+
+        Path mainDir = getModelMainDirectory(ownerName);
+        Path branchDir = findModelStorageDirectory(branchName);
+        int totalEpisodes = 0;
+        totalEpisodes = Math.max(totalEpisodes, mergeLineageCsv(mainDir, branchDir, ownerName, branchName,
+            "_episodes.csv", 4, 2, -1));
+        totalEpisodes = Math.max(totalEpisodes, mergeLineageCsv(mainDir, branchDir, ownerName, branchName,
+            "_performance_tmp.csv", 4, 2, -1));
+        mergeLineageCsv(mainDir, branchDir, ownerName, branchName,
+            "_multi_discrete_training.csv", -1, 1, -1);
+        mergeLineageCsv(mainDir, branchDir, ownerName, branchName,
+            "_invalid_actions.csv", -1, 2, 3);
+        return totalEpisodes;
+    }
+
+    private static int mergeLineageCsv(Path mainDir, Path branchDir, String ownerName, String branchName,
+                                       String suffix, int totalEpisodeColumn, int epochColumn,
+                                       int episodeColumn) throws IOException {
+        Path inheritedPath = branchDir.resolve("inherited_main").resolve(ownerName + suffix);
+        Path currentMainPath = mainDir.resolve(ownerName + suffix);
+        Path branchPath = branchDir.resolve(branchName + suffix);
+        Path targetPath = currentMainPath;
+
+        List<String> inheritedLines = readCsvLines(Files.exists(inheritedPath) ? inheritedPath : currentMainPath);
+        List<String> branchLines = readCsvLines(branchPath);
+        if (inheritedLines.isEmpty() && branchLines.isEmpty()) {
+            return 0;
+        }
+
+        String header = !inheritedLines.isEmpty() ? inheritedLines.get(0) : branchLines.get(0);
+        List<String> inheritedRows = dataRows(inheritedLines);
+        List<String> branchRows = dataRows(branchLines);
+        int totalOffset = maxColumnValue(inheritedRows, totalEpisodeColumn);
+        int epochOffset = maxColumnValue(inheritedRows, epochColumn);
+        int episodeOffset = maxColumnValue(inheritedRows, episodeColumn);
+
+        List<String> merged = new ArrayList<>();
+        merged.add(header);
+        merged.addAll(inheritedRows);
+        for (String row : branchRows) {
+            merged.add(adjustCsvCounters(row, totalEpisodeColumn, totalOffset,
+                epochColumn, epochOffset, episodeColumn, episodeOffset));
+        }
+
+        Files.createDirectories(mainDir);
+        Files.write(targetPath, merged, StandardCharsets.UTF_8);
+        return Math.max(
+            maxColumnValue(dataRows(merged), totalEpisodeColumn),
+            maxColumnValue(dataRows(merged), episodeColumn));
+    }
+
+    private static List<String> readCsvLines(Path path) throws IOException {
+        if (path == null || !Files.exists(path)) {
+            return List.of();
+        }
+        return Files.readAllLines(path, StandardCharsets.UTF_8);
+    }
+
+    private static List<String> dataRows(List<String> lines) {
+        if (lines == null || lines.size() <= 1) {
+            return List.of();
+        }
+        return lines.subList(1, lines.size());
+    }
+
+    private static String adjustCsvCounters(String row, int totalEpisodeColumn, int totalOffset,
+                                            int epochColumn, int epochOffset,
+                                            int episodeColumn, int episodeOffset) {
+        String[] fields = row.split(",", -1);
+        addToColumn(fields, totalEpisodeColumn, totalOffset);
+        addToColumn(fields, epochColumn, epochOffset);
+        addToColumn(fields, episodeColumn, episodeOffset);
+        return String.join(",", fields);
+    }
+
+    private static void addToColumn(String[] fields, int column, int offset) {
+        if (column < 0 || offset <= 0 || fields == null || column >= fields.length) {
+            return;
+        }
+        try {
+            int value = Integer.parseInt(fields[column].trim());
+            fields[column] = String.valueOf(value + offset);
+        } catch (NumberFormatException e) {
+        }
+    }
+
+    private static int maxColumnValue(List<String> rows, int column) {
+        if (column < 0 || rows == null) {
+            return 0;
+        }
+        int max = 0;
+        for (String row : rows) {
+            String[] fields = row.split(",", -1);
+            if (column >= fields.length) {
+                continue;
+            }
+            try {
+                max = Math.max(max, Integer.parseInt(fields[column].trim()));
+            } catch (NumberFormatException e) {
+            }
+        }
+        return max;
+    }
+
+    private static String safeFileModelName(String modelName) {
+        return modelName != null ? modelName.trim() : "";
+    }
+
     public static List<String> listModels() {
         Path dir = getModelsDir();
         Set<String> names = new LinkedHashSet<>();
@@ -225,6 +397,9 @@ public class RLModelManager {
         } catch (IOException e) {
         }
 
+        for (String name : List.copyOf(names)) {
+            normalizeLegacyModelDirectory(name);
+        }
         return names.stream().sorted().collect(Collectors.toList());
     }
 

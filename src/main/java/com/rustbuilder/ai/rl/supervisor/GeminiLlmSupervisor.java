@@ -17,19 +17,16 @@ import java.util.regex.Pattern;
 /**
  * Native Java Gemini adapter for the LLM supervisor.
  */
-public class GeminiLlmSupervisor implements LlmSupervisor {
+public class GeminiLlmSupervisor implements LlmSupervisor, LlmSupervisorDiagnostics {
     private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
-    private static final String DEFAULT_MODEL = "gemini-2.5-flash";
-    private static final String DEFAULT_FALLBACK_MODEL = "gemma-4-31b-it";
+    public static final String DEFAULT_MODEL = "gemini-2.5-flash";
+    public static final String DEFAULT_FALLBACK_MODEL = "gemma-4-31b-it";
     private static final String DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
-    private static final String SYSTEM_PROMPT = """
+    private static final String BASE_SYSTEM_PROMPT = """
         You supervise reinforcement learning for a Rust base builder.
         Return exactly one JSON object and no markdown.
         Use only actions listed in observation.allowedActions.
-        Prefer KEEP_GOING unless the observation gives clear evidence.
-        Use SET_EPSILON for small exploration adjustments.
-        Use REPLACE_REWARD_CONFIG sparingly and only with small numeric changes or safe arithmetic rewardTerms.
         Use STOP_TRAINING only when the run is clearly wasting the remaining budget.
         Use START_NEW_RUN only when observation.trainingContext.trainingRunning is false and provide modelName.
         During active training, stopReason is the last episode stop reason, not proof that the whole run stopped.
@@ -43,6 +40,7 @@ public class GeminiLlmSupervisor implements LlmSupervisor {
         Never invent fields outside rewardConfig or rewardTerms.
         Formula terms may use only variables and functions from observation.rewardFormulaContract.
         Use trainingRemainingSeconds and trainingDeadline to avoid disruptive changes near the end of a run.
+        Include confidence, riskLevel, expectedEffect, rollbackPlan, changeMagnitude, and requiresBranchTest when useful.
         """;
 
     private final HttpClient httpClient;
@@ -50,13 +48,28 @@ public class GeminiLlmSupervisor implements LlmSupervisor {
     private final String model;
     private final String fallbackModel;
     private final String baseUrl;
+    private final LlmSupervisorConfig supervisorConfig;
     private final Supplier<RLRewardConfig> currentRewardConfigSupplier;
+    private volatile Map<String, Object> lastDiagnostics = Map.of();
 
     public GeminiLlmSupervisor(String apiKey, Supplier<RLRewardConfig> currentRewardConfigSupplier) {
+        this(apiKey, null, currentRewardConfigSupplier);
+    }
+
+    public GeminiLlmSupervisor(String apiKey,
+                               LlmSupervisorConfig supervisorConfig,
+                               Supplier<RLRewardConfig> currentRewardConfigSupplier) {
         this(apiKey,
-            firstNonBlank(System.getenv("GEMINI_MODEL"), DEFAULT_MODEL),
-            firstNonBlank(System.getenv("GEMINI_FALLBACK_MODEL"), DEFAULT_FALLBACK_MODEL),
+            firstNonBlank(
+                supervisorConfig != null ? supervisorConfig.getPrimaryModel() : "",
+                System.getenv("GEMINI_MODEL"),
+                DEFAULT_MODEL),
+            firstNonBlank(
+                supervisorConfig != null ? supervisorConfig.getFallbackModel() : "",
+                System.getenv("GEMINI_FALLBACK_MODEL"),
+                DEFAULT_FALLBACK_MODEL),
             firstNonBlank(System.getenv("GEMINI_BASE_URL"), DEFAULT_BASE_URL),
+            supervisorConfig,
             currentRewardConfigSupplier,
             HttpClient.newBuilder().connectTimeout(DEFAULT_TIMEOUT).build());
     }
@@ -65,12 +78,14 @@ public class GeminiLlmSupervisor implements LlmSupervisor {
                         String model,
                         String fallbackModel,
                         String baseUrl,
+                        LlmSupervisorConfig supervisorConfig,
                         Supplier<RLRewardConfig> currentRewardConfigSupplier,
                         HttpClient httpClient) {
         this.apiKey = firstNonBlank(apiKey, System.getenv("GEMINI_API_KEY"), System.getenv("GOOGLE_API_KEY"));
         this.model = firstNonBlank(model, DEFAULT_MODEL);
         this.fallbackModel = firstNonBlank(fallbackModel, "");
         this.baseUrl = firstNonBlank(baseUrl, DEFAULT_BASE_URL).replaceAll("/+$", "");
+        this.supervisorConfig = supervisorConfig != null ? supervisorConfig.clone() : new LlmSupervisorConfig();
         this.currentRewardConfigSupplier = currentRewardConfigSupplier != null
             ? currentRewardConfigSupplier
             : RLRewardConfig::createDefault;
@@ -81,51 +96,116 @@ public class GeminiLlmSupervisor implements LlmSupervisor {
 
     @Override
     public SupervisorDecision review(SupervisorObservation observation) throws Exception {
+        Map<String, Object> diagnostics = new LinkedHashMap<>();
+        diagnostics.put("provider", "builtin:gemini");
+        diagnostics.put("primaryModel", model);
+        diagnostics.put("fallbackModel", fallbackModel);
+        diagnostics.put("decisionMode", supervisorConfig.getDecisionMode().name());
+        diagnostics.put("cautionLevel", supervisorConfig.getCautionLevel().name());
+        diagnostics.put("observationJson", SupervisorJson.observationToJson(observation));
+        List<Map<String, Object>> stages = new java.util.ArrayList<>();
+        diagnostics.put("stages", stages);
+
         if (apiKey == null || apiKey.isBlank()) {
+            diagnostics.put("error", "No GEMINI_API_KEY/GOOGLE_API_KEY/UI API key configured.");
+            lastDiagnostics = diagnostics;
             return SupervisorDecision.keepGoing("No GEMINI_API_KEY/GOOGLE_API_KEY/UI API key configured.");
         }
 
-        String requestBody = buildRequestBody(observation);
+        LlmSupervisorConfig.DecisionMode decisionMode = supervisorConfig.getDecisionMode();
+        StageResult proposal = requestDecision("ANALYZE_AND_PROPOSE", observation, null);
+        stages.add(proposal.diagnostics);
+        if (decisionMode == LlmSupervisorConfig.DecisionMode.SINGLE_STEP) {
+            diagnostics.put("finalStage", "ANALYZE_AND_PROPOSE");
+            lastDiagnostics = diagnostics;
+            return proposal.decision;
+        }
+
+        boolean twoStage = decisionMode == LlmSupervisorConfig.DecisionMode.TWO_STAGE_ALWAYS
+            || isHighImpactDecision(proposal.decision, observation);
+        diagnostics.put("highImpact", twoStage);
+        if (!twoStage) {
+            diagnostics.put("finalStage", "ANALYZE_AND_PROPOSE");
+            lastDiagnostics = diagnostics;
+            return proposal.decision;
+        }
+
+        StageResult finalDecision = requestDecision("FINAL_DECISION", observation, proposal.decisionJson);
+        stages.add(finalDecision.diagnostics);
+        diagnostics.put("finalStage", "FINAL_DECISION");
+        lastDiagnostics = diagnostics;
+        return finalDecision.decision;
+    }
+
+    @Override
+    public Map<String, Object> getLastDiagnostics() {
+        return lastDiagnostics != null ? Map.copyOf(lastDiagnostics) : Map.of();
+    }
+
+    private StageResult requestDecision(String stage, SupervisorObservation observation, String priorProposalJson) {
+        String requestBody = buildRequestBody(stage, observation, priorProposalJson);
+        Map<String, Object> diagnostics = new LinkedHashMap<>();
+        diagnostics.put("stage", stage);
+
         ModelResult primary = callModel(model, requestBody);
+        diagnostics.put("primary", primary.toDiagnostics());
         if (primary.decisionJson != null) {
             try {
-                return parseDecision(primary.decisionJson);
+                diagnostics.put("selectedModel", primary.modelName);
+                return new StageResult(parseDecision(primary.decisionJson), primary.decisionJson, diagnostics);
             } catch (RuntimeException e) {
-                primary = ModelResult.error(model + " returned invalid decision JSON: " + e.getMessage());
+                primary = primary.withError(primary.modelName + " returned invalid decision JSON: " + e.getMessage());
+                diagnostics.put("primary", primary.toDiagnostics());
             }
         }
 
         if (fallbackModel != null && !fallbackModel.isBlank() && !fallbackModel.equals(model)) {
             ModelResult fallback = callModel(fallbackModel, requestBody);
+            diagnostics.put("fallback", fallback.toDiagnostics());
             if (fallback.decisionJson != null) {
                 try {
-                    return parseDecision(fallback.decisionJson);
+                    diagnostics.put("selectedModel", fallback.modelName);
+                    return new StageResult(parseDecision(fallback.decisionJson), fallback.decisionJson, diagnostics);
                 } catch (RuntimeException e) {
-                    fallback = ModelResult.error(fallbackModel + " returned invalid decision JSON: " + e.getMessage());
+                    fallback = fallback.withError(fallback.modelName + " returned invalid decision JSON: " + e.getMessage());
+                    diagnostics.put("fallback", fallback.toDiagnostics());
                 }
             }
-            return SupervisorDecision.keepGoing(
-                "Gemini primary and fallback failed: " + primary.error + "; " + fallback.error);
+            diagnostics.put("error", "Gemini primary and fallback failed: " + primary.error + "; " + fallback.error);
+            return new StageResult(SupervisorDecision.keepGoing(
+                "Gemini primary and fallback failed: " + primary.error + "; " + fallback.error),
+                "",
+                diagnostics);
         }
 
-        return SupervisorDecision.keepGoing("Gemini request failed: " + primary.error);
+        diagnostics.put("error", "Gemini request failed: " + primary.error);
+        return new StageResult(SupervisorDecision.keepGoing("Gemini request failed: " + primary.error),
+            "",
+            diagnostics);
     }
 
-    private String buildRequestBody(SupervisorObservation observation) {
+    private String buildRequestBody(String stage, SupervisorObservation observation, String priorProposalJson) {
         Object observationJson = SimpleJson.parse(SupervisorJson.observationToJson(observation));
 
         Map<String, Object> userPayload = new LinkedHashMap<>();
-        userPayload.put("task", "Review this compact RL observation and return one supervisor decision.");
+        userPayload.put("task", taskForStage(stage));
+        userPayload.put("stage", stage);
+        userPayload.put("cautionLevel", supervisorConfig.getCautionLevel().name());
+        userPayload.put("decisionMode", supervisorConfig.getDecisionMode().name());
+        userPayload.put("supervisorPolicy", supervisorPolicy());
         userPayload.put("observation", observationJson);
         userPayload.put("decision_schema", decisionSchemaText());
+        if (priorProposalJson != null && !priorProposalJson.isBlank()) {
+            userPayload.put("priorProposal", SimpleJson.parse(priorProposalJson));
+        }
 
         Map<String, Object> request = new LinkedHashMap<>();
-        request.put("systemInstruction", Map.of("parts", List.of(Map.of("text", SYSTEM_PROMPT))));
+        request.put("systemInstruction", Map.of("parts", List.of(Map.of("text", systemPrompt(stage)))));
         request.put("contents", List.of(Map.of(
             "role", "user",
             "parts", List.of(Map.of("text", SimpleJson.stringify(userPayload))))));
         request.put("generationConfig", Map.of(
-            "temperature", 0.2,
+            "temperature", temperatureForCaution(),
             "responseMimeType", "application/json",
             "responseSchema", responseSchema()));
         return SimpleJson.stringify(request);
@@ -142,16 +222,119 @@ public class GeminiLlmSupervisor implements LlmSupervisor {
                 .build();
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
             if (response.statusCode() < 200 || response.statusCode() >= 300) {
-                return ModelResult.error(modelName + " request failed with HTTP " + response.statusCode());
+                return ModelResult.error(modelName, modelName + " request failed with HTTP " + response.statusCode());
             }
             String text = extractText(response.body());
             String json = parseModelJson(text);
             return json != null
-                ? ModelResult.decision(json)
-                : ModelResult.error(modelName + " returned non-JSON content");
+                ? ModelResult.decision(modelName, json, text)
+                : ModelResult.error(modelName, modelName + " returned non-JSON content");
         } catch (Exception e) {
-            return ModelResult.error(modelName + " request failed: " + e.getMessage());
+            return ModelResult.error(modelName, modelName + " request failed: " + e.getMessage());
         }
+    }
+
+    private String taskForStage(String stage) {
+        if ("FINAL_DECISION".equals(stage)) {
+            return "Finalize the prior proposal into exactly one executable supervisor decision JSON. You may revise it if the proposal is risky or unsupported.";
+        }
+        return "Analyze this compact RL observation, diagnose the most actionable issue, and return one proposed supervisor decision JSON.";
+    }
+
+    private String systemPrompt(String stage) {
+        return BASE_SYSTEM_PROMPT + "\n" + cautionPrompt() + "\n" + stagePrompt(stage);
+    }
+
+    private String cautionPrompt() {
+        return switch (supervisorConfig.getCautionLevel()) {
+            case CONSERVATIVE -> """
+                Caution mode: CONSERVATIVE.
+                Prefer KEEP_GOING unless there is clear evidence.
+                Use SET_EPSILON only for small exploration adjustments.
+                Use REPLACE_REWARD_CONFIG sparingly with tiny numeric changes.
+                """;
+            case BALANCED -> """
+                Caution mode: BALANCED.
+                Prefer evidence-based action over passive KEEP_GOING when metrics are stalled or regressing.
+                Use bounded reward and epsilon changes, and rely on branch tests for reward tuning.
+                """;
+            case BOLD -> """
+                Caution mode: BOLD.
+                Act like a real supervisor: propose substantial reward/epsilon hypotheses when the run is stalled, degenerate, or optimizing the wrong behavior.
+                Large reward changes must be branch-tested and include rollbackPlan, expectedEffect, riskLevel, and changeMagnitude.
+                """;
+            case EXPERIMENTAL -> """
+                Caution mode: EXPERIMENTAL.
+                Aggressive hypotheses are allowed for research runs, but destructive live changes are not.
+                Large changes must go through candidate branches, and STOP_TRAINING requires strong budget-waste evidence.
+                """;
+        };
+    }
+
+    private String stagePrompt(String stage) {
+        if ("FINAL_DECISION".equals(stage)) {
+            return """
+                Stage: FINAL_DECISION.
+                You are reviewing your priorProposal. Return the final executable decision only.
+                Keep the action if the proposal is well-supported; downgrade to KEEP_GOING or REQUEST_PROMOTION_CHECK if evidence is weak.
+                """;
+        }
+        return """
+            Stage: ANALYZE_AND_PROPOSE.
+            First reason internally about objective, recentSupervisorDecisions, branch results, reward breakdown, invalid actions, and time budget.
+            Then return one proposed decision JSON using the schema. No markdown, no extra prose.
+            """;
+    }
+
+    private Map<String, Object> supervisorPolicy() {
+        Map<String, Object> policy = new LinkedHashMap<>();
+        policy.put("cautionLevel", supervisorConfig.getCautionLevel().name());
+        policy.put("decisionMode", supervisorConfig.getDecisionMode().name());
+        policy.put("largeRewardChanges", "Must be branch-tested before replacing the live branch.");
+        policy.put("useKeepGoing", supervisorConfig.getCautionLevel() == LlmSupervisorConfig.CautionLevel.CONSERVATIVE
+            ? "Use when evidence is weak."
+            : "Use only when no actionable diagnosis exists.");
+        policy.put("highImpactActions", List.of(
+            "REPLACE_REWARD_CONFIG",
+            "large SET_EPSILON",
+            "STOP_TRAINING",
+            "PROMOTE_BRANCH",
+            "JUMP_TO_BRANCH",
+            "START_NEW_RUN"));
+        return policy;
+    }
+
+    private double temperatureForCaution() {
+        return switch (supervisorConfig.getCautionLevel()) {
+            case CONSERVATIVE -> 0.15;
+            case BALANCED -> 0.2;
+            case BOLD -> 0.35;
+            case EXPERIMENTAL -> 0.45;
+        };
+    }
+
+    private boolean isHighImpactDecision(SupervisorDecision decision, SupervisorObservation observation) {
+        if (decision == null || decision.getAction() == null) {
+            return false;
+        }
+        return switch (decision.getAction()) {
+            case REPLACE_REWARD_CONFIG, STOP_TRAINING, START_NEW_RUN, RESTART_TRAINING,
+                    PROMOTE_BRANCH, JUMP_TO_BRANCH -> true;
+            case SET_EPSILON -> {
+                Double proposed = decision.getProposedEpsilon();
+                yield proposed != null && Math.abs(proposed - observation.epsilon) > epsilonHighImpactDelta();
+            }
+            default -> false;
+        };
+    }
+
+    private double epsilonHighImpactDelta() {
+        return switch (supervisorConfig.getCautionLevel()) {
+            case CONSERVATIVE -> 0.05;
+            case BALANCED -> 0.12;
+            case BOLD -> 0.25;
+            case EXPERIMENTAL -> 0.35;
+        };
     }
 
     @SuppressWarnings("unchecked")
@@ -233,6 +416,12 @@ public class GeminiLlmSupervisor implements LlmSupervisor {
         schema.put("reportStartEpoch", "optional non-negative integer");
         schema.put("reportEndEpoch", "optional non-negative integer");
         schema.put("callFrequency", "required cadence preset: VERY_SOON=base*0.25, SOON=base*0.5, MEDIUM=base*1, LONG=base*2");
+        schema.put("confidence", "optional 0.0-1.0 estimate");
+        schema.put("riskLevel", "optional LOW, MEDIUM, HIGH, or CRITICAL");
+        schema.put("expectedEffect", "optional short expected metric or behavior improvement");
+        schema.put("rollbackPlan", "optional short rollback/checkpoint plan for risky changes");
+        schema.put("changeMagnitude", "optional NONE, SMALL, MEDIUM, LARGE, or EXPERIMENTAL");
+        schema.put("requiresBranchTest", "optional boolean; true for reward or large epsilon changes");
         schema.put("reason", "short explanation");
         return schema;
     }
@@ -269,6 +458,16 @@ public class GeminiLlmSupervisor implements LlmSupervisor {
         properties.put("callFrequency", Map.of(
             "type", "STRING",
             "enum", List.of("VERY_SOON", "SOON", "MEDIUM", "LONG")));
+        properties.put("confidence", Map.of("type", "NUMBER"));
+        properties.put("riskLevel", Map.of(
+            "type", "STRING",
+            "enum", List.of("LOW", "MEDIUM", "HIGH", "CRITICAL")));
+        properties.put("expectedEffect", Map.of("type", "STRING"));
+        properties.put("rollbackPlan", Map.of("type", "STRING"));
+        properties.put("changeMagnitude", Map.of(
+            "type", "STRING",
+            "enum", List.of("NONE", "SMALL", "MEDIUM", "LARGE", "EXPERIMENTAL")));
+        properties.put("requiresBranchTest", Map.of("type", "BOOLEAN"));
         properties.put("reason", Map.of("type", "STRING"));
         return Map.of(
             "type", "OBJECT",
@@ -277,7 +476,8 @@ public class GeminiLlmSupervisor implements LlmSupervisor {
             "propertyOrdering", List.of(
                 "action", "epsilon", "rewardConfig", "rewardTerms", "use2dCnn",
                 "modelName", "reportModelName", "reportStartEpoch", "reportEndEpoch",
-                "callFrequency", "reason"));
+                "callFrequency", "confidence", "riskLevel", "expectedEffect", "rollbackPlan",
+                "changeMagnitude", "requiresBranchTest", "reason"));
     }
 
     private static String firstNonBlank(String... values) {
@@ -292,21 +492,56 @@ public class GeminiLlmSupervisor implements LlmSupervisor {
         return "";
     }
 
-    private static final class ModelResult {
+    private static final class StageResult {
+        private final SupervisorDecision decision;
         private final String decisionJson;
+        private final Map<String, Object> diagnostics;
+
+        private StageResult(SupervisorDecision decision, String decisionJson, Map<String, Object> diagnostics) {
+            this.decision = decision != null ? decision : SupervisorDecision.keepGoing("Supervisor returned no decision.");
+            this.decisionJson = decisionJson != null ? decisionJson : "";
+            this.diagnostics = diagnostics != null ? diagnostics : Map.of();
+        }
+    }
+
+    private static final class ModelResult {
+        private final String modelName;
+        private final String decisionJson;
+        private final String rawText;
         private final String error;
 
-        private ModelResult(String decisionJson, String error) {
+        private ModelResult(String modelName, String decisionJson, String rawText, String error) {
+            this.modelName = modelName != null ? modelName : "";
             this.decisionJson = decisionJson;
+            this.rawText = rawText != null ? rawText : "";
             this.error = error;
         }
 
-        static ModelResult decision(String decisionJson) {
-            return new ModelResult(decisionJson, null);
+        static ModelResult decision(String modelName, String decisionJson, String rawText) {
+            return new ModelResult(modelName, decisionJson, rawText, null);
         }
 
-        static ModelResult error(String error) {
-            return new ModelResult(null, error != null ? error : "unknown error");
+        static ModelResult error(String modelName, String error) {
+            return new ModelResult(modelName, null, "", error != null ? error : "unknown error");
+        }
+
+        ModelResult withError(String error) {
+            return new ModelResult(modelName, decisionJson, rawText, error != null ? error : "unknown error");
+        }
+
+        Map<String, Object> toDiagnostics() {
+            Map<String, Object> map = new LinkedHashMap<>();
+            map.put("model", modelName);
+            if (decisionJson != null) {
+                map.put("decisionJson", decisionJson);
+            }
+            if (!rawText.isBlank()) {
+                map.put("rawText", rawText);
+            }
+            if (error != null && !error.isBlank()) {
+                map.put("error", error);
+            }
+            return map;
         }
     }
 }
