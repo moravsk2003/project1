@@ -70,13 +70,107 @@ class RLModelManagerTest {
         Files.writeString(branchMetadata, "metadata");
 
         assertFalse(Files.exists(topLevelBranchDir));
-        assertTrue(RLModelManager.listModels().contains(LINEAGE_BRANCH));
+        assertFalse(RLModelManager.listModels().contains(LINEAGE_BRANCH));
+        assertTrue(RLModelManager.listBranchModels().contains(LINEAGE_BRANCH));
         assertFalse(Files.exists(topLevelBranchDir));
 
         Path found = RLModelManager.findExistingModelFile(LINEAGE_BRANCH, LINEAGE_BRANCH + ".rmeta");
 
         assertEquals(branchMetadata.normalize(), found.normalize());
         assertFalse(Files.exists(topLevelBranchDir));
+    }
+
+    @Test
+    void missingStorageLookupDoesNotCreateTopLevelBranchDirectory() throws Exception {
+        String missingBranch = LINEAGE_OWNER + "_candidate_999";
+        Path topLevelBranchDir = RLModelManager.getModelsDir().resolve(missingBranch);
+
+        Path found = RLModelManager.findModelStorageDirectory(missingBranch);
+
+        assertEquals(topLevelBranchDir.resolve("main").normalize(), found.normalize());
+        assertFalse(Files.exists(topLevelBranchDir));
+    }
+
+    @Test
+    void rootOutputDirectoryRedirectsToModelMainDirectory() {
+        Path normalized = RLModelManager.normalizeModelOutputDirectory(MODEL_NAME, RLModelManager.getModelsDir());
+
+        assertEquals(RLModelManager.getModelsDir()
+            .resolve(MODEL_NAME)
+            .resolve("main")
+            .normalize(), normalized.normalize());
+    }
+
+    @Test
+    void generatedBranchDefaultOutputUsesOwnerBranchesDirectory() {
+        Path normalized = RLModelManager.normalizeModelOutputDirectory(LINEAGE_BRANCH, null);
+
+        assertEquals(RLModelManager.getModelsDir()
+            .resolve(LINEAGE_OWNER)
+            .resolve("branches")
+            .resolve(LINEAGE_BRANCH)
+            .normalize(), normalized.normalize());
+        assertFalse(Files.exists(RLModelManager.getModelsDir().resolve(LINEAGE_BRANCH)));
+    }
+
+    @Test
+    void loggerRedirectsRootOutputDirectoryToModelMainDirectory() {
+        RLTrainingLogger logger = new RLTrainingLogger();
+
+        logger.setLogFile(MODEL_NAME, true, RLModelManager.getModelsDir());
+
+        assertFalse(Files.exists(RLModelManager.getModelsDir()
+            .resolve(MODEL_NAME + "_multi_discrete_training.csv")));
+        assertTrue(Files.exists(RLModelManager.getModelsDir()
+            .resolve(MODEL_NAME)
+            .resolve("main")
+            .resolve(MODEL_NAME + "_multi_discrete_training.csv")));
+    }
+
+    @Test
+    void listModelsCleansEmptyGeneratedTopLevelBranchDirectory() throws Exception {
+        String generatedBranch = LINEAGE_OWNER + "_candidate_777";
+        Path topLevelBranchDir = RLModelManager.getModelsDir().resolve(generatedBranch);
+        Files.createDirectories(topLevelBranchDir.resolve("main"));
+
+        RLModelManager.listModels();
+
+        assertFalse(Files.exists(topLevelBranchDir));
+        assertFalse(Files.exists(RLModelManager.getModelsDir()
+            .resolve(LINEAGE_OWNER)
+            .resolve("branches")
+            .resolve(generatedBranch)));
+    }
+
+    @Test
+    void listBranchModelsMigratesGeneratedTopLevelBranchFilesUnderOwner() throws Exception {
+        Path topLevelBranchDir = RLModelManager.getModelsDir().resolve(LINEAGE_BRANCH);
+        Files.createDirectories(topLevelBranchDir.resolve("main"));
+        Files.writeString(topLevelBranchDir.resolve("main").resolve(LINEAGE_BRANCH + ".rmeta"), "metadata");
+        Files.writeString(topLevelBranchDir.resolve("main").resolve(LINEAGE_BRANCH + "_episodes.csv"), "episodes");
+
+        assertTrue(RLModelManager.listBranchModels().contains(LINEAGE_BRANCH));
+
+        Path branchDir = RLModelManager.getModelsDir()
+            .resolve(LINEAGE_OWNER)
+            .resolve("branches")
+            .resolve(LINEAGE_BRANCH);
+        assertTrue(Files.exists(branchDir.resolve(LINEAGE_BRANCH + ".rmeta")));
+        assertTrue(Files.exists(branchDir.resolve(LINEAGE_BRANCH + "_episodes.csv")));
+        assertFalse(Files.exists(topLevelBranchDir));
+    }
+
+    @Test
+    void prunesOldGeneratedBranchDirectories() throws Exception {
+        Path oldBranch = generatedBranchDirectory("001");
+        Path keptBranch = generatedBranchDirectory("002");
+        Path newestBranch = generatedBranchDirectory("003");
+
+        RLModelManager.pruneGeneratedBranchDirectories(LINEAGE_OWNER, 2);
+
+        assertFalse(Files.exists(oldBranch));
+        assertTrue(Files.exists(keptBranch));
+        assertTrue(Files.exists(newestBranch));
     }
 
     @Test
@@ -134,5 +228,12 @@ class RLModelManagerTest {
                 Files.deleteIfExists(item);
             }
         }
+    }
+
+    private Path generatedBranchDirectory(String suffix) throws IOException {
+        String branchName = LINEAGE_OWNER + "_candidate_" + suffix;
+        Path branchDir = RLModelManager.getBranchDirectory(LINEAGE_OWNER, branchName);
+        Files.writeString(branchDir.resolve(branchName + ".rmeta"), "metadata");
+        return branchDir;
     }
 }

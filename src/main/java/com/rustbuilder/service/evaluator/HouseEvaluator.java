@@ -4,12 +4,13 @@ import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.service.graph.HouseGraph;
 import java.util.List;
+import java.util.Objects;
 
 /**
  * Combines all 5 evaluation criteria into a single score.
  * This will serve as the fitness function for the AI generator.
  */
-public class HouseEvaluator {
+public class HouseEvaluator implements HouseEvaluationService {
 
     private static final double DEFAULT_LOGISTICS_WEIGHT = 0.22;
     private static final double DEFAULT_COST_WEIGHT = 0.18;
@@ -23,11 +24,35 @@ public class HouseEvaluator {
     private double workingAreaWeight = DEFAULT_WORKING_AREA_WEIGHT;
     private double safeZoneWeight = DEFAULT_SAFE_ZONE_WEIGHT;
 
-    private final LogisticsEvaluator logisticsEvaluator = new LogisticsEvaluator();
-    private final ResourceCostEvaluator costEvaluator = new ResourceCostEvaluator();
-    private final RaidResistanceEvaluator raidEvaluator = new RaidResistanceEvaluator();
-    private final WorkingAreaEvaluator workingAreaEvaluator = new WorkingAreaEvaluator();
-    private final SafeZoneEvaluator safeZoneEvaluator = new SafeZoneEvaluator();
+    private final LogisticsEvaluator logisticsEvaluator;
+    private final ResourceCostEvaluator costEvaluator;
+    private final RaidResistanceEvaluator raidEvaluator;
+    private final WorkingAreaEvaluator workingAreaEvaluator;
+    private final SafeZoneEvaluator safeZoneEvaluator;
+    private final HouseGraphFactory graphFactory;
+
+    public HouseEvaluator() {
+        this(new LogisticsEvaluator(),
+                new ResourceCostEvaluator(),
+                new RaidResistanceEvaluator(),
+                new WorkingAreaEvaluator(),
+                new SafeZoneEvaluator(),
+                HouseGraph::new);
+    }
+
+    public HouseEvaluator(LogisticsEvaluator logisticsEvaluator,
+                          ResourceCostEvaluator costEvaluator,
+                          RaidResistanceEvaluator raidEvaluator,
+                          WorkingAreaEvaluator workingAreaEvaluator,
+                          SafeZoneEvaluator safeZoneEvaluator,
+                          HouseGraphFactory graphFactory) {
+        this.logisticsEvaluator = Objects.requireNonNull(logisticsEvaluator, "logisticsEvaluator");
+        this.costEvaluator = Objects.requireNonNull(costEvaluator, "costEvaluator");
+        this.raidEvaluator = Objects.requireNonNull(raidEvaluator, "raidEvaluator");
+        this.workingAreaEvaluator = Objects.requireNonNull(workingAreaEvaluator, "workingAreaEvaluator");
+        this.safeZoneEvaluator = Objects.requireNonNull(safeZoneEvaluator, "safeZoneEvaluator");
+        this.graphFactory = Objects.requireNonNull(graphFactory, "graphFactory");
+    }
 
     public static class EvaluationResult {
         public final LogisticsEvaluator.LogisticsResult logistics;
@@ -64,6 +89,7 @@ public class HouseEvaluator {
         setWeights(logistics, cost, raid, workingArea, 0.0);
     }
 
+    @Override
     public void setWeights(double logistics, double cost, double raid, double workingArea, double safeZone) {
         this.logisticsWeight = logistics;
         this.costWeight = cost;
@@ -75,11 +101,12 @@ public class HouseEvaluator {
     /**
      * Evaluate the house described by the GridModel.
      */
+    @Override
     public EvaluationResult evaluate(GridModel gridModel) {
         List<BuildingBlock> blocks = gridModel.getAllBlocks();
 
         // 1. Build 3D graph
-        HouseGraph graph = new HouseGraph();
+        HouseGraph graph = graphFactory.create();
         graph.buildGraph(blocks);
 
         // 2. Evaluate performance criteria first

@@ -1,5 +1,7 @@
 D:\project\src\test\java\com\rustbuilder\ai\rl\supervisor\RLDualTrainingCoordinatorTest.java
+D:\project\src\test\java\com\rustbuilder\architecture\DependencyInjectionBoundaryTest.java
 D:\project\src\test\java\com\rustbuilder\service\StabilityServiceTest.java
+D:\project\src\test\java\com\rustbuilder\model\GridModelInvariantTest.java
 D:\project\src\test\java\com\rustbuilder\service\SnappingServiceTest.java
 D:\project\src\test\java\com\rustbuilder\ai\rl\reward\RewardFormulaEvaluatorTest.java
 D:\project\src\test\java\com\rustbuilder\ai\rl\supervisor\SupervisorDecisionValidatorTest.java
@@ -9,11 +11,14 @@ D:\project\src\test\java\com\rustbuilder\model\GridModelTest.java
 D:\project\src\test\java\com\rustbuilder\ai\rl\RLModelManagerTest.java
 D:\project\src\test\java\com\rustbuilder\architecture\ArchitectureBoundaryTest.java
 D:\project\src\test\java\com\rustbuilder\service\HouseEvaluatorTest.java
+D:\project\src\test\java\com\rustbuilder\architecture\DomainModelBoundaryTest.java
 D:\project\src\test\java\com\rustbuilder\ai\rl\supervisor\LlmSupervisorRateLimiterTest.java
 D:\project\src\test\java\com\rustbuilder\service\TestAI.java
 D:\project\src\test\java\com\rustbuilder\ai\rl\supervisor\SupervisorDecisionLogWriterTest.java
 D:\project\src\test\java\com\rustbuilder\util\BuildingTypeUtilsTest.java
 D:\project\src\test\java\com\rustbuilder\ai\BaseGenomeDecodeTest.java
+D:\project\src\test\java\com\rustbuilder\service\HouseEvaluatorInvariantTest.java
 D:\project\src\test\java\com\rustbuilder\ai\rl\multidiscrete\MultiDiscreteCreditAssignmentTest.java
+D:\project\src\test\java\com\rustbuilder\di\AppComponentWiringTest.java
 D:\project\src\test\java\com\rustbuilder\ai\rl\supervisor\SupervisorJsonTest.java
 D:\project\src\test\java\com\rustbuilder\ai\rl\EpisodeRunnerTest.java

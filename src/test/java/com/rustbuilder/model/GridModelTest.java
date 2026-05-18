@@ -16,6 +16,7 @@ import com.rustbuilder.model.core.DoorType;
 import com.rustbuilder.model.core.Orientation;
 import com.rustbuilder.core.action.BuildAction;
 import com.rustbuilder.config.GameConstants;
+import com.rustbuilder.service.physics.PlacementResult;
 import com.rustbuilder.service.physics.PlacementService;
 
 public class GridModelTest {
@@ -227,9 +228,9 @@ public class GridModelTest {
 
         BuildAction action = new BuildAction(BuildAction.ActionType.WALL, 0, 0, 0, 1, 2, 0, 12);
 
-        PlacementService.Placement placement = PlacementService.calculatePlacement(gridModel, action);
+        PlacementResult placement = PlacementService.calculatePlacement(gridModel, action);
 
-        assertFalse(placement.valid, "AI should not place a same-floor wall by targeting another wall");
+        assertFalse(placement.isValid(), "AI should not place a same-floor wall by targeting another wall");
     }
 
     @Test
@@ -240,9 +241,9 @@ public class GridModelTest {
 
         BuildAction action = new BuildAction(BuildAction.ActionType.WALL, 0, 0, 1, 1, 2, 0, 12);
 
-        PlacementService.Placement placement = PlacementService.calculatePlacement(gridModel, action);
+        PlacementResult placement = PlacementService.calculatePlacement(gridModel, action);
 
-        assertTrue(placement.valid, "AI should allow vertical wall stacking from a wall one floor below");
+        assertTrue(placement.isValid(), "AI should allow vertical wall stacking from a wall one floor below");
     }
 
     @Test
@@ -254,11 +255,13 @@ public class GridModelTest {
 
         BuildAction action = new BuildAction(BuildAction.ActionType.FLOOR, 0, 0, 1, 0, 2, 0, 5);
 
-        PlacementService.Placement placement = PlacementService.calculatePlacement(gridModel, action);
+        PlacementResult placement = PlacementService.calculatePlacement(gridModel, action);
 
-        assertTrue(placement.valid, "AI should allow a ceiling on the inside side of the wall");
-        assertEquals(x, placement.x, 0.01);
-        assertEquals(y, placement.y, 0.01);
+        assertTrue(placement instanceof PlacementResult.Valid,
+                "AI should allow a ceiling on the inside side of the wall");
+        PlacementResult.Valid validPlacement = (PlacementResult.Valid) placement;
+        assertEquals(x, validPlacement.x(), 0.01);
+        assertEquals(y, validPlacement.y(), 0.01);
         assertTrue(PlacementService.isActionActuallyFeasible(gridModel, action),
                 "RL feasibility mask should see the inside ceiling as a valid action");
     }

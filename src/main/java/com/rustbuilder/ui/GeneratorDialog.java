@@ -1,11 +1,13 @@
 package com.rustbuilder.ui;
 
 import java.util.List;
+import java.util.Objects;
 
 import com.rustbuilder.ai.core.AIModelManager;
 import com.rustbuilder.ai.core.AIModelManager.AIModel;
 import com.rustbuilder.ai.ea.BaseGenome;
 import com.rustbuilder.ai.ea.GeneticAlgorithmService;
+import com.rustbuilder.di.AppComponent;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.ui.hints.HintKey;
 import com.rustbuilder.ui.hints.HintUtils;
@@ -41,6 +43,7 @@ public class GeneratorDialog {
 
     private final GridModel gridModel;
     private final GameCanvas gameCanvas;
+    private final AppComponent appComponent;
     private final Stage dialogStage;
 
     private GeneticAlgorithmService gaService;
@@ -106,9 +109,14 @@ public class GeneratorDialog {
         "-fx-font-family: 'Consolas', monospace;";
 
     public GeneratorDialog(GridModel gridModel, GameCanvas gameCanvas, Stage owner) {
+        this(gridModel, gameCanvas, owner, new AppComponent());
+    }
+
+    GeneratorDialog(GridModel gridModel, GameCanvas gameCanvas, Stage owner, AppComponent appComponent) {
         this.gridModel = gridModel;
         this.gameCanvas = gameCanvas;
-        this.gaService = new GeneticAlgorithmService();
+        this.appComponent = Objects.requireNonNull(appComponent, "appComponent");
+        this.gaService = this.appComponent.createGeneticAlgorithmService();
 
         dialogStage = new Stage();
         dialogStage.initModality(Modality.WINDOW_MODAL);
@@ -407,7 +415,7 @@ public class GeneratorDialog {
             showAlert("Model name cannot contain spaces or slashes."); return;
         }
         currentModelName = name;
-        gaService = new GeneticAlgorithmService();
+        gaService = appComponent.createGeneticAlgorithmService();
         gaService.initializePopulation();
         generateButton.setDisable(true);
         setStatus(String.format("✅ Model '%s' created — %d genomes ready to train.",
@@ -422,7 +430,7 @@ public class GeneratorDialog {
         try {
             AIModel model = AIModelManager.loadModel(name);
             currentModelName = name;
-            gaService = new GeneticAlgorithmService();
+            gaService = appComponent.createGeneticAlgorithmService();
             AIModelManager.restoreFromModel(gaService, model);
             double lw = model.logisticsWeight;
             double cw = model.costWeight;
@@ -464,7 +472,7 @@ public class GeneratorDialog {
             refreshModelList();
             if (name.equals(currentModelName)) {
                 currentModelName = null;
-                gaService = new GeneticAlgorithmService();
+                gaService = appComponent.createGeneticAlgorithmService();
                 generateButton.setDisable(true);
                 setStatus("🗑 Model deleted.", "#aaa");
             }

@@ -3,6 +3,7 @@ package com.rustbuilder.ai.rl.env.state;
 import com.rustbuilder.ai.rl.env.spec.EncodingRuntimeConfig;
 import com.rustbuilder.ai.rl.env.spec.GlobalFeatureSpec;
 import com.rustbuilder.model.GridModel;
+import java.util.Objects;
 import org.nd4j.linalg.api.ndarray.INDArray;
 
 public class HybridV3StateEncoder implements StateRepresentationEncoder {
@@ -15,6 +16,14 @@ public class HybridV3StateEncoder implements StateRepresentationEncoder {
         this.config = config;
         this.voxelEncoder = new BucketedVoxelV2StateEncoder(config);
         this.globalEncoder = new GlobalFeatureEncoder(new GlobalFeatureSpec(config.stateEncodingSpec.globalFeatureCount));
+    }
+
+    public HybridV3StateEncoder(EncodingRuntimeConfig config,
+                                BucketedVoxelV2StateEncoder voxelEncoder,
+                                GlobalFeatureEncoder globalEncoder) {
+        this.config = Objects.requireNonNull(config, "config");
+        this.voxelEncoder = Objects.requireNonNull(voxelEncoder, "voxelEncoder");
+        this.globalEncoder = Objects.requireNonNull(globalEncoder, "globalEncoder");
     }
 
     @Override

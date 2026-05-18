@@ -13,6 +13,7 @@ import com.rustbuilder.model.core.DoorType;
 import com.rustbuilder.model.core.Orientation;
 import com.rustbuilder.model.structure.Door;
 import com.rustbuilder.model.structure.Wall;
+import com.rustbuilder.service.physics.PlacementResult;
 import com.rustbuilder.service.physics.PlacementService;
 import com.rustbuilder.util.BlockFactory;
 
@@ -168,15 +169,15 @@ public class BaseGenome implements Serializable {
                 if (phase == 1 && !isStructural) continue;
                 if (phase == 2 && !isFurniture) continue;
 
-                PlacementService.Placement placement = PlacementService.calculatePlacement(gridModel, action);
-                if (!placement.valid) {
+                PlacementResult placement = PlacementService.calculatePlacement(gridModel, action);
+                if (!(placement instanceof PlacementResult.Valid validPlacement)) {
                     continue;
                 }
 
-                double finalX = placement.x;
-                double finalY = placement.y;
-                double finalRotation = placement.rotation;
-                Orientation finalOrientation = placement.orientation;
+                double finalX = validPlacement.x();
+                double finalY = validPlacement.y();
+                double finalRotation = validPlacement.rotation();
+                Orientation finalOrientation = validPlacement.orientation();
                 int z = isFoundation ? 0 : action.floor;
 
                 BuildingTier tier = BlockFactory.tierFromInt(action.tier);

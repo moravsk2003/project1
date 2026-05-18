@@ -11,7 +11,10 @@ import java.util.function.Consumer;
 import java.util.logging.Level;
 import java.util.logging.Logger;
 import com.rustbuilder.model.GridModel;
+import com.rustbuilder.model.GridModelFactory;
+import com.rustbuilder.service.evaluator.HouseEvaluationService;
 import com.rustbuilder.service.evaluator.HouseEvaluator;
+import com.rustbuilder.service.evaluator.HouseEvaluatorFactory;
 
 /**
  * Genetic Algorithm engine for evolving house designs.
@@ -24,7 +27,6 @@ import com.rustbuilder.service.evaluator.HouseEvaluator;
 public class GeneticAlgorithmService {
 
     private static final Logger LOGGER = Logger.getLogger(GeneticAlgorithmService.class.getName());
-    private static final Random RNG = new Random();
 
     // ── Configurable hyperparameters (with recommended defaults) ──────────────
     private int    populationSize   = 80;   // recommended: 50–200
@@ -50,7 +52,9 @@ public class GeneticAlgorithmService {
     private double bestFitness;
     private BaseGenome bestGenome;
 
-    private final HouseEvaluator evaluator;
+    private final HouseEvaluationService evaluator;
+    private final GridModelFactory gridModelFactory;
+    private final Random random;
 
     /** Fitness cache: avoids re-evaluating identical genomes within the same weight config. */
     private final Map<BaseGenome, Double> fitnessCache = new ConcurrentHashMap<>();
@@ -64,7 +68,15 @@ public class GeneticAlgorithmService {
     private volatile HouseEvaluator.EvaluationResult lastBestResult = null;
 
     public GeneticAlgorithmService() {
-        this.evaluator = new HouseEvaluator();
+        this(HouseEvaluatorFactory.createDefault(), GridModelFactory.defaultFactory(), new Random());
+    }
+
+    public GeneticAlgorithmService(HouseEvaluationService evaluator,
+                                   GridModelFactory gridModelFactory,
+                                   Random random) {
+        this.evaluator = Objects.requireNonNull(evaluator, "evaluator");
+        this.gridModelFactory = Objects.requireNonNull(gridModelFactory, "gridModelFactory");
+        this.random = Objects.requireNonNull(random, "random");
         this.population = new ArrayList<>();
         this.generation = 0;
         this.bestFitness = -1;
@@ -116,7 +128,7 @@ public class GeneticAlgorithmService {
                 return;
             }
 
-            GridModel tempGrid = new GridModel();
+            GridModel tempGrid = gridModelFactory.create();
             genome.decode(tempGrid);
             int blockCount = tempGrid.getAllBlocks().size();
 
@@ -163,7 +175,7 @@ public class GeneticAlgorithmService {
     private BaseGenome tournamentSelect() {
         BaseGenome best = null;
         for (int i = 0; i < tournamentSize; i++) {
-            BaseGenome candidate = population.get(RNG.nextInt(population.size()));
+            BaseGenome candidate = population.get(random.nextInt(population.size()));
             if (best == null || candidate.getFitness() > best.getFitness()) {
                 best = candidate;
             }
@@ -228,7 +240,7 @@ public class GeneticAlgorithmService {
                 // Cache the evaluation detail of the new best genome so the UI
                 // can display raid/cost/logistics stats without re-decoding.
                 try {
-                    GridModel tempGrid = new GridModel();
+                    GridModel tempGrid = gridModelFactory.create();
                     bestGenome.decode(tempGrid);
                     lastBestResult = evaluator.evaluate(tempGrid);
                 } catch (Exception e) {

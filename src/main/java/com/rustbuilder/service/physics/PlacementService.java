@@ -19,29 +19,7 @@ public class PlacementService {
     private static final int AIM_GRID_SIZE = 4;
     private static final int AIM_SECTOR_COUNT = AIM_GRID_SIZE * AIM_GRID_SIZE;
 
-    public static class Placement {
-        public double x, y, rotation;
-        public Orientation orientation;
-        public boolean valid;
-        public PlacementError error = PlacementError.NONE;
-        public double minDist = -1.0;
-        public double socketDist = -1.0;
-        
-        public Placement(double x, double y, double rotation, Orientation orientation, boolean valid, PlacementError error) {
-            this.x = x;
-            this.y = y;
-            this.rotation = rotation;
-            this.orientation = orientation;
-            this.valid = valid;
-            this.error = error;
-        }
-
-        public Placement(double x, double y, double rotation, Orientation orientation, boolean valid) {
-            this(x, y, rotation, orientation, valid, PlacementError.NONE);
-        }
-    }
-
-    public static Placement calculatePlacement(GridModel grid, BuildAction action) {
+    public static PlacementResult calculatePlacement(GridModel grid, BuildAction action) {
         double tileSize = GameConstants.TILE_SIZE;
         double startX = GameConstants.GRID_ORIGIN_X;
         double startY = GameConstants.GRID_ORIGIN_Y;
@@ -69,21 +47,25 @@ public class PlacementService {
                 (block, socket) -> socketPriorityForAction(action, block, socket));
 
         if (!resolved.valid) {
-            Placement p = new Placement(0, 0, 0, Orientation.NORTH, false, placementErrorFor(action, resolved));
-            p.minDist = centerDistance(resolved.block, rawCenterX, rawCenterY);
-            p.socketDist = resolved.socketDistanceSq >= 0 ? Math.sqrt(resolved.socketDistanceSq) : -1.0;
-            return p;
+            return new PlacementResult.Invalid(
+                    placementErrorFor(action, resolved),
+                    centerDistance(resolved.block, rawCenterX, rawCenterY),
+                    resolved.socketDistanceSq >= 0 ? Math.sqrt(resolved.socketDistanceSq) : -1.0);
         }
 
-        Placement p = new Placement(resolved.x, resolved.y, resolved.rotation, resolved.orientation, true, PlacementError.NONE);
-        p.minDist = centerDistance(resolved.block, rawCenterX, rawCenterY);
-        p.socketDist = resolved.socketDistanceSq >= 0 ? Math.sqrt(resolved.socketDistanceSq) : -1.0;
+        double rotation = resolved.rotation;
 
         if (resolved.block == null && action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION) {
-            p.rotation = horizontalRotationDegrees(action);
+            rotation = horizontalRotationDegrees(action);
         }
 
-        return p;
+        return new PlacementResult.Valid(
+                resolved.x,
+                resolved.y,
+                rotation,
+                resolved.orientation,
+                centerDistance(resolved.block, rawCenterX, rawCenterY),
+                resolved.socketDistanceSq >= 0 ? Math.sqrt(resolved.socketDistanceSq) : -1.0);
     }
 
     private static String toolIdForAction(BuildAction.ActionType type) {
@@ -164,15 +146,15 @@ public class PlacementService {
         return index * 90.0;
     }
 
-    public static BuildingBlock createRealBlock(BuildAction action, Placement placement) {
+    public static BuildingBlock createRealBlock(BuildAction action, PlacementResult.Valid placement) {
         return createRealBlock(action, placement, BuildingTier.STONE, DoorType.SHEET_METAL);
     }
 
-    public static BuildingBlock createRealBlock(BuildAction action, Placement placement, BuildingTier tier, DoorType doorType) {
-        double finalX = placement.x;
-        double finalY = placement.y;
-        double finalRotation = placement.rotation;
-        Orientation finalOrientation = placement.orientation;
+    public static BuildingBlock createRealBlock(BuildAction action, PlacementResult.Valid placement, BuildingTier tier, DoorType doorType) {
+        double finalX = placement.x();
+        double finalY = placement.y();
+        double finalRotation = placement.rotation();
+        Orientation finalOrientation = placement.orientation();
         int z = (action.actionType == BuildAction.ActionType.FOUNDATION || action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION) ? 0 : action.floor;
         if (z < 0) z = 0;
         
@@ -188,15 +170,15 @@ public class PlacementService {
     }
 
     public static boolean isActionActuallyFeasible(GridModel grid, BuildAction action) {
-        Placement placement = calculatePlacement(grid, action);
-        if (!placement.valid) return false;
+        PlacementResult placement = calculatePlacement(grid, action);
+        if (!(placement instanceof PlacementResult.Valid validPlacement)) return false;
 
         List<BuildingBlock> allBlocks = grid.getAllBlocks();
-        if (isOccupiedExactSlot(grid, action, placement, allBlocks)) {
+        if (isOccupiedExactSlot(grid, action, validPlacement, allBlocks)) {
             return false;
         }
         
-        BuildingBlock block = createRealBlock(action, placement);
+        BuildingBlock block = createRealBlock(action, validPlacement);
         if (block == null) return false;
         
         boolean isFurniture = action.actionType == BuildAction.ActionType.TC || 
@@ -223,7 +205,7 @@ public class PlacementService {
         }
     }
 
-    private static boolean isOccupiedExactSlot(GridModel grid, BuildAction action, Placement placement, List<BuildingBlock> allBlocks) {
+    private static boolean isOccupiedExactSlot(GridModel grid, BuildAction action, PlacementResult.Valid placement, List<BuildingBlock> allBlocks) {
         int z = (action.actionType == BuildAction.ActionType.FOUNDATION || action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION) ? 0 : action.floor;
         boolean horizontal = action.actionType == BuildAction.ActionType.FOUNDATION
             || action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION
@@ -238,13 +220,13 @@ public class PlacementService {
         }
 
         List<BuildingBlock> candidates = allBlocks.size() > SPATIAL_TARGET_SEARCH_THRESHOLD
-            ? grid.getNearbyBlocks(placement.x, placement.y, z, 1.0)
+            ? grid.getNearbyBlocks(placement.x(), placement.y(), z, 1.0)
             : allBlocks;
         for (BuildingBlock existing : candidates) {
             if (existing.getZ() != z) {
                 continue;
             }
-            if (Math.abs(existing.getX() - placement.x) >= 1.0 || Math.abs(existing.getY() - placement.y) >= 1.0) {
+            if (Math.abs(existing.getX() - placement.x()) >= 1.0 || Math.abs(existing.getY() - placement.y()) >= 1.0) {
                 continue;
             }
             if (horizontal && BuildingTypeUtils.isHorizontalSurface(existing.getType())) {

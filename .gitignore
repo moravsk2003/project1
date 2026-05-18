@@ -31,3 +31,12 @@ llm_supervisor.local.*
 
 # RL model artifacts and logs
 models_rl/
+
+# Build outputs and ad-hoc compile artifacts
+target/
+sources.txt
+compile*.txt
+*_check.txt
+last_compile.txt
+final_compile.txt
+my_compile.bat

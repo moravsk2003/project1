@@ -17,6 +17,7 @@ import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
+import java.util.regex.Pattern;
 
 import com.rustbuilder.ai.rl.supervisor.LlmSupervisorConfig;
 import com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteActionSpace;
@@ -30,6 +31,13 @@ import com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteActionSpace;
 public class RLModelManager {
 
     private static final String MODELS_DIR = "models_rl";
+    private static final String MAIN_DIR = "main";
+    private static final String LLM_DIR = "llm";
+    private static final String BRANCHES_DIR = "branches";
+    private static final int DEFAULT_MAX_GENERATED_BRANCH_DIRECTORIES =
+        Integer.getInteger("rustbuilder.rl.maxBranchDirs", 12);
+    private static final Pattern GENERATED_BRANCH_MODEL_PATTERN =
+        Pattern.compile(".*_(baseline|candidate|before_jump)_\\d+$");
 
     /**
      * Serializable snapshot of training state.
@@ -104,6 +112,10 @@ public class RLModelManager {
     }
 
     public static Path getModelDirectory(String modelName) {
+        if (isGeneratedBranchModelName(safeModelDirectoryName(modelName))) {
+            normalizeLegacyModelDirectory(modelName);
+            return ensureDirectory(defaultOutputDirectoryPath(modelName));
+        }
         Path dir = getModelDirectoryPath(modelName);
         try {
             Files.createDirectories(dir);
@@ -114,23 +126,53 @@ public class RLModelManager {
     }
 
     public static Path getModelMainDirectory(String modelName) {
-        Path dir = ensureDirectory(getModelDirectoryPath(modelName).resolve("main"));
+        if (isGeneratedBranchModelName(safeModelDirectoryName(modelName))) {
+            normalizeLegacyModelDirectory(modelName);
+            return ensureDirectory(defaultOutputDirectoryPath(modelName));
+        }
+        Path dir = ensureDirectory(getModelDirectoryPath(modelName).resolve(MAIN_DIR));
         normalizeLegacyModelDirectory(modelName);
         return dir;
     }
 
     public static Path getModelLlmDirectory(String modelName) {
-        Path dir = ensureDirectory(getModelDirectoryPath(modelName).resolve("llm"));
+        if (isGeneratedBranchModelName(safeModelDirectoryName(modelName))) {
+            normalizeLegacyModelDirectory(modelName);
+            return ensureDirectory(defaultOutputDirectoryPath(modelName).resolve(LLM_DIR));
+        }
+        Path dir = ensureDirectory(getModelDirectoryPath(modelName).resolve(LLM_DIR));
         normalizeLegacyModelDirectory(modelName);
         return dir;
     }
 
     public static Path getModelBranchesDirectory(String modelName) {
-        return ensureDirectory(getModelDirectoryPath(modelName).resolve("branches"));
+        return ensureDirectory(getModelDirectoryPath(modelName).resolve(BRANCHES_DIR));
     }
 
     public static Path getBranchDirectory(String ownerModelName, String branchModelName) {
-        return ensureDirectory(getModelBranchesDirectory(ownerModelName).resolve(safeModelDirectoryName(branchModelName)));
+        return ensureDirectory(getBranchDirectoryPath(ownerModelName, branchModelName));
+    }
+
+    public static Path getBranchDirectoryPath(String ownerModelName, String branchModelName) {
+        return getModelDirectoryPath(ownerModelName)
+            .resolve(BRANCHES_DIR)
+            .resolve(safeModelDirectoryName(branchModelName));
+    }
+
+    public static Path normalizeModelOutputDirectory(String modelName, Path outputDirectory) {
+        Path defaultDir = defaultOutputDirectoryPath(modelName);
+        if (outputDirectory == null) {
+            return ensureDirectory(defaultDir);
+        }
+
+        Path modelsDir = getModelsDir().toAbsolutePath().normalize();
+        Path output = outputDirectory.toAbsolutePath().normalize();
+        Path topLevelModelDir = getModelDirectoryPath(modelName).toAbsolutePath().normalize();
+        Path topLevelModelMainDir = topLevelModelDir.resolve(MAIN_DIR).normalize();
+        if (output.equals(modelsDir) || output.equals(topLevelModelDir) || output.equals(topLevelModelMainDir)) {
+            return ensureDirectory(defaultDir);
+        }
+        return ensureDirectory(outputDirectory);
     }
 
     private static Path ensureDirectory(Path dir) {
@@ -142,15 +184,17 @@ public class RLModelManager {
     }
 
     public static Path resolveModelFile(String modelName, String fileName) {
-        return getModelMainDirectory(modelName).resolve(fileName);
+        return normalizeModelOutputDirectory(modelName, null).resolve(fileName);
     }
 
     public static Path findExistingModelFile(String modelName, String fileName) {
         normalizeLegacyModelDirectory(modelName);
         Path root = getModelDirectoryPath(modelName);
+        Path defaultOutputDir = defaultOutputDirectoryPath(modelName);
         Path[] candidates = new Path[] {
-            root.resolve("main").resolve(fileName),
-            root.resolve("llm").resolve(fileName),
+            defaultOutputDir.resolve(fileName),
+            root.resolve(MAIN_DIR).resolve(fileName),
+            root.resolve(LLM_DIR).resolve(fileName),
             root.resolve(fileName),
             getModelsDir().resolve(fileName)
         };
@@ -164,9 +208,9 @@ public class RLModelManager {
                 .filter(Files::isRegularFile)
                 .filter(p -> p.getFileName().toString().equals(fileName))
                 .findFirst()
-                .orElse(root.resolve("main").resolve(fileName));
+                .orElse(defaultOutputDir.resolve(fileName));
         } catch (IOException e) {
-            return root.resolve("main").resolve(fileName);
+            return defaultOutputDir.resolve(fileName);
         }
     }
 
@@ -174,12 +218,33 @@ public class RLModelManager {
         return getModelsDir().resolve(safeModelDirectoryName(modelName));
     }
 
+    private static Path defaultOutputDirectoryPath(String modelName) {
+        String safeModelName = safeModelDirectoryName(modelName);
+        String ownerName = generatedBranchOwnerName(safeModelName);
+        if (!ownerName.isBlank()) {
+            return getBranchDirectoryPath(ownerName, safeModelName);
+        }
+        return getModelDirectoryPath(safeModelName).resolve(MAIN_DIR);
+    }
+
+    private static String generatedBranchOwnerName(String modelName) {
+        String name = modelName != null ? modelName.trim() : "";
+        if (!isGeneratedBranchModelName(name)) {
+            return "";
+        }
+        return name.replaceFirst("_(baseline|candidate|before_jump)_\\d+$", "").trim();
+    }
+
     private static void normalizeLegacyModelDirectory(String modelName) {
         String safeModelName = safeModelDirectoryName(modelName);
+        if (isGeneratedBranchModelName(safeModelName)) {
+            normalizeGeneratedBranchDirectory(safeModelName);
+            return;
+        }
         Path modelsDir = getModelsDir();
         Path modelDir = modelsDir.resolve(safeModelName);
-        Path mainDir = modelDir.resolve("main");
-        Path llmDir = modelDir.resolve("llm");
+        Path mainDir = modelDir.resolve(MAIN_DIR);
+        Path llmDir = modelDir.resolve(LLM_DIR);
         Path legacyTopLevelMeta = modelsDir.resolve(safeModelName + ".rmeta");
         Path legacyTopLevelNet = modelsDir.resolve(safeModelName + ".rnet");
         if (!Files.exists(modelDir)
@@ -198,6 +263,80 @@ public class RLModelManager {
             }
         } catch (IOException e) {
         }
+    }
+
+    private static void normalizeGeneratedBranchDirectory(String safeBranchModelName) {
+        String ownerName = generatedBranchOwnerName(safeBranchModelName);
+        if (ownerName.isBlank()) {
+            return;
+        }
+
+        Path modelsDir = getModelsDir();
+        Path legacyBranchDir = modelsDir.resolve(safeBranchModelName);
+        Path branchDir = getBranchDirectoryPath(ownerName, safeBranchModelName);
+        Path legacyTopLevelMeta = modelsDir.resolve(safeBranchModelName + ".rmeta");
+        Path legacyTopLevelNet = modelsDir.resolve(safeBranchModelName + ".rnet");
+        boolean hasTopLevelMeta = Files.isRegularFile(legacyTopLevelMeta);
+        boolean hasTopLevelNet = Files.isRegularFile(legacyTopLevelNet);
+        if (!Files.exists(legacyBranchDir) && !hasTopLevelMeta && !hasTopLevelNet) {
+            return;
+        }
+
+        try {
+            List<Path> files = List.of();
+            if (Files.isDirectory(legacyBranchDir)) {
+                try (Stream<Path> paths = Files.walk(legacyBranchDir)) {
+                    files = paths
+                        .filter(Files::isRegularFile)
+                        .collect(Collectors.toList());
+                }
+            }
+            if (files.isEmpty() && !hasTopLevelMeta && !hasTopLevelNet) {
+                if (Files.isDirectory(legacyBranchDir) && isDirectoryTreeEmpty(legacyBranchDir)) {
+                    deleteDirectoryIfExists(legacyBranchDir);
+                }
+                return;
+            }
+
+            Files.createDirectories(branchDir);
+            moveLegacyRootFile(legacyTopLevelMeta, branchDir);
+            moveLegacyRootFile(legacyTopLevelNet, branchDir);
+            if (Files.isDirectory(legacyBranchDir)) {
+                for (Path file : files) {
+                    moveGeneratedBranchFile(legacyBranchDir, file, branchDir);
+                }
+                if (isDirectoryTreeEmpty(legacyBranchDir)) {
+                    deleteDirectoryIfExists(legacyBranchDir);
+                }
+            }
+        } catch (IOException e) {
+        }
+    }
+
+    private static void moveGeneratedBranchFile(Path legacyBranchDir, Path source, Path branchDir) {
+        if (legacyBranchDir == null || source == null || branchDir == null || !Files.isRegularFile(source)) {
+            return;
+        }
+        Path relative = legacyBranchDir.relativize(source);
+        Path destinationRelative = stripLeadingPathName(relative, MAIN_DIR);
+        Path target = branchDir.resolve(destinationRelative);
+        try {
+            Files.createDirectories(target.getParent());
+            if (!Files.exists(target)) {
+                Files.move(source, target);
+            }
+        } catch (IOException e) {
+        }
+    }
+
+    private static Path stripLeadingPathName(Path path, String leadingName) {
+        if (path == null || path.getNameCount() == 0 || leadingName == null) {
+            return path;
+        }
+        if (!leadingName.equals(path.getName(0).toString()) || path.getNameCount() == 1) {
+            return path;
+        }
+        return path.subpath(1, path.getNameCount());
     }
 
     private static Path legacyDestinationDir(Path path, Path mainDir, Path llmDir) {
@@ -232,11 +371,11 @@ public class RLModelManager {
     }
 
     public static void saveModel(RLModel model, RLTrainingService rlService) throws IOException {
-        saveModel(model, rlService, getModelMainDirectory(model.name));
+        saveModel(model, rlService, null);
     }
 
     public static void saveModel(RLModel model, RLTrainingService rlService, Path outputDirectory) throws IOException {
-        Path dir = outputDirectory != null ? ensureDirectory(outputDirectory) : getModelMainDirectory(model.name);
+        Path dir = normalizeModelOutputDirectory(model.name, outputDirectory);
         Path file = dir.resolve(model.name + ".rmeta");
         try (ObjectOutputStream oos = new ObjectOutputStream(
                 new BufferedOutputStream(Files.newOutputStream(file)))) {
@@ -272,7 +411,7 @@ public class RLModelManager {
         if (Files.exists(metadata) && metadata.getParent() != null) {
             return metadata.getParent();
         }
-        return getModelMainDirectory(modelName);
+        return getModelDirectoryPath(modelName).resolve(MAIN_DIR);
     }
 
     public static int promoteBranchLineageToMain(String ownerModelName, String branchModelName) throws IOException {
@@ -391,15 +530,15 @@ public class RLModelManager {
 
     public static List<String> listModels() {
         Path dir = getModelsDir();
+        cleanupEmptyGeneratedTopLevelBranchDirectories();
         Set<String> names = new LinkedHashSet<>();
         try (Stream<Path> files = Files.walk(dir, 5)) {
             files
                 .filter(Files::isRegularFile)
                 .filter(p -> p.toString().endsWith(".rmeta"))
-                .map(p -> {
-                    String fileName = p.getFileName().toString();
-                    return fileName.substring(0, fileName.length() - 6); // remove .rmeta
-                })
+                .filter(p -> !isBranchPath(p))
+                .map(RLModelManager::metadataModelName)
+                .filter(name -> !isGeneratedBranchModelName(name))
                 .sorted()
                 .forEach(names::add);
         } catch (IOException e) {
@@ -409,6 +548,136 @@ public class RLModelManager {
             normalizeLegacyModelDirectory(name);
         }
         return names.stream().sorted().collect(Collectors.toList());
+    }
+
+    public static List<String> listBranchModels() {
+        Path dir = getModelsDir();
+        cleanupEmptyGeneratedTopLevelBranchDirectories();
+        Set<String> names = new LinkedHashSet<>();
+        try (Stream<Path> files = Files.walk(dir, 5)) {
+            files
+                .filter(Files::isRegularFile)
+                .filter(p -> p.toString().endsWith(".rmeta"))
+                .filter(p -> isBranchPath(p) || isGeneratedBranchModelName(metadataModelName(p)))
+                .map(RLModelManager::metadataModelName)
+                .filter(name -> !name.isBlank())
+                .sorted()
+                .forEach(names::add);
+        } catch (IOException e) {
+        }
+        return names.stream().sorted().collect(Collectors.toList());
+    }
+
+    public static void pruneGeneratedBranchDirectories(String ownerModelName) {
+        pruneGeneratedBranchDirectories(ownerModelName, DEFAULT_MAX_GENERATED_BRANCH_DIRECTORIES);
+    }
+
+    public static void pruneGeneratedBranchDirectories(String ownerModelName, int maxDirectories) {
+        Path branchesDir = getModelDirectoryPath(ownerModelName).resolve(BRANCHES_DIR);
+        if (!Files.isDirectory(branchesDir)) {
+            return;
+        }
+        int keep = Math.max(0, maxDirectories);
+        try (Stream<Path> directories = Files.list(branchesDir)) {
+            List<Path> generated = directories
+                .filter(Files::isDirectory)
+                .filter(path -> isGeneratedBranchModelName(path.getFileName().toString()))
+                .sorted((a, b) -> Long.compare(generatedBranchSortKey(b), generatedBranchSortKey(a)))
+                .collect(Collectors.toList());
+            for (int i = keep; i < generated.size(); i++) {
+                deleteDirectoryIfExists(generated.get(i));
+            }
+        } catch (IOException e) {
+        }
+    }
+
+    private static String metadataModelName(Path path) {
+        if (path == null || path.getFileName() == null) {
+            return "";
+        }
+        String fileName = path.getFileName().toString();
+        if (!fileName.endsWith(".rmeta")) {
+            return "";
+        }
+        return fileName.substring(0, fileName.length() - ".rmeta".length());
+    }
+
+    private static boolean isGeneratedBranchModelName(String modelName) {
+        return modelName != null && GENERATED_BRANCH_MODEL_PATTERN.matcher(modelName).matches();
+    }
+
+    private static boolean isBranchPath(Path path) {
+        if (path == null) {
+            return false;
+        }
+        for (Path part : path) {
+            if (BRANCHES_DIR.equals(part.toString())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static long generatedBranchSortKey(Path path) {
+        if (path != null && path.getFileName() != null) {
+            String name = path.getFileName().toString();
+            int lastUnderscore = name.lastIndexOf('_');
+            if (lastUnderscore >= 0 && lastUnderscore + 1 < name.length()) {
+                try {
+                    return Long.parseLong(name.substring(lastUnderscore + 1));
+                } catch (NumberFormatException e) {
+                }
+            }
+        }
+        try {
+            return Files.getLastModifiedTime(path).toMillis();
+        } catch (IOException e) {
+            return 0L;
+        }
+    }
+
+    private static void cleanupEmptyGeneratedTopLevelBranchDirectories() {
+        Path modelsDir = getModelsDir();
+        try (Stream<Path> children = Files.list(modelsDir)) {
+            children
+                .filter(path -> isGeneratedBranchStoragePath(modelsDir, path))
+                .forEach(path -> normalizeGeneratedBranchDirectory(generatedBranchStorageName(path)));
+        } catch (IOException e) {
+        }
+    }
+
+    private static boolean isGeneratedBranchStoragePath(Path modelsDir, Path path) {
+        String name = generatedBranchStorageName(path);
+        if (name.isBlank() || !isGeneratedBranchModelName(name)) {
+            return false;
+        }
+        if (Files.isDirectory(path)) {
+            return path.getParent() != null && path.getParent().equals(modelsDir);
+        }
+        return Files.isRegularFile(path)
+            && (path.getFileName().toString().endsWith(".rmeta")
+                || path.getFileName().toString().endsWith(".rnet"));
+    }
+
+    private static String generatedBranchStorageName(Path path) {
+        if (path == null || path.getFileName() == null) {
+            return "";
+        }
+        String fileName = path.getFileName().toString();
+        if (fileName.endsWith(".rmeta") || fileName.endsWith(".rnet")) {
+            int dot = fileName.lastIndexOf('.');
+            return dot > 0 ? fileName.substring(0, dot) : fileName;
+        }
+        return fileName;
+    }
+
+    private static boolean isDirectoryTreeEmpty(Path dir) throws IOException {
+        if (!Files.isDirectory(dir)) {
+            return false;
+        }
+        try (Stream<Path> paths = Files.walk(dir)) {
+            return paths.allMatch(path -> path.equals(dir) || Files.isDirectory(path));
+        }
     }
 
     public static boolean deleteModel(String name) {

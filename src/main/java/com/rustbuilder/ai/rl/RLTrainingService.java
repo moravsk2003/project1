@@ -5,15 +5,14 @@ import java.util.LinkedHashMap;
 import java.util.LinkedList;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Random;
 import java.util.function.Consumer;
+import java.util.function.Supplier;
 import com.rustbuilder.core.action.BuildAction;
 import com.rustbuilder.core.placement.PlacementError;
 import com.rustbuilder.ai.rl.multidiscrete.*;
 import com.rustbuilder.ai.rl.env.state.StateRepresentationEncoder;
-import com.rustbuilder.ai.rl.env.state.VoxelV1StateEncoder;
-import com.rustbuilder.ai.rl.env.state.BucketedVoxelV2StateEncoder;
-import com.rustbuilder.ai.rl.env.state.HybridV3StateEncoder;
 import com.rustbuilder.ai.rl.env.spec.EncodingRuntimeConfig;
 import com.rustbuilder.ai.rl.supervisor.LlmSupervisor;
 import com.rustbuilder.ai.rl.supervisor.LlmSupervisorApplyMode;
@@ -36,8 +35,10 @@ import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.structure.Door;
 import com.rustbuilder.model.core.DoorType;
 import com.rustbuilder.model.GridModel;
+import com.rustbuilder.model.GridModelFactory;
 import com.rustbuilder.model.core.Orientation;
-import com.rustbuilder.service.evaluator.HouseEvaluator;
+import com.rustbuilder.service.evaluator.HouseEvaluationService;
+import com.rustbuilder.service.evaluator.HouseEvaluatorFactory;
 import com.rustbuilder.service.physics.PlacementService;
 
 /**
@@ -55,8 +56,15 @@ public class RLTrainingService {
         public double socketDist = -1.0;
     }
 
-    private final HouseEvaluator evaluator;
+    private final HouseEvaluationService evaluator;
     private final Random random;
+    private final GridModelFactory gridModelFactory;
+    private final StateEncoderFactory stateEncoderFactory;
+    private final TrainingAgentFactory trainingAgentFactory;
+    private final EpisodeRunnerFactory episodeRunnerFactory;
+    private final RLTrainingServiceFactory branchTrainingServiceFactory;
+    private final Supplier<RLDualTrainingCoordinator> dualTrainingCoordinatorFactory;
+    private final Supplier<RLBranchComparator> branchComparatorFactory;
     private StateRepresentationEncoder stateEncoder;
     private EncodingRuntimeConfig activeConfig;
     public enum EncoderMode { V1, V2, V3 }
@@ -218,25 +226,57 @@ public class RLTrainingService {
     }
 
     public RLTrainingService() {
-        this.evaluator = new HouseEvaluator();
-        this.bestGridModel = new GridModel();
-        this.bestRewardGridModel = new GridModel();
-        this.currentGridModel = new GridModel();
-        this.random = new Random();
+        this(HouseEvaluatorFactory.createDefault(),
+                GridModelFactory.defaultFactory(),
+                new Random(),
+                new DefaultStateEncoderFactory(),
+                new DefaultTrainingAgentFactory());
+    }
+
+    public RLTrainingService(HouseEvaluationService evaluator,
+                             GridModelFactory gridModelFactory,
+                             Random random,
+                             StateEncoderFactory stateEncoderFactory,
+                             TrainingAgentFactory trainingAgentFactory) {
+        this(evaluator,
+                gridModelFactory,
+                random,
+                stateEncoderFactory,
+                trainingAgentFactory,
+                new EpisodeRunnerFactory(gridModelFactory),
+                RLTrainingService::new,
+                RLDualTrainingCoordinator::new,
+                RLBranchComparator::new);
+    }
+
+    public RLTrainingService(HouseEvaluationService evaluator,
+                             GridModelFactory gridModelFactory,
+                             Random random,
+                             StateEncoderFactory stateEncoderFactory,
+                             TrainingAgentFactory trainingAgentFactory,
+                             EpisodeRunnerFactory episodeRunnerFactory,
+                             RLTrainingServiceFactory branchTrainingServiceFactory,
+                             Supplier<RLDualTrainingCoordinator> dualTrainingCoordinatorFactory,
+                             Supplier<RLBranchComparator> branchComparatorFactory) {
+        this.evaluator = Objects.requireNonNull(evaluator, "evaluator");
+        this.gridModelFactory = Objects.requireNonNull(gridModelFactory, "gridModelFactory");
+        this.random = Objects.requireNonNull(random, "random");
+        this.stateEncoderFactory = Objects.requireNonNull(stateEncoderFactory, "stateEncoderFactory");
+        this.trainingAgentFactory = Objects.requireNonNull(trainingAgentFactory, "trainingAgentFactory");
+        this.episodeRunnerFactory = Objects.requireNonNull(episodeRunnerFactory, "episodeRunnerFactory");
+        this.branchTrainingServiceFactory = Objects.requireNonNull(branchTrainingServiceFactory, "branchTrainingServiceFactory");
+        this.dualTrainingCoordinatorFactory = Objects.requireNonNull(dualTrainingCoordinatorFactory, "dualTrainingCoordinatorFactory");
+        this.branchComparatorFactory = Objects.requireNonNull(branchComparatorFactory, "branchComparatorFactory");
+        this.bestGridModel = this.gridModelFactory.create();
+        this.bestRewardGridModel = this.gridModelFactory.create();
+        this.currentGridModel = this.gridModelFactory.create();
         this.currentRunId = "run_" + System.currentTimeMillis();
 
-        this.activeConfig = EncodingRuntimeConfig.createHybridV3Config();
-        this.stateEncoder = new HybridV3StateEncoder(this.activeConfig);
+        applyEncoderMode(EncoderMode.V3);
 
         // Neural Multi-Discrete Flow configuration
         this.rewardConfig = RLRewardConfig.createDefault();
-        this.multiDiscreteMemory = new MultiDiscreteExperienceReplay(MEMORY_CAPACITY);
-        this.multiDiscreteAgent = new MultiDiscreteDQNAgent(this.activeConfig.stateEncodingSpec, this.activeConfig.actionSpaceSpec, this.use2dCnn);
-        this.multiDiscreteAgent.setRewardConfig(this.rewardConfig);
-        this.multiDiscreteNeuralProvider = new NeuralMultiDiscreteDecisionProvider(this.multiDiscreteAgent, this.stateEncoder);
-
-        // Default policy is Neural
-        this.multiDiscretePolicy = new ProvidedPhaseMultiDiscretePolicy(this.multiDiscreteNeuralProvider);
+        recreateLearningComponents();
         
         this.llmOrchestrator = new com.rustbuilder.ai.rl.supervisor.LlmOrchestrator(this);
         this.llmOrchestrator.start();
@@ -256,36 +296,29 @@ public class RLTrainingService {
         return encoderMode;
     }
 
+    private void applyEncoderMode(EncoderMode mode) {
+        StateEncoderBundle bundle = stateEncoderFactory.create(mode);
+        this.activeConfig = bundle.getConfig();
+        this.stateEncoder = bundle.getEncoder();
+    }
+
+    private void recreateLearningComponents() {
+        this.multiDiscreteMemory = trainingAgentFactory.createReplay(MEMORY_CAPACITY);
+        this.multiDiscreteAgent = trainingAgentFactory.createAgent(this.activeConfig, this.use2dCnn);
+        this.multiDiscreteAgent.setRewardConfig(this.rewardConfig);
+        this.multiDiscreteNeuralProvider = trainingAgentFactory.createNeuralProvider(this.multiDiscreteAgent, this.stateEncoder);
+        this.multiDiscreteNeuralProvider.setUseAimSectorLearning(this.useAimSectorLearning);
+        this.multiDiscretePolicy = trainingAgentFactory.createPolicy(this.multiDiscreteNeuralProvider);
+    }
+
     private void reinitializeForEncoderSwitch() {
-        switch (encoderMode) {
-            case V3:
-                this.activeConfig = EncodingRuntimeConfig.createHybridV3Config();
-                this.stateEncoder = new HybridV3StateEncoder(this.activeConfig);
-                break;
-            case V2:
-                this.activeConfig = EncodingRuntimeConfig.createVoxelV2Config();
-                this.stateEncoder = new BucketedVoxelV2StateEncoder(this.activeConfig);
-                break;
-            case V1:
-            default:
-                this.activeConfig = EncodingRuntimeConfig.createVoxelV1Config();
-                this.stateEncoder = new VoxelV1StateEncoder(this.activeConfig);
-                break;
-        }
+        applyEncoderMode(encoderMode);
 
         if (this.multiDiscreteMemory != null) {
             this.multiDiscreteMemory.clear();
         }
 
-        // Isolate replay memory for the new version
-        this.multiDiscreteMemory = new MultiDiscreteExperienceReplay(MEMORY_CAPACITY);
-
-        // Create new agent matching new spec
-        this.multiDiscreteAgent = new MultiDiscreteDQNAgent(activeConfig.stateEncodingSpec, activeConfig.actionSpaceSpec, this.use2dCnn);
-        this.multiDiscreteAgent.setRewardConfig(this.rewardConfig);
-        this.multiDiscreteNeuralProvider = new NeuralMultiDiscreteDecisionProvider(this.multiDiscreteAgent, this.stateEncoder);
-        this.multiDiscreteNeuralProvider.setUseAimSectorLearning(this.useAimSectorLearning);
-        this.multiDiscretePolicy = new ProvidedPhaseMultiDiscretePolicy(this.multiDiscreteNeuralProvider);
+        recreateLearningComponents();
 
         // Reset statistics for fresh run
         this.episodesTrained = 0;
@@ -370,9 +403,9 @@ public class RLTrainingService {
         this.trainingTimeLimitAnnounced = false;
         this.lastAutosaveEpisode = episodesTrained;
 
-        java.nio.file.Path trainingOutputDir = trainingConfig.getOutputDirectory() != null
-            ? trainingConfig.getOutputDirectory()
-            : RLModelManager.getModelMainDirectory(modelName);
+        java.nio.file.Path trainingOutputDir = RLModelManager.normalizeModelOutputDirectory(
+            modelName,
+            trainingConfig.getOutputDirectory());
         logger.setLogFile(modelName, true, trainingOutputDir);
         logger.setRunContext(currentRunId,
             activeConfig.stateEncodingSpec.encoderVersion,
@@ -409,8 +442,18 @@ public class RLTrainingService {
                 double epochBestEpScore = -1;
                 long epochStartMs = System.currentTimeMillis();
 
-            EpisodeEvaluator episodeEvaluator = new EpisodeEvaluator(evaluator, rewardConfig);
-            EpisodeRunner runner = new EpisodeRunner(multiDiscreteAgent, multiDiscreteMemory, multiDiscretePolicy, multiDiscreteObserver, random, rewardConfig, logger, this, stateEncoder, evaluator);
+            EpisodeEvaluator episodeEvaluator = episodeRunnerFactory.createEvaluator(evaluator, rewardConfig);
+            EpisodeRunner runner = episodeRunnerFactory.createRunner(
+                multiDiscreteAgent,
+                multiDiscreteMemory,
+                multiDiscretePolicy,
+                multiDiscreteObserver,
+                random,
+                rewardConfig,
+                logger,
+                this,
+                stateEncoder,
+                evaluator);
 
             for (int ep = 0; ep < episodes; ep++) {
                 if (stopRequested || shouldStopForTrainingTimeLimit()) break;
@@ -1008,7 +1051,7 @@ public class RLTrainingService {
     private boolean waitForSupervisorRateLimit(SupervisorObservation observation) {
         int estimatedTokens = estimateSupervisorTokens(observation);
         java.time.Duration delay = supervisorRateLimiter.reserveDelay(estimatedTokens);
-        if (!delay.isPositive()) {
+        if (delay.isZero() || delay.isNegative()) {
             return true;
         }
 
@@ -1224,8 +1267,8 @@ public class RLTrainingService {
             RLTrainingConfig candidateConfig = branchConfig(sourceConfig, candidateName, candidateName, use2dCnn);
             copyMainLogsToBranch(baselineConfig.getOutputDirectory());
             copyMainLogsToBranch(candidateConfig.getOutputDirectory());
-            baselineService = new RLTrainingService();
-            candidateService = new RLTrainingService();
+            baselineService = branchTrainingServiceFactory.create();
+            candidateService = branchTrainingServiceFactory.create();
             baselineService.setEncoderMode(encoderMode);
             candidateService.setEncoderMode(encoderMode);
             baselineService.setUseAimSectorLearning(useAimSectorLearning);
@@ -1238,7 +1281,7 @@ public class RLTrainingService {
             }
 
             RLDualTrainingCoordinator.DualTrainingResult result =
-                new RLDualTrainingCoordinator().trainInParallel(
+                dualTrainingCoordinatorFactory.get().trainInParallel(
                     baselineService,
                     candidateService,
                     baselineConfig,
@@ -1258,7 +1301,7 @@ public class RLTrainingService {
             TrainingMetrics baselineMetrics = result.baselineService.getMetrics();
             TrainingMetrics candidateMetrics = result.candidateService.getMetrics();
             RLBranchComparator.BranchComparison comparison =
-                new RLBranchComparator().compare(baselineMetrics, candidateMetrics);
+                branchComparatorFactory.get().compare(baselineMetrics, candidateMetrics);
             String savedBaselineModelName = saveBranchModel(result.baselineService, baselineName, baselineConfig);
             String savedCandidateModelName = saveBranchModel(result.candidateService, candidateName, candidateConfig);
             String savedWinnerModelName = comparison.promoteCandidate ? savedCandidateModelName : savedBaselineModelName;
@@ -1276,6 +1319,7 @@ public class RLTrainingService {
                 reason);
             rememberBranchExperiment(latestBranchComparison);
             writeBranchExperimentLog(activeTrainingModelName, latestBranchComparison);
+            RLModelManager.pruneGeneratedBranchDirectories(branchOwnerModelName(sourceConfig));
             branchExperimentStatus = String.format(
                 "Branch experiment finished: candidate=%s savedWinner=%s promoteRecommended=%s bestDelta=%.4f avgDelta=%.4f invalidDelta=%.4f",
                 candidateName,
@@ -1480,7 +1524,7 @@ public class RLTrainingService {
     private Map<String, Object> branchLogEvidence(String branchModelName) {
         Map<String, Object> evidence = new LinkedHashMap<>();
         String owner = branchOwnerModelName(activeTrainingConfig);
-        java.nio.file.Path dir = RLModelManager.getBranchDirectory(owner, branchModelName);
+        java.nio.file.Path dir = RLModelManager.getBranchDirectoryPath(owner, branchModelName);
         evidence.put("directory", dir.toString());
         evidence.put("hasEpisodesCsv", java.nio.file.Files.exists(dir.resolve(branchModelName + "_episodes.csv")));
         evidence.put("hasTrainingCsv", java.nio.file.Files.exists(dir.resolve(branchModelName + "_multi_discrete_training.csv")));
@@ -1636,7 +1680,7 @@ public class RLTrainingService {
 
     private java.util.List<String> availableBranchModelNamesSnapshot() {
         java.util.LinkedHashSet<String> names = new java.util.LinkedHashSet<>(knownBranchModelNamesSnapshot());
-        for (String modelName : RLModelManager.listModels()) {
+        for (String modelName : RLModelManager.listBranchModels()) {
             if (isBranchLikeModelName(modelName)) {
                 names.add(modelName);
             }
@@ -1648,7 +1692,7 @@ public class RLTrainingService {
         if (knownBranchModelNames.contains(modelName)) {
             return true;
         }
-        return isBranchLikeModelName(modelName) && RLModelManager.listModels().contains(modelName);
+        return isBranchLikeModelName(modelName) && RLModelManager.listBranchModels().contains(modelName);
     }
 
     private boolean isBranchLikeModelName(String modelName) {
@@ -1852,25 +1896,25 @@ public class RLTrainingService {
 
     public RLTrainingService.PlacementResult placeBlock(GridModel gridModel, BuildAction action) {
         RLTrainingService.PlacementResult res = new RLTrainingService.PlacementResult();
-        PlacementService.Placement placement = PlacementService.calculatePlacement(gridModel, action);
+        com.rustbuilder.service.physics.PlacementResult placement = PlacementService.calculatePlacement(gridModel, action);
 
-        res.minDist = placement.minDist;
-        res.socketDist = placement.socketDist;
+        res.minDist = placement.nearestDistance();
+        res.socketDist = placement.socketDistance();
 
-        if (!placement.valid) {
-            res.error = (placement.error != PlacementError.NONE) ? placement.error : PlacementError.UNKNOWN;
+        if (!(placement instanceof com.rustbuilder.service.physics.PlacementResult.Valid validPlacement)) {
+            res.error = (placement.error() != PlacementError.NONE) ? placement.error() : PlacementError.UNKNOWN;
             res.failReason = "invalid_placement(" + res.error + "): " + action.actionType;
             return res;
         }
 
-        double finalRotation = placement.rotation;
-        Orientation finalOrientation = placement.orientation;
+        double finalRotation = validPlacement.rotation();
+        Orientation finalOrientation = validPlacement.orientation();
         int z = (action.actionType == BuildAction.ActionType.FOUNDATION || action.actionType == BuildAction.ActionType.TRIANGLE_FOUNDATION) ? 0 : action.floor;
         if (z < 0) z = 0;
 
         BuildingTier tier = com.rustbuilder.util.BlockFactory.tierFromInt(action.tier);
         DoorType doorType = com.rustbuilder.util.BlockFactory.doorTypeFromInt(action.doorType);
-        BuildingBlock block = PlacementService.createRealBlock(action, placement, tier, doorType);
+        BuildingBlock block = PlacementService.createRealBlock(action, validPlacement, tier, doorType);
 
         if (block != null) {
             res.placedBlock = block;
@@ -2015,7 +2059,7 @@ public class RLTrainingService {
         }
 
         // Re-create memory buffers to clear them
-        this.multiDiscreteMemory = new MultiDiscreteExperienceReplay(MEMORY_CAPACITY);
+        this.multiDiscreteMemory = trainingAgentFactory.createReplay(MEMORY_CAPACITY);
     }
 
     // --- Getters for Summary Stats ---
@@ -2075,7 +2119,7 @@ public class RLTrainingService {
     }
     public GridModel getBestGridModelSnapshot() {
         synchronized (bestGridLock) {
-            GridModel snapshot = new GridModel();
+            GridModel snapshot = gridModelFactory.create();
             for (BuildingBlock b : bestGridModel.getAllBlocks()) {
                 BuildingBlock clone = cloneBlock(b);
                 if (clone != null) {
@@ -2093,7 +2137,7 @@ public class RLTrainingService {
     }
     public GridModel getBestRewardGridModelSnapshot() {
         synchronized (bestGridLock) {
-            GridModel snapshot = new GridModel();
+            GridModel snapshot = gridModelFactory.create();
             for (BuildingBlock b : bestRewardGridModel.getAllBlocks()) {
                 BuildingBlock clone = cloneBlock(b);
                 if (clone != null) {
@@ -2214,7 +2258,7 @@ public class RLTrainingService {
      * Explicitly switches the active multi-discrete policy to use the provided decision provider.
      */
     public void setMultiDiscreteDecisionProvider(MultiDiscretePhaseDecisionProvider provider) {
-        this.multiDiscretePolicy = new ProvidedPhaseMultiDiscretePolicy(provider);
+        this.multiDiscretePolicy = trainingAgentFactory.createPolicy(provider);
     }
 
     private boolean isFoundation(BuildingBlock b) {

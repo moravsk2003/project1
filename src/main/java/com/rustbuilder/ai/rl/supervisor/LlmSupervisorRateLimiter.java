@@ -53,7 +53,7 @@ public class LlmSupervisorRateLimiter {
             delay = max(delay, Duration.between(now, nextDayStart(today, clock.getZone())));
         }
 
-        if (!delay.isPositive()) {
+        if (delay.isZero() || delay.isNegative()) {
             minuteRequests++;
             minuteTokens = Math.min(tokensPerMinute, minuteTokens + tokens);
             dayRequests++;

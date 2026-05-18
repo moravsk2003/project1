@@ -3,6 +3,8 @@ package com.rustbuilder.ai.rl.supervisor;
 import com.rustbuilder.ai.core.TrainingMetrics;
 import com.rustbuilder.ai.rl.RLTrainingConfig;
 import com.rustbuilder.ai.rl.RLTrainingService;
+import com.rustbuilder.ai.rl.RLTrainingServiceFactory;
+import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -12,11 +14,20 @@ import java.util.function.Consumer;
  * Runs baseline and LLM-candidate training branches in isolated services.
  */
 public class RLDualTrainingCoordinator {
+    private final RLTrainingServiceFactory trainingServiceFactory;
+
+    public RLDualTrainingCoordinator() {
+        this(RLTrainingService::new);
+    }
+
+    public RLDualTrainingCoordinator(RLTrainingServiceFactory trainingServiceFactory) {
+        this.trainingServiceFactory = Objects.requireNonNull(trainingServiceFactory, "trainingServiceFactory");
+    }
 
     public DualTrainingResult trainInParallel(RLTrainingConfig baselineConfig,
                                               RLTrainingConfig candidateConfig,
                                               Consumer<BranchProgress> progressCallback) throws Exception {
-        return trainInParallel(new RLTrainingService(), new RLTrainingService(),
+        return trainInParallel(trainingServiceFactory.create(), trainingServiceFactory.create(),
             baselineConfig, candidateConfig, progressCallback);
     }
 

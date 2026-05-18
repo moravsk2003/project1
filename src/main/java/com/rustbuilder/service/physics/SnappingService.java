@@ -3,7 +3,7 @@ package com.rustbuilder.service.physics;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.Orientation;
 
-public class SnappingService {
+public class SnappingService implements SnapResolver {
 
     private final GridModel gridModel;
 
@@ -27,6 +27,7 @@ public class SnappingService {
         }
     }
 
+    @Override
     public SnapResult calculateSnap(double mouseX, double mouseY, String selectedTool, int currentFloor) {
         SocketPlacementResolver.Result result = SocketPlacementResolver.resolve(
                 gridModel, mouseX, mouseY, selectedTool, currentFloor, true);

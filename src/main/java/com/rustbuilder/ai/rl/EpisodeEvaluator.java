@@ -10,7 +10,7 @@ import com.rustbuilder.util.BuildingTypeUtils;
 import com.rustbuilder.util.SocketCompatibilityUtils;
 import com.rustbuilder.ai.rl.log.StopReason;
 import com.rustbuilder.ai.rl.reward.RewardFormulaScope;
-import com.rustbuilder.service.evaluator.HouseEvaluator;
+import com.rustbuilder.service.evaluator.HouseEvaluationService;
 import com.rustbuilder.config.GameConstants;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -21,10 +21,10 @@ import java.util.Map;
 public class EpisodeEvaluator {
     private static final int SPATIAL_COMPONENT_SEARCH_THRESHOLD = 128;
 
-    private final HouseEvaluator evaluator;
+    private final HouseEvaluationService evaluator;
     private final RLRewardConfig rewardConfig;
 
-    public EpisodeEvaluator(HouseEvaluator evaluator, RLRewardConfig rewardConfig) {
+    public EpisodeEvaluator(HouseEvaluationService evaluator, RLRewardConfig rewardConfig) {
         this.evaluator = evaluator;
         this.rewardConfig = rewardConfig;
     }

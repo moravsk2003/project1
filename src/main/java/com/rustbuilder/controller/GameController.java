@@ -8,6 +8,9 @@ import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.Orientation;
 import com.rustbuilder.model.core.ResourceType;
 import com.rustbuilder.service.evaluator.HouseEvaluator;
+import com.rustbuilder.service.evaluator.HouseEvaluationService;
+import com.rustbuilder.service.evaluator.HouseEvaluatorFactory;
+import com.rustbuilder.service.physics.SnapResolver;
 import com.rustbuilder.service.physics.SnappingService;
 import com.rustbuilder.service.physics.SnappingService.SnapResult;
 import com.rustbuilder.ui.GameCanvas;
@@ -16,13 +19,14 @@ import com.rustbuilder.util.BuildingTypeUtils;
 import com.rustbuilder.config.GameConstants;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Objects;
 
 import javafx.geometry.Point2D;
 
 public class GameController {
 
     private final GridModel gridModel;
-    private final SnappingService snappingService;
+    private final SnapResolver snappingService;
     private final GameCanvas gameCanvas;
     private static final String DELETE_TOOL = "DELETE";
 
@@ -30,7 +34,7 @@ public class GameController {
     private BuildingType selectedBuildingType = BuildingType.FOUNDATION;
     private BuildingTier selectedTier = BuildingTier.STONE;
     private DoorType selectedDoorType = DoorType.SHEET_METAL;
-    private final HouseEvaluator houseEvaluator = new HouseEvaluator();
+    private final HouseEvaluationService houseEvaluator;
     private int currentFloor = 0;
 
     // Ghost State
@@ -57,9 +61,17 @@ public class GameController {
     }
 
     public GameController(GridModel gridModel, GameCanvas gameCanvas) {
+        this(gridModel, gameCanvas, new SnappingService(gridModel), HouseEvaluatorFactory.createDefault());
+    }
+
+    public GameController(GridModel gridModel,
+                          GameCanvas gameCanvas,
+                          SnapResolver snappingService,
+                          HouseEvaluationService houseEvaluator) {
         this.gridModel = gridModel;
         this.gameCanvas = gameCanvas;
-        this.snappingService = new SnappingService(gridModel);
+        this.snappingService = Objects.requireNonNull(snappingService, "snappingService");
+        this.houseEvaluator = Objects.requireNonNull(houseEvaluator, "houseEvaluator");
     }
 
     private double lastDragX;

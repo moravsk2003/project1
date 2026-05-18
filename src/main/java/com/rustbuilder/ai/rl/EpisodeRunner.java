@@ -8,12 +8,13 @@ import com.rustbuilder.config.GameConstants;
 import com.rustbuilder.ai.rl.log.StopReason;
 import com.rustbuilder.ai.rl.multidiscrete.*;
 import com.rustbuilder.model.GridModel;
+import com.rustbuilder.model.GridModelFactory;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.core.Socket;
 import com.rustbuilder.model.structure.Door;
 import com.rustbuilder.model.structure.Wall;
-import com.rustbuilder.service.evaluator.HouseEvaluator;
+import com.rustbuilder.service.evaluator.HouseEvaluationService;
 import com.rustbuilder.service.physics.PlacementService;
 import com.rustbuilder.util.BuildingTypeUtils;
 import com.rustbuilder.util.SocketCompatibilityUtils;
@@ -43,7 +44,8 @@ public class EpisodeRunner {
     private final RLTrainingLogger logger;
     private final RLTrainingService rlService;
     private final StateRepresentationEncoder stateEncoder;
-    private final HouseEvaluator evaluator;
+    private final HouseEvaluationService evaluator;
+    private final GridModelFactory gridModelFactory;
 
     // Output state
     private double lastTrainLoss = 0;
@@ -53,7 +55,17 @@ public class EpisodeRunner {
                          MultiDiscreteExperienceReplay multiDiscreteMemory, MultiDiscretePhasePolicy multiDiscretePolicy,
                          MultiDiscreteStateObserver multiDiscreteObserver, Random random, RLRewardConfig rewardConfig,
                          RLTrainingLogger logger, RLTrainingService rlService,
-                         StateRepresentationEncoder stateEncoder, HouseEvaluator evaluator) {
+                         StateRepresentationEncoder stateEncoder, HouseEvaluationService evaluator) {
+        this(multiDiscreteAgent, multiDiscreteMemory, multiDiscretePolicy, multiDiscreteObserver, random,
+                rewardConfig, logger, rlService, stateEncoder, evaluator, GridModelFactory.defaultFactory());
+    }
+
+    public EpisodeRunner(MultiDiscreteDQNAgent multiDiscreteAgent,
+                         MultiDiscreteExperienceReplay multiDiscreteMemory, MultiDiscretePhasePolicy multiDiscretePolicy,
+                         MultiDiscreteStateObserver multiDiscreteObserver, Random random, RLRewardConfig rewardConfig,
+                         RLTrainingLogger logger, RLTrainingService rlService,
+                         StateRepresentationEncoder stateEncoder, HouseEvaluationService evaluator,
+                         GridModelFactory gridModelFactory) {
         this.multiDiscreteAgent = multiDiscreteAgent;
         this.multiDiscreteMemory = multiDiscreteMemory;
         this.multiDiscretePolicy = multiDiscretePolicy;
@@ -64,6 +76,7 @@ public class EpisodeRunner {
         this.rlService = rlService;
         this.stateEncoder = stateEncoder;
         this.evaluator = evaluator;
+        this.gridModelFactory = gridModelFactory != null ? gridModelFactory : GridModelFactory.defaultFactory();
     }
 
     public double getLastTrainLoss() {
@@ -77,7 +90,7 @@ public class EpisodeRunner {
     public EpisodeResult runExperimentalMultiDiscreteEpisode(int maxStepsPerEpisode, int episodesTrained, int currentEpoch, int currentEpochEpisode) {
         long episodeStartNs = System.nanoTime();
         EpisodeResult result = new EpisodeResult();
-        result.grid = new GridModel();
+        result.grid = gridModelFactory.create();
         int totalEpisode = episodesTrained + 1;
 
         // Reset masking counters for the new episode
