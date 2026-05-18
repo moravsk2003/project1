@@ -1,6 +1,7 @@
 package com.rustbuilder.ai.rl.supervisor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNull;
 
 import com.rustbuilder.ai.rl.RLRewardConfig;
 import java.util.Map;
@@ -99,7 +100,7 @@ class SupervisorDecisionValidatorTest {
     }
 
     @Test
-    void sanitizesStartRunRewardConfig() {
+    void startRunDropsRewardConfigChanges() {
         LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
         RLRewardConfig proposed = RLRewardConfig.createDefault();
         proposed.raidBonusMultiplier = 500.0;
@@ -111,7 +112,7 @@ class SupervisorDecisionValidatorTest {
 
         assertEquals(SupervisorAction.START_NEW_RUN, decision.getAction());
         assertEquals("auto_run_2d", decision.getProposedModelName());
-        assertEquals(45.0, decision.getProposedRewardConfig().raidBonusMultiplier, 0.0);
+        assertNull(decision.getProposedRewardConfig());
     }
 
     @Test

@@ -2,6 +2,7 @@ package com.rustbuilder.ai.rl.supervisor;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.rustbuilder.ai.rl.RLRewardConfig;
@@ -61,9 +62,11 @@ class SupervisorJsonTest {
 
     @Test
     void parsesIdleAutopilotDecisions() {
+        RLRewardConfig current = RLRewardConfig.createDefault();
+        current.earlyStopPenaltyMult = -0.1;
         SupervisorDecision start = SupervisorJson.decisionFromJson(
             "{\"action\":\"START_NEW_RUN\",\"modelName\":\"auto_run_1\",\"use2dCnn\":true,\"reason\":\"idle\"}",
-            RLRewardConfig.createDefault());
+            current);
         SupervisorDecision report = SupervisorJson.decisionFromJson(
             "{\"action\":\"REQUEST_HISTORICAL_REPORT\",\"reportModelName\":\"model_a\",\"reportStartEpoch\":2,\"reportEndEpoch\":5}",
             RLRewardConfig.createDefault());
@@ -71,6 +74,7 @@ class SupervisorJsonTest {
         assertEquals(SupervisorAction.START_NEW_RUN, start.getAction());
         assertEquals("auto_run_1", start.getProposedModelName());
         assertEquals(Boolean.TRUE, start.getProposedUse2dCnn());
+        assertNull(start.getProposedRewardConfig());
         assertEquals(SupervisorAction.REQUEST_HISTORICAL_REPORT, report.getAction());
         assertEquals("model_a", report.getReportModelName());
         assertEquals(2, report.getReportStartEpoch());

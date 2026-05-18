@@ -9,6 +9,7 @@ import java.util.Objects;
 import java.util.Random;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
+import java.time.Instant;
 import com.rustbuilder.core.action.BuildAction;
 import com.rustbuilder.core.placement.PlacementError;
 import com.rustbuilder.ai.rl.multidiscrete.*;
@@ -186,12 +187,22 @@ public class RLTrainingService {
     private volatile RLRewardConfig latestBranchCandidateRewardConfig;
     private volatile Double latestBranchCandidateEpsilon;
     private volatile String latestBranchCandidateModelName = "";
+    private volatile String lastPromotedBranchModelName = "";
+    private volatile long lastPromotedBranchAtMs = 0L;
     private volatile String pendingBranchSwitchModelName = "";
     private volatile String pendingBranchSwitchOwnerModelName = "";
+    private volatile String pendingBranchSwitchReason = "";
+    private volatile boolean pendingBranchSwitchPromotion = false;
     private volatile boolean pendingBranchSwitchRequested = false;
     private final LinkedList<Map<String, Object>> branchHistory = new LinkedList<>();
+    private final LinkedList<Map<String, Object>> appliedChangeJournal = new LinkedList<>();
+    private final java.util.Set<String> promotedBranchModelNames =
+        java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
     private final java.util.Set<String> knownBranchModelNames =
         java.util.Collections.synchronizedSet(new java.util.LinkedHashSet<>());
+    private volatile int supervisorProviderFailureStreak = 0;
+    private volatile long lastSupervisorProviderFailureMs = 0L;
+    private volatile String lastSupervisorProviderFailureReason = "";
 
     // Training log (file I/O delegated to RLTrainingLogger)
     private final RLTrainingLogger logger = new RLTrainingLogger();
@@ -343,6 +354,83 @@ public class RLTrainingService {
         this.bestBaseFinalReward = 0;
         this.bestBaseTotalReward = 0;
         this.logger.init(); // Re-initialize log files for new encoder mode
+    }
+
+    /**
+     * Starts an independent training lineage with clean runtime reward state while
+     * preserving user-facing supervisor settings and encoder mode.
+     */
+    public void resetForNewTrainingRun(boolean use2dCnn) {
+        if (trainingRunning) {
+            throw new IllegalStateException("Cannot reset while training is running.");
+        }
+
+        this.use2dCnn = use2dCnn;
+        this.rewardConfig = RLRewardConfig.createDefault();
+        if (this.supervisorConfig != null) {
+            this.supervisorConfig.setCallFrequency(LlmSupervisorConfig.CallFrequency.MEDIUM);
+        }
+        this.multiDiscreteObserver = null;
+        recreateLearningComponents();
+
+        this.episodesTrained = 0;
+        this.bestScore = -Double.MAX_VALUE;
+        this.bestTotalReward = -Double.MAX_VALUE;
+        this.bestGridModel.clear();
+        this.bestRewardGridModel.clear();
+        this.currentGridModel.clear();
+        this.epsilon = 1.0;
+        this.epsilonDecay = 1.0;
+        this.lastTrainLoss = 0;
+        this.recentRewards.clear();
+        this.recentEvalScores.clear();
+        this.avgReward = 0;
+        this.avgEvalScore = 0;
+        this.lastEpisodeInvalidActions = 0;
+        this.lastEpisodeTotalActions = 0;
+        this.bestBaseBlocks = 0;
+        this.bestBaseHasTC = false;
+        this.bestBaseDoors = 0;
+        this.bestBaseStepReward = 0;
+        this.bestBaseFinalReward = 0;
+        this.bestBaseTotalReward = 0;
+        this.totalTrainingTimeMs = 0;
+        this.currentTrainingDurationMs = 0L;
+        this.trainingStartTime = 0L;
+        this.trainingDeadlineMs = 0L;
+        this.trainingTimeLimitAnnounced = false;
+        this.lastAutosaveEpisode = 0;
+        this.currentRunId = "run_" + System.currentTimeMillis();
+        this.activeTrainingModelName = "";
+        this.activeMaxStepsPerEpisode = 0;
+        this.activeTrainingConfig = null;
+        this.latestBranchComparison = Map.of();
+        this.latestBranchCandidateRewardConfig = null;
+        this.latestBranchCandidateEpsilon = null;
+        this.latestBranchCandidateModelName = "";
+        this.lastPromotedBranchModelName = "";
+        this.lastPromotedBranchAtMs = 0L;
+        synchronized (promotedBranchModelNames) {
+            this.promotedBranchModelNames.clear();
+        }
+        synchronized (branchExperimentLock) {
+            this.branchHistory.clear();
+        }
+        this.pendingBranchSwitchModelName = "";
+        this.pendingBranchSwitchOwnerModelName = "";
+        this.pendingBranchSwitchReason = "";
+        this.pendingBranchSwitchPromotion = false;
+        this.pendingBranchSwitchRequested = false;
+        this.branchExperimentRunning = false;
+        this.branchReviewInProgress = false;
+        this.branchExperimentStatus = "No branch experiment yet.";
+        this.stopRequested = false;
+        this.lastSupervisorDecisionSummary = "";
+        synchronized (appliedChangeJournal) {
+            this.appliedChangeJournal.clear();
+        }
+        clearPendingSupervisorDecision();
+        resetSupervisorTrendState();
     }
 
     /**
@@ -712,6 +800,7 @@ public class RLTrainingService {
         }
 
         Map<String, Object> trendMetrics = buildSupervisorTrendMetrics(metrics);
+        trendMetrics.put("currentEpisodeEvaluationDiagnostics", evaluationDiagnostics(result));
         SupervisorObservation observation = trainingAnalyzer.summarize(
             config.getBranchId(),
             metrics,
@@ -740,6 +829,7 @@ public class RLTrainingService {
 
         Map<String, Object> diagnostics = supervisorDiagnostics();
         SupervisorDecision decision = supervisorDecisionValidator.validate(rawDecision, config, getRewardConfig(), observation);
+        recordSupervisorDecisionOutcome(decision, "training");
         boolean applied = shouldApplySupervisorDecision(config, decision);
         if (applied) {
             applied = applySupervisorDecision(decision);
@@ -822,6 +912,16 @@ public class RLTrainingService {
         trends.put("recentSupervisorDecisions", supervisorDecisionMemorySnapshot());
         trends.put("branchHistory", branchHistorySnapshot());
         trends.put("knownBranchModelNames", availableBranchModelNamesSnapshot());
+        trends.put("promotedBranchModelNames", promotedBranchModelNamesSnapshot());
+        trends.put("lastPromotedBranchModelName", lastPromotedBranchModelName);
+        trends.put("lastPromotedBranchAt", lastPromotedBranchAtMs > 0 ? Instant.ofEpochMilli(lastPromotedBranchAtMs).toString() : "");
+        trends.put("appliedChangeJournal", appliedChangeJournalSnapshot());
+        trends.put("supervisorHealth", supervisorHealthSnapshot());
+        Map<String, Object> comparison = latestBranchComparisonSnapshot();
+        if (!comparison.isEmpty()) {
+            trends.put("latestBranchComparison", comparison);
+            trends.put("latestBranchPromotionOpen", isBranchPromotionOpen(comparison));
+        }
         return trends;
     }
 
@@ -846,10 +946,17 @@ public class RLTrainingService {
         trends.put("branchReviewInProgress", branchReviewInProgress);
         trends.put("branchExperimentStatus", branchExperimentStatus);
         if (!latestBranchComparison.isEmpty()) {
-            trends.put("latestBranchComparison", latestBranchComparison);
+            Map<String, Object> comparison = latestBranchComparisonSnapshot();
+            trends.put("latestBranchComparison", comparison);
+            trends.put("latestBranchPromotionOpen", isBranchPromotionOpen(comparison));
         }
         trends.put("branchHistory", branchHistorySnapshot());
         trends.put("knownBranchModelNames", availableBranchModelNamesSnapshot());
+        trends.put("promotedBranchModelNames", promotedBranchModelNamesSnapshot());
+        trends.put("lastPromotedBranchModelName", lastPromotedBranchModelName);
+        trends.put("lastPromotedBranchAt", lastPromotedBranchAtMs > 0 ? Instant.ofEpochMilli(lastPromotedBranchAtMs).toString() : "");
+        trends.put("appliedChangeJournal", appliedChangeJournalSnapshot());
+        trends.put("supervisorHealth", supervisorHealthSnapshot());
         if (pendingBranchSwitchRequested) {
             trends.put("pendingBranchSwitchModelName", pendingBranchSwitchModelName);
         }
@@ -898,6 +1005,8 @@ public class RLTrainingService {
             "candidate best base has at least as many useful blocks as baseline",
             "candidate does not lose TC presence when baseline has TC"));
         objective.put("rewardTuningPolicy", "Do not mutate the live training branch for reward changes. Propose bounded changes; they are tested as candidate branches against a baseline before promotion.");
+        objective.put("evalDiagnosticsPolicy", "Zero eval components are not automatically a pipeline failure. Check trendMetrics.currentEpisodeEvaluationDiagnostics: zero scores are expected for episodes without TC, without protected access, or with open TC exposure.");
+        objective.put("stateTruthPolicy", "Use trendMetrics.appliedChangeJournal for changes that actually reached the live runtime. recentSupervisorDecisions can include proposals and branch tests that were not promoted.");
         return objective;
     }
 
@@ -951,7 +1060,12 @@ public class RLTrainingService {
             if (decision.getProposedEpsilon() != null) {
                 entry.put("proposedEpsilon", decision.getProposedEpsilon());
             }
-            entry.put("hasRewardConfig", decision.getProposedRewardConfig() != null);
+            RLRewardConfig proposedRewardConfig = decision.getProposedRewardConfig();
+            entry.put("hasRewardConfig", proposedRewardConfig != null);
+            if (proposedRewardConfig != null) {
+                entry.put("proposedRewardConfig", proposedRewardConfig.toMap());
+            }
+            entry.put("executionStatus", supervisorDecisionExecutionStatus(decision, applied));
             if (decision.getConfidence() != null) {
                 entry.put("confidence", decision.getConfidence());
             }
@@ -1000,6 +1114,78 @@ public class RLTrainingService {
             return selected != null ? selected : null;
         }
         return null;
+    }
+
+    private String supervisorDecisionExecutionStatus(SupervisorDecision decision, boolean applied) {
+        if (decision == null) {
+            return "none";
+        }
+        return switch (decision.getAction()) {
+            case SET_EPSILON, REPLACE_REWARD_CONFIG -> applied
+                ? "branch_experiment_started"
+                : "branch_experiment_not_started";
+            case PROMOTE_BRANCH -> applied ? "promotion_applied_or_already_current" : "promotion_not_applied";
+            case JUMP_TO_BRANCH -> applied ? "branch_jump_applied_or_queued" : "branch_jump_not_applied";
+            case STOP_TRAINING -> applied ? "stop_requested" : "stop_not_requested";
+            case START_NEW_RUN, RESTART_TRAINING -> applied ? "new_run_started" : "new_run_not_started";
+            case REQUEST_PROMOTION_CHECK -> applied ? "promotion_check_requested" : "promotion_check_not_applied";
+            case REQUEST_HISTORICAL_REPORT -> "historical_report_requested";
+            case KEEP_GOING -> "no_runtime_change";
+        };
+    }
+
+    public void recordSupervisorDecisionOutcome(SupervisorDecision decision, String scope) {
+        boolean failed = decision == null || isSupervisorProviderFailure(decision);
+        if (failed) {
+            supervisorProviderFailureStreak++;
+            lastSupervisorProviderFailureMs = System.currentTimeMillis();
+            lastSupervisorProviderFailureReason = decision != null && decision.getReason() != null
+                ? decision.getReason()
+                : "Supervisor returned no decision" + (scope != null && !scope.isBlank() ? " during " + scope : "");
+            return;
+        }
+        supervisorProviderFailureStreak = 0;
+        lastSupervisorProviderFailureReason = "";
+    }
+
+    private boolean isSupervisorProviderFailure(SupervisorDecision decision) {
+        if (decision == null || decision.getAction() != com.rustbuilder.ai.rl.supervisor.SupervisorAction.KEEP_GOING) {
+            return false;
+        }
+        String reason = decision.getReason() != null ? decision.getReason().toLowerCase(Locale.ROOT) : "";
+        return reason.contains("gemini")
+            || reason.contains("api_key")
+            || reason.contains("http 429")
+            || reason.contains("http 500")
+            || reason.contains("request failed")
+            || reason.contains("timed out")
+            || reason.contains("timeout");
+    }
+
+    public void recordSupervisorAppliedChange(String action, String subject, String reason) {
+        recordAppliedChange(action, subject, reason);
+    }
+
+    private void recordAppliedChange(String action, String subject, String reason) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        long now = System.currentTimeMillis();
+        entry.put("timestamp", Instant.ofEpochMilli(now).toString());
+        entry.put("episode", episodesTrained);
+        entry.put("action", action != null ? action : "");
+        entry.put("subject", subject != null ? subject : "");
+        entry.put("reason", reason != null ? reason : "");
+        entry.put("activeModelName", activeTrainingModelName);
+        entry.put("epsilon", epsilon);
+        RLRewardConfig current = getRewardConfig();
+        if (current != null) {
+            entry.put("rewardConfig", current.toMap());
+        }
+        synchronized (appliedChangeJournal) {
+            appliedChangeJournal.addLast(entry);
+            while (appliedChangeJournal.size() > 12) {
+                appliedChangeJournal.removeFirst();
+            }
+        }
     }
 
     private Map<String, Object> effectSince(Map<String, Object> previous, SupervisorObservation current) {
@@ -1136,16 +1322,21 @@ public class RLTrainingService {
                 proposed.getMultiplier(),
                 Math.max(1, (int) Math.round(config.getCallIntervalEpisodes() * proposed.getMultiplier())));
         }
-        return String.format("Supervisor ep %d [%s]: %s%s, applied=%s, reason=%s",
+        return String.format("Supervisor ep %d [%s]: %s%s, applied=%s, execution=%s, reason=%s",
             observation.totalEpisodesTrained,
             config.getApplyMode(),
             decision.getAction(),
             frequency,
             applied ? "yes" : "no",
+            supervisorDecisionExecutionStatus(decision, applied),
             reason);
     }
 
     private boolean applySupervisorDecision(SupervisorDecision decision) {
+        return applySupervisorDecision(decision, null);
+    }
+
+    private boolean applySupervisorDecision(SupervisorDecision decision, Map<String, Object> branchComparisonContext) {
         if (decision == null) {
             return false;
         }
@@ -1164,9 +1355,10 @@ public class RLTrainingService {
                 break;
             case STOP_TRAINING:
                 requestStop();
+                recordAppliedChange("STOP_TRAINING", activeTrainingModelName, decision.getReason());
                 return true;
             case PROMOTE_BRANCH:
-                return promoteLatestBranch() || applied;
+                return promoteBranchFromComparison(branchComparisonContext, decision.getReason()) || applied;
             case JUMP_TO_BRANCH:
                 return requestBranchJump(decision.getProposedModelName(), decision.getReason()) || applied;
             case START_NEW_RUN:
@@ -1192,6 +1384,7 @@ public class RLTrainingService {
             frequency.name(),
             frequency.getMultiplier(),
             supervisorConfig.getEffectiveCallIntervalEpisodes()));
+        recordAppliedChange("SET_CALL_FREQUENCY", frequency.name(), "LLM selected next supervisor cadence.");
         return true;
     }
 
@@ -1208,8 +1401,8 @@ public class RLTrainingService {
             candidateRewardConfig = RLRewardConfig.createDefault();
         }
         synchronized (branchExperimentLock) {
-            if (branchExperimentRunning) {
-                branchExperimentStatus = "Branch experiment already running; new proposal ignored.";
+            if (branchExperimentRunning || branchReviewInProgress) {
+                branchExperimentStatus = "Branch experiment/review already running; new proposal ignored.";
                 emitSupervisorLog("[BRANCH] " + branchExperimentStatus);
                 return false;
             }
@@ -1305,7 +1498,7 @@ public class RLTrainingService {
             String savedBaselineModelName = saveBranchModel(result.baselineService, baselineName, baselineConfig);
             String savedCandidateModelName = saveBranchModel(result.candidateService, candidateName, candidateConfig);
             String savedWinnerModelName = comparison.promoteCandidate ? savedCandidateModelName : savedBaselineModelName;
-            latestBranchComparison = branchComparisonMap(
+            Map<String, Object> completedComparison = branchComparisonMap(
                 baselineName,
                 candidateName,
                 savedBaselineModelName,
@@ -1317,6 +1510,7 @@ public class RLTrainingService {
                 proposedAction,
                 candidateEpsilon,
                 reason);
+            latestBranchComparison = completedComparison;
             rememberBranchExperiment(latestBranchComparison);
             writeBranchExperimentLog(activeTrainingModelName, latestBranchComparison);
             RLModelManager.pruneGeneratedBranchDirectories(branchOwnerModelName(sourceConfig));
@@ -1331,7 +1525,7 @@ public class RLTrainingService {
             emitSupervisorLog("[BRANCH] " + branchExperimentStatus);
             branchReviewInProgress = true;
             branchExperimentRunning = false;
-            maybeInvokeSupervisorAfterBranchExperiment(activeTrainingModelName, baselineMetrics, candidateMetrics);
+            maybeInvokeSupervisorAfterBranchExperiment(activeTrainingModelName, baselineMetrics, candidateMetrics, completedComparison);
         } catch (Exception e) {
             branchExperimentStatus = "Branch experiment failed: " + e.getMessage();
             latestBranchComparison = Map.of("status", "failed", "error", e.getMessage() != null ? e.getMessage() : "");
@@ -1350,13 +1544,19 @@ public class RLTrainingService {
 
     private void maybeInvokeSupervisorAfterBranchExperiment(String modelName,
                                                             TrainingMetrics baselineMetrics,
-                                                            TrainingMetrics candidateMetrics) {
+                                                            TrainingMetrics candidateMetrics,
+                                                            Map<String, Object> branchComparison) {
         LlmSupervisorConfig config = supervisorConfig;
         if (config == null || !config.isEnabled()) {
             return;
         }
         TrainingMetrics liveMetrics = getMetrics();
         Map<String, Object> trendMetrics = buildSupervisorTrendMetrics(liveMetrics);
+        Map<String, Object> comparisonForReview = branchComparison != null
+            ? new LinkedHashMap<>(branchComparison)
+            : latestBranchComparisonSnapshot();
+        trendMetrics.put("latestBranchComparison", comparisonForReview);
+        trendMetrics.put("latestBranchPromotionOpen", isBranchPromotionOpen(comparisonForReview));
         trendMetrics.put("supervisorTrigger", "BRANCH_EXPERIMENT_FINISHED");
         trendMetrics.put("branchReviewInstruction",
             "Review baseline and candidate branch results now. The timed supervisor interval was paused while both branches trained.");
@@ -1391,9 +1591,10 @@ public class RLTrainingService {
 
         Map<String, Object> diagnostics = supervisorDiagnostics();
         SupervisorDecision decision = supervisorDecisionValidator.validate(rawDecision, config, getRewardConfig(), observation);
+        recordSupervisorDecisionOutcome(decision, "branch_review");
         boolean applied = shouldApplySupervisorDecision(config, decision);
         if (applied) {
-            applied = applySupervisorDecision(decision);
+            applied = applySupervisorDecision(decision, comparisonForReview);
             clearPendingSupervisorDecision();
         } else if (config.getApplyMode() == LlmSupervisorApplyMode.MANUAL_APPROVAL
                 && isManuallyApplicable(decision)) {
@@ -1517,7 +1718,11 @@ public class RLTrainingService {
         map.put("candidate", metricsMap(candidate));
         map.put("baselineLogEvidence", branchLogEvidence(baselineName));
         map.put("candidateLogEvidence", branchLogEvidence(candidateName));
-        map.put("nextAllowedDecision", "Return PROMOTE_BRANCH to apply the candidate reward config, or KEEP_GOING/REPLACE_REWARD_CONFIG to keep exploring.");
+        map.put("promotionApplied", false);
+        map.put("promotionStatus", comparison.promoteCandidate ? "pending_review" : "not_recommended");
+        map.put("nextAllowedDecision", comparison.promoteCandidate
+            ? "Return PROMOTE_BRANCH only once to apply the saved candidate branch, or KEEP_GOING/REPLACE_REWARD_CONFIG to keep exploring."
+            : "Candidate did not win; do not return PROMOTE_BRANCH for this comparison.");
         return map;
     }
 
@@ -1668,8 +1873,58 @@ public class RLTrainingService {
 
     private java.util.List<Map<String, Object>> branchHistorySnapshot() {
         synchronized (branchExperimentLock) {
-            return java.util.List.copyOf(branchHistory);
+            java.util.List<Map<String, Object>> copy = new java.util.ArrayList<>(branchHistory.size());
+            for (Map<String, Object> entry : branchHistory) {
+                copy.add(new LinkedHashMap<>(entry));
+            }
+            return copy;
         }
+    }
+
+    private Map<String, Object> latestBranchComparisonSnapshot() {
+        Map<String, Object> comparison = latestBranchComparison;
+        return comparison == null || comparison.isEmpty()
+            ? Map.of()
+            : new LinkedHashMap<>(comparison);
+    }
+
+    private boolean isBranchPromotionOpen(Map<String, Object> comparison) {
+        if (comparison == null || comparison.isEmpty()) {
+            return false;
+        }
+        if (Boolean.TRUE.equals(comparison.get("promotionApplied"))) {
+            return false;
+        }
+        return Boolean.TRUE.equals(comparison.get("promoteRecommended"))
+            && "candidate".equals(String.valueOf(comparison.getOrDefault("savedWinnerBranch", "")));
+    }
+
+    private java.util.List<String> promotedBranchModelNamesSnapshot() {
+        synchronized (promotedBranchModelNames) {
+            return java.util.List.copyOf(promotedBranchModelNames);
+        }
+    }
+
+    private java.util.List<Map<String, Object>> appliedChangeJournalSnapshot() {
+        synchronized (appliedChangeJournal) {
+            java.util.List<Map<String, Object>> copy = new java.util.ArrayList<>(appliedChangeJournal.size());
+            for (Map<String, Object> entry : appliedChangeJournal) {
+                copy.add(new LinkedHashMap<>(entry));
+            }
+            return copy;
+        }
+    }
+
+    private Map<String, Object> supervisorHealthSnapshot() {
+        Map<String, Object> health = new LinkedHashMap<>();
+        health.put("providerFailureStreak", supervisorProviderFailureStreak);
+        health.put("degraded", supervisorProviderFailureStreak >= 3);
+        health.put("lastFailureReason", lastSupervisorProviderFailureReason);
+        health.put("lastFailureAt", lastSupervisorProviderFailureMs > 0
+            ? Instant.ofEpochMilli(lastSupervisorProviderFailureMs).toString()
+            : "");
+        health.put("guidance", "If degraded is true, avoid high-impact stale actions unless current evidence is fresh and explicit.");
+        return health;
     }
 
     private java.util.List<String> knownBranchModelNamesSnapshot() {
@@ -1717,17 +1972,141 @@ public class RLTrainingService {
         return map;
     }
 
+    private Map<String, Object> evaluationDiagnostics(EpisodeResult result) {
+        Map<String, Object> diagnostics = new LinkedHashMap<>();
+        if (result == null) {
+            diagnostics.put("evaluationSampleAvailable", false);
+            return diagnostics;
+        }
+        int finalBlockCount = result.grid != null ? result.grid.getAllBlocks().size() : result.blocksPlaced;
+        boolean evaluationRan = result.evaluationResult != null;
+        boolean allEvalScoresZero = evaluationRan
+            && result.evalLogisticsScore == 0.0
+            && result.evalCostScore == 0.0
+            && result.evalRaidScore == 0.0
+            && result.evalWorkingAreaScore == 0.0
+            && result.evalSafeZoneScore == 0.0;
+        diagnostics.put("evaluationSampleAvailable", true);
+        diagnostics.put("evaluationRan", evaluationRan);
+        diagnostics.put("allEvalScoresZero", allEvalScoresZero);
+        diagnostics.put("finalBlockCount", finalBlockCount);
+        diagnostics.put("blocksPlaced", result.blocksPlaced);
+        diagnostics.put("hasTC", result.hasTC || result.finalRewardHasTC);
+        diagnostics.put("raidSulfurToTC", result.raidSulfurToTC);
+        diagnostics.put("componentCount", result.componentCount);
+        diagnostics.put("mainComponentBlocks", result.mainComponentBlocks);
+        diagnostics.put("stopReason", result.stopReason != null ? result.stopReason.name() : "");
+        diagnostics.put("zeroEvalInterpretation", zeroEvalInterpretation(result, finalBlockCount, evaluationRan, allEvalScoresZero));
+        return diagnostics;
+    }
+
+    private String zeroEvalInterpretation(EpisodeResult result,
+                                          int finalBlockCount,
+                                          boolean evaluationRan,
+                                          boolean allEvalScoresZero) {
+        if (!evaluationRan) {
+            return finalBlockCount <= 5
+                ? "final evaluator skipped because the episode ended with five or fewer blocks"
+                : "final evaluator did not produce a result despite enough blocks";
+        }
+        if (!allEvalScoresZero) {
+            return "evaluation produced at least one non-zero component";
+        }
+        if (!result.hasTC && !result.finalRewardHasTC) {
+            return "zero eval components are expected when the episode has no TC/protected objective target";
+        }
+        if (result.raidSulfurToTC == 0) {
+            return "TC appears reachable from outside, so logistics/raid quality can legitimately score zero";
+        }
+        return "all evaluator components are zero even though evaluation ran; inspect graph connectivity and protected-area conditions";
+    }
+
     public boolean promoteLatestBranch() {
-        String candidateModelName = latestBranchCandidateModelName;
-        if (candidateModelName == null || candidateModelName.isBlank() || !isKnownBranchModelName(candidateModelName)) {
+        return promoteBranchFromComparison(latestBranchComparisonSnapshot(), "Promote candidate branch to main");
+    }
+
+    private boolean promoteBranchFromComparison(Map<String, Object> comparison, String reason) {
+        Map<String, Object> safeComparison = comparison != null ? comparison : Map.of();
+        String candidateModelName = stringMapValue(safeComparison, "savedCandidateModelName");
+        if (candidateModelName.isBlank()) {
+            candidateModelName = latestBranchCandidateModelName;
+        }
+        if (candidateModelName == null || candidateModelName.isBlank()) {
             branchExperimentStatus = "No saved candidate branch model available to promote.";
             emitSupervisorLog("[BRANCH] " + branchExperimentStatus);
             return false;
         }
-        return requestBranchJump(candidateModelName, "Promote candidate branch to main");
+        if (isAlreadyPromotedBranch(candidateModelName)) {
+            markBranchPromotionApplied(candidateModelName, "already_applied");
+            branchExperimentStatus = "Candidate branch already promoted; duplicate PROMOTE_BRANCH ignored: " + candidateModelName;
+            emitSupervisorLog("[BRANCH] " + branchExperimentStatus);
+            return true;
+        }
+        if (!isKnownBranchModelName(candidateModelName)) {
+            branchExperimentStatus = "No saved candidate branch model available to promote.";
+            emitSupervisorLog("[BRANCH] " + branchExperimentStatus);
+            return false;
+        }
+        if (!safeComparison.isEmpty() && !isBranchPromotionOpen(safeComparison)) {
+            branchExperimentStatus = "Promotion skipped because the latest branch comparison is not open for promotion: " + candidateModelName;
+            emitSupervisorLog("[BRANCH] " + branchExperimentStatus);
+            return false;
+        }
+        return requestBranchJump(candidateModelName, reason != null && !reason.isBlank()
+            ? reason
+            : "Promote candidate branch to main", true);
+    }
+
+    private boolean isAlreadyPromotedBranch(String modelName) {
+        return modelName != null
+            && !modelName.isBlank()
+            && (modelName.equals(lastPromotedBranchModelName) || promotedBranchModelNames.contains(modelName));
+    }
+
+    private void markBranchPromotionApplied(String modelName, String status) {
+        if (modelName == null || modelName.isBlank()) {
+            return;
+        }
+        Map<String, Object> current = latestBranchComparisonSnapshot();
+        if (!current.isEmpty()
+                && (modelName.equals(stringMapValue(current, "savedCandidateModelName"))
+                    || modelName.equals(stringMapValue(current, "candidateModelName"))
+                    || modelName.equals(stringMapValue(current, "savedWinnerModelName")))) {
+            Map<String, Object> updated = new LinkedHashMap<>(current);
+            updated.put("promotionApplied", true);
+            updated.put("promotionStatus", status != null ? status : "applied");
+            updated.put("promotedModelName", modelName);
+            updated.put("promotedAt", Instant.ofEpochMilli(System.currentTimeMillis()).toString());
+            updated.put("nextAllowedDecision", "This candidate has already been promoted. Do not return PROMOTE_BRANCH for it again.");
+            latestBranchComparison = updated;
+            updateBranchHistoryEntry(updated);
+        }
+        latestBranchCandidateModelName = "";
+        latestBranchCandidateRewardConfig = null;
+        latestBranchCandidateEpsilon = null;
+    }
+
+    private void updateBranchHistoryEntry(Map<String, Object> updatedComparison) {
+        String candidate = stringMapValue(updatedComparison, "savedCandidateModelName");
+        if (candidate.isBlank()) {
+            return;
+        }
+        synchronized (branchExperimentLock) {
+            for (Map<String, Object> entry : branchHistory) {
+                if (candidate.equals(stringMapValue(entry, "savedCandidateModelName"))) {
+                    entry.clear();
+                    entry.putAll(updatedComparison);
+                    return;
+                }
+            }
+        }
     }
 
     public boolean requestBranchJump(String modelName, String reason) {
+        return requestBranchJump(modelName, reason, false);
+    }
+
+    private boolean requestBranchJump(String modelName, String reason, boolean promotion) {
         String safeModelName = modelName != null ? modelName.trim() : "";
         if (safeModelName.isBlank() || !isKnownBranchModelName(safeModelName)) {
             branchExperimentStatus = "Refused branch jump to unknown model: " + safeModelName;
@@ -1737,6 +2116,8 @@ public class RLTrainingService {
         String ownerModelName = activeMainOwnerForBranch(safeModelName);
         pendingBranchSwitchModelName = safeModelName;
         pendingBranchSwitchOwnerModelName = ownerModelName;
+        pendingBranchSwitchReason = reason != null ? reason : "";
+        pendingBranchSwitchPromotion = promotion;
         pendingBranchSwitchRequested = true;
         branchExperimentStatus = "Queued branch jump to " + safeModelName + " as main " + ownerModelName
             + (reason != null && !reason.isBlank() ? " (" + reason + ")" : "");
@@ -1754,9 +2135,13 @@ public class RLTrainingService {
         }
         String modelName = pendingBranchSwitchModelName;
         String ownerModelName = pendingBranchSwitchOwnerModelName;
+        String reason = pendingBranchSwitchReason;
+        boolean promotion = pendingBranchSwitchPromotion;
         pendingBranchSwitchRequested = false;
         pendingBranchSwitchModelName = "";
         pendingBranchSwitchOwnerModelName = "";
+        pendingBranchSwitchReason = "";
+        pendingBranchSwitchPromotion = false;
         if (modelName == null || modelName.isBlank()) {
             return false;
         }
@@ -1786,6 +2171,15 @@ public class RLTrainingService {
                 activeTrainingConfig != null ? activeTrainingConfig.getSafeZoneWeight() : model.safeZoneWeight);
             RLModelManager.saveModel(mainSnapshot, this, RLModelManager.getModelMainDirectory(ownerModelName));
             activeTrainingModelName = ownerModelName;
+            if (promotion) {
+                promotedBranchModelNames.add(modelName);
+                lastPromotedBranchModelName = modelName;
+                lastPromotedBranchAtMs = System.currentTimeMillis();
+                markBranchPromotionApplied(modelName, "applied");
+                recordAppliedChange("PROMOTE_BRANCH", modelName, reason);
+            } else {
+                recordAppliedChange("JUMP_TO_BRANCH", modelName, reason);
+            }
             branchExperimentStatus = "Jumped to branch " + modelName
                 + "; main " + ownerModelName + " now follows that lineage"
                 + "; previous live branch saved as " + savedPrevious;
@@ -1822,6 +2216,10 @@ public class RLTrainingService {
 
     public String getSupervisorBranchStatus() {
         return branchExperimentStatus != null ? branchExperimentStatus : "";
+    }
+
+    public boolean isSupervisorBranchWorkInProgress() {
+        return branchExperimentRunning || branchReviewInProgress;
     }
 
     private String safeBranchModelName(String value) {

@@ -29,14 +29,18 @@ public class GeminiLlmSupervisor implements LlmSupervisor, LlmSupervisorDiagnost
         Use only actions listed in observation.allowedActions.
         Use STOP_TRAINING only when the run is clearly wasting the remaining budget.
         Use START_NEW_RUN only when observation.trainingContext.trainingRunning is false and provide modelName.
+        Do not include rewardConfig or rewardTerms with START_NEW_RUN; new runs reset reward state to defaults.
         During active training, stopReason is the last episode stop reason, not proof that the whole run stopped.
         Never use START_NEW_RUN to continue an active run; use KEEP_GOING unless a listed training action is justified.
         Always set callFrequency to VERY_SOON, SOON, MEDIUM, or LONG to choose the next review cadence.
         Do not omit callFrequency, even when the action is KEEP_GOING.
         Use faster cadence while unstable or after branch changes; use longer cadence when learning is stable.
         Use REQUEST_HISTORICAL_REPORT only when idle and you need prior epoch trends before starting a run.
-        Use PROMOTE_BRANCH only after observation.trendMetrics.latestBranchComparison shows a candidate that should replace the live reward config.
+        Use PROMOTE_BRANCH only when observation.trendMetrics.latestBranchPromotionOpen is true. Never promote a branch whose latestBranchComparison.promotionApplied is true.
         Use JUMP_TO_BRANCH only with a modelName from observation.trendMetrics.knownBranchModelNames.
+        Treat observation.trendMetrics.appliedChangeJournal as the source of truth for live changes; prior decisions may be proposals or branch tests that were not promoted.
+        Zero eval metrics are often expected before a protected TC/base exists; check observation.trendMetrics.currentEpisodeEvaluationDiagnostics before calling the evaluator broken.
+        If observation.trendMetrics.supervisorHealth.degraded is true, avoid stale high-impact actions unless current evidence is explicit.
         Never invent fields outside rewardConfig or rewardTerms.
         Formula terms may use only variables and functions from observation.rewardFormulaContract.
         Use trainingRemainingSeconds and trainingDeadline to avoid disruptive changes near the end of a run.
@@ -409,8 +413,8 @@ public class GeminiLlmSupervisor implements LlmSupervisor, LlmSupervisorDiagnost
         Map<String, Object> schema = new LinkedHashMap<>();
         schema.put("action", "one of observation.allowedActions");
         schema.put("epsilon", "optional number for SET_EPSILON");
-        schema.put("rewardConfig", "optional numeric patch for RLRewardConfig fields");
-        schema.put("rewardTerms", "optional array of {name, scope: STEP|FINAL, expression}");
+        schema.put("rewardConfig", "optional numeric patch for RLRewardConfig fields; only for REPLACE_REWARD_CONFIG");
+        schema.put("rewardTerms", "optional array of {name, scope: STEP|FINAL, expression}; only for REPLACE_REWARD_CONFIG");
         schema.put("modelName", "required safe unique name for START_NEW_RUN or JUMP_TO_BRANCH");
         schema.put("reportModelName", "required for REQUEST_HISTORICAL_REPORT");
         schema.put("reportStartEpoch", "optional non-negative integer");

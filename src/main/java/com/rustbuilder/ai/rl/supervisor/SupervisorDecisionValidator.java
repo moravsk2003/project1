@@ -73,12 +73,9 @@ public class SupervisorDecisionValidator {
                 if (modelName.isBlank()) {
                     return SupervisorDecision.keepGoing(decision.getAction() + " decision had no safe modelName.");
                 }
-                RLRewardConfig startConfig = config.isAllowRewardConfigChanges()
-                    ? sanitizeRewardConfig(decision.getProposedRewardConfig(), currentRewardConfig, config)
-                    : (currentRewardConfig != null ? currentRewardConfig.clone() : RLRewardConfig.createDefault());
                 SupervisorDecision startDecision = decision.getAction() == SupervisorAction.START_NEW_RUN
-                    ? SupervisorDecision.startNewRun(decision.getProposedUse2dCnn(), startConfig, modelName, decision.getReason())
-                    : SupervisorDecision.restartTraining(decision.getProposedUse2dCnn(), startConfig, modelName, decision.getReason());
+                    ? SupervisorDecision.startNewRun(decision.getProposedUse2dCnn(), null, modelName, decision.getReason())
+                    : SupervisorDecision.restartTraining(decision.getProposedUse2dCnn(), null, modelName, decision.getReason());
                 return preserveMetadata(startDecision, decision);
 
             case REQUEST_HISTORICAL_REPORT:

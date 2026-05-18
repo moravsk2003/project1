@@ -2,7 +2,6 @@ package com.rustbuilder.ai.rl.supervisor;
 
 import com.rustbuilder.ai.core.TrainingMetrics;
 import com.rustbuilder.ai.rl.RLModelManager;
-import com.rustbuilder.ai.rl.RLRewardConfig;
 import com.rustbuilder.ai.rl.RLTrainingConfig;
 import com.rustbuilder.ai.rl.RLTrainingService;
 
@@ -69,6 +68,10 @@ public class LlmOrchestrator {
                     cb.accept("Orchestrator: training is already running.");
                     return;
                 }
+                if (rlService.isSupervisorBranchWorkInProgress()) {
+                    cb.accept("Orchestrator: branch experiment/review is still running.");
+                    return;
+                }
                 SupervisorObservation obs = rlService.createIdleSupervisorObservation("idle_check");
                 SupervisorDecision decision = askLlm(config, obs);
                 processDecision(decision, obs, config, cb, 0);
@@ -89,6 +92,10 @@ public class LlmOrchestrator {
                 if (config != null && config.isEnabled()) {
                     // If training is NOT currently running
                     if (!rlService.isTrainingRunning()) {
+                        if (rlService.isSupervisorBranchWorkInProgress()) {
+                            Thread.sleep(IDLE_POLL_INTERVAL_MS);
+                            continue;
+                        }
                         if (!idleDecisionInProgress.compareAndSet(false, true)) {
                             Thread.sleep(IDLE_POLL_INTERVAL_MS);
                             continue;
@@ -143,10 +150,12 @@ public class LlmOrchestrator {
                                  java.util.function.Consumer<String> cb,
                                  int depth) {
         if (decision == null) {
+            rlService.recordSupervisorDecisionOutcome(null, "idle");
             cb.accept("[ORCHESTRATOR] LLM returned no decision (check API key / command).");
             rlService.setLastSupervisorDecision(null, "Orchestrator: LLM returned no decision or error occurred.");
             return;
         }
+        rlService.recordSupervisorDecisionOutcome(decision, "idle");
 
         String msg = String.format("[ORCHESTRATOR] action=%s, reason=%s", decision.getAction().name(), decision.getReason());
         cb.accept(msg);
@@ -178,8 +187,11 @@ public class LlmOrchestrator {
                 return;
             }
             boolean promoted = rlService.promoteLatestBranch();
+            String branchStatus = rlService.getSupervisorBranchStatus();
             cb.accept(promoted
-                ? "[ORCHESTRATOR] Candidate branch promoted."
+                ? "[ORCHESTRATOR] " + (branchStatus == null || branchStatus.isBlank()
+                    ? "Candidate branch promotion handled."
+                    : branchStatus)
                 : "[ORCHESTRATOR] No candidate branch available to promote.");
         } else if (decision.getAction() == SupervisorAction.JUMP_TO_BRANCH) {
             if (config.getApplyMode() != LlmSupervisorApplyMode.AUTO_APPLY) {
@@ -317,10 +329,7 @@ public class LlmOrchestrator {
         Boolean use2dCnn = decision.getProposedUse2dCnn();
         boolean is2d = use2dCnn != null ? use2dCnn : false;
         
-        RLRewardConfig rewardConfig = decision.getProposedRewardConfig();
-        if (rewardConfig != null) {
-            rlService.setRewardConfig(rewardConfig);
-        }
+        rlService.resetForNewTrainingRun(is2d);
         
         String modelName = decision.getProposedModelName();
         if (modelName == null || modelName.trim().isEmpty()) {
@@ -340,6 +349,7 @@ public class LlmOrchestrator {
                 cb.accept("[ORCHESTRATOR] Autopilot run time limit: " + formatDuration(durationMs));
             }
         }
+        rlService.recordSupervisorAppliedChange("START_NEW_RUN", trainingConfig.getModelName(), decision.getReason());
 
         java.util.function.Consumer<com.rustbuilder.ai.core.TrainingMetrics> progressCb = null;
         if (trainingCb != null) {

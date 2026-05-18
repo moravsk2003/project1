@@ -115,7 +115,7 @@ public final class SupervisorJson {
             map.put("historicalReport", obs.historicalReport);
         }
         map.put("responseContract",
-            "Return one JSON object. The action must be one of allowedActions. Always include reason and callFrequency. callFrequency must be VERY_SOON, SOON, MEDIUM, or LONG and selects the next review cadence. For SET_EPSILON include epsilon. For REPLACE_REWARD_CONFIG include only changed rewardConfig fields and/or rewardTerms. For START_NEW_RUN or JUMP_TO_BRANCH include modelName. For important changes include confidence, riskLevel, expectedEffect, rollbackPlan, changeMagnitude, and requiresBranchTest.");
+            "Return one JSON object. The action must be one of allowedActions. Always include reason and callFrequency. callFrequency must be VERY_SOON, SOON, MEDIUM, or LONG and selects the next review cadence. For SET_EPSILON include epsilon. For REPLACE_REWARD_CONFIG include only changed rewardConfig fields and/or rewardTerms. For START_NEW_RUN include modelName only; rewardConfig/rewardTerms are ignored because new runs reset reward state to defaults. For JUMP_TO_BRANCH include modelName. For important changes include confidence, riskLevel, expectedEffect, rollbackPlan, changeMagnitude, and requiresBranchTest.");
         return SimpleJson.stringify(map);
     }
 
@@ -174,20 +174,13 @@ public final class SupervisorJson {
         }
         
         if (action == SupervisorAction.START_NEW_RUN || action == SupervisorAction.RESTART_TRAINING) {
-            RLRewardConfig rewardConfig = currentRewardConfig != null
-                ? currentRewardConfig.clone()
-                : RLRewardConfig.createDefault();
-            if (map.containsKey("rewardConfig") || map.containsKey("rewardTerms")) {
-                applyRewardConfigPatch(rewardConfig, map.get("rewardConfig"));
-                applyRewardTerms(rewardConfig, map.get("rewardTerms"));
-            }
             Boolean use2dCnn = booleanValue(map.get("use2dCnn"));
             String modelName = stringValue(map.get("modelName"));
             
             if (action == SupervisorAction.START_NEW_RUN) {
-                return withMetadata(withCallFrequency(SupervisorDecision.startNewRun(use2dCnn, rewardConfig, modelName, reason), callFrequency), map);
+                return withMetadata(withCallFrequency(SupervisorDecision.startNewRun(use2dCnn, null, modelName, reason), callFrequency), map);
             } else {
-                return withMetadata(withCallFrequency(SupervisorDecision.restartTraining(use2dCnn, rewardConfig, modelName, reason), callFrequency), map);
+                return withMetadata(withCallFrequency(SupervisorDecision.restartTraining(use2dCnn, null, modelName, reason), callFrequency), map);
             }
         }
         
