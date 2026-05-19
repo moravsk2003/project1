@@ -2,13 +2,16 @@ package com.rustbuilder.ai.rl.supervisor.provider;
 
 
 import com.rustbuilder.ai.rl.supervisor.config.LlmSupervisorConfig;
+import com.rustbuilder.ai.rl.supervisor.domain.SupervisorActionDirection;
 import com.rustbuilder.ai.rl.supervisor.domain.SupervisorDecision;
+import com.rustbuilder.ai.rl.supervisor.domain.SupervisorDirectionDecision;
 import com.rustbuilder.ai.rl.supervisor.domain.SupervisorObservation;
 import com.rustbuilder.ai.rl.supervisor.ports.LlmSupervisor;
 import com.rustbuilder.ai.rl.supervisor.ports.LlmSupervisorDiagnostics;
 import com.rustbuilder.ai.rl.supervisor.serialization.SupervisorJson;
 import com.rustbuilder.ai.rl.domain.RLRewardConfig;
 import com.rustbuilder.ai.rl.supervisor.provider.gemini.GeminiModelClient;
+import com.rustbuilder.ai.rl.supervisor.provider.gemini.GeminiDirectionResult;
 import com.rustbuilder.ai.rl.supervisor.provider.gemini.GeminiPromptCatalog;
 import com.rustbuilder.ai.rl.supervisor.provider.gemini.GeminiRequestBuilder;
 import com.rustbuilder.ai.rl.supervisor.provider.gemini.GeminiResponseParser;
@@ -26,7 +29,7 @@ import java.util.function.Supplier;
  * Facade for the Java-native Gemini supervisor provider.
  */
 public class GeminiLlmSupervisor implements LlmSupervisor, LlmSupervisorDiagnostics {
-    private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(30);
+    private static final Duration DEFAULT_TIMEOUT = Duration.ofSeconds(90);
     public static final String DEFAULT_MODEL = "gemma-4-31b-it";
     public static final String DEFAULT_FALLBACK_MODEL = "gemini-3.1-flash-lite";
     private static final String DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
@@ -119,30 +122,31 @@ public class GeminiLlmSupervisor implements LlmSupervisor, LlmSupervisorDiagnost
             return SupervisorDecision.keepGoing("No GEMINI_API_KEY/GOOGLE_API_KEY/UI API key configured.");
         }
 
-        LlmSupervisorConfig.DecisionMode decisionMode = supervisorConfig.getDecisionMode();
-        GeminiStageResult proposal = stageRunner.requestDecision("ANALYZE_AND_PROPOSE", observation, null);
-        stages.add(proposal.getDiagnostics());
-        if (decisionMode == LlmSupervisorConfig.DecisionMode.SINGLE_STEP) {
-            diagnostics.put("finalStage", "ANALYZE_AND_PROPOSE");
+        GeminiDirectionResult directionResult = stageRunner.requestDirection("SELECT_DIRECTION", observation);
+        stages.add(directionResult.getDiagnostics());
+        SupervisorDirectionDecision directionDecision = directionResult.getDirectionDecision();
+        if (directionDecision == null || directionDecision.getDirection() == null) {
+            diagnostics.put("finalStage", "SELECT_DIRECTION");
+            diagnostics.put("error", "Gemini did not select a valid action direction.");
             lastDiagnostics = diagnostics;
-            return proposal.getDecision();
+            return SupervisorDecision.keepGoing("Gemini did not select a valid action direction.");
         }
 
-        boolean twoStage = decisionMode == LlmSupervisorConfig.DecisionMode.TWO_STAGE_ALWAYS
-            || promptCatalog.isHighImpactDecision(proposal.getDecision(), observation, supervisorConfig);
-        diagnostics.put("highImpact", twoStage);
-        if (!twoStage) {
-            diagnostics.put("finalStage", "ANALYZE_AND_PROPOSE");
-            lastDiagnostics = diagnostics;
-            return proposal.getDecision();
-        }
-
+        SupervisorActionDirection selectedDirection = directionDecision.getDirection();
+        diagnostics.put("selectedDirection", selectedDirection.name());
         GeminiStageResult finalDecision = stageRunner.requestDecision(
-            "FINAL_DECISION",
+            "DECIDE_ACTION",
             observation,
-            proposal.getDecisionJson());
+            directionResult.getDirectionJson(),
+            selectedDirection);
         stages.add(finalDecision.getDiagnostics());
-        diagnostics.put("finalStage", "FINAL_DECISION");
+        if (!selectedDirection.allows(finalDecision.getDecision().getAction(), SupervisorJson.allowedActionsFor(observation))) {
+            diagnostics.put("finalStage", "DECIDE_ACTION");
+            diagnostics.put("error", "Gemini selected an action outside the chosen direction.");
+            lastDiagnostics = diagnostics;
+            return SupervisorDecision.keepGoing("Gemini selected an action outside the chosen direction.");
+        }
+        diagnostics.put("finalStage", "DECIDE_ACTION");
         lastDiagnostics = diagnostics;
         return finalDecision.getDecision();
     }

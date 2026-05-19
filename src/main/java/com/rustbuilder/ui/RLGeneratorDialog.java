@@ -751,6 +751,8 @@ public class RLGeneratorDialog {
         applySupervisorConfigFromUI(modelName, false);
         if (trainingDurationMs > 0) {
             appendStatus("Training time limit: " + formatDuration(trainingDurationMs));
+        } else if (rlService.getSupervisorConfig().getAutopilotTrainingDurationMs() > 0) {
+            appendStatus("Manual training has no time limit; LLM autopilot limit applies only to Start Auto-Pilot / LLM-started runs.");
         }
         
         final String finalModelName = modelName;

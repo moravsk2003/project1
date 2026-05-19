@@ -97,11 +97,15 @@ Reward config patch with a formula term:
 ```
 
 Allowed actions are included in each observation as `allowedActions`.
-Every response must include `callFrequency`: `VERY_SOON` (`x0.25`), `SOON`
-(`x0.5`), `MEDIUM` (`x1`), or `LONG` (`x2`). Built-in Gemini treats a response
-without `callFrequency` as invalid and retries with the fallback model. The base
-value is the UI `Call every episodes` field. Branch experiments use the same
-effective episode count before the branch-review LLM call.
+Observations also include `actionDirections`, a grouped view of the actions
+that are possible right now. Built-in Gemini uses two calls: first it chooses one
+available direction, then the second call receives only the actions in that
+direction and must choose the final action. Final action responses must include
+`callFrequency`: `VERY_SOON` (`x0.25`), `SOON` (`x0.5`), `MEDIUM` (`x1`), or
+`LONG` (`x2`). Built-in Gemini treats a final response without `callFrequency`
+as invalid and retries with the fallback model. The base value is the UI `Call
+every episodes` field. Branch experiments use the same effective episode count
+before the branch-review LLM call.
 During an active training run the hook allows:
 
 - `KEEP_GOING`
@@ -116,9 +120,16 @@ When the autopilot is idle, it allows:
 
 - `KEEP_GOING`
 - `START_NEW_RUN`
+- `LOAD_EXISTING_MODEL`
 - `REQUEST_HISTORICAL_REPORT`
 - `PROMOTE_BRANCH`
 - `JUMP_TO_BRANCH`
+
+Idle observations include `trendMetrics.availableModels`, a compact catalog of
+saved RL models with compatibility, metadata, saved epsilon, and recent training
+log summaries. Use `START_NEW_RUN` only for a new model name, and use
+`LOAD_EXISTING_MODEL` only for a compatible model from that catalog. Both actions
+must include an LLM-selected `epsilon`.
 
 `SET_EPSILON` and `REPLACE_REWARD_CONFIG` do not mutate the live training
 branch directly. They create a short baseline-vs-candidate branch experiment.

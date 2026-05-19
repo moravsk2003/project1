@@ -257,13 +257,22 @@ public class RLTrainingLogger {
                                  String rewardConfigName, String trainingConfigName,
                                  String logsDir, String modelsDir) {
         writeRunMetadata(modelName, config, rewardConfigName, trainingConfigName, logsDir, modelsDir,
-            null);
+            null, null);
     }
 
     public void writeRunMetadata(String modelName, com.rustbuilder.ai.rl.environment.spec.EncodingRuntimeConfig config,
                                  String rewardConfigName, String trainingConfigName,
                                  String logsDir, String modelsDir,
                                  Path outputDirectory) {
+        writeRunMetadata(modelName, config, rewardConfigName, trainingConfigName, logsDir, modelsDir,
+            outputDirectory, null);
+    }
+
+    public void writeRunMetadata(String modelName, com.rustbuilder.ai.rl.environment.spec.EncodingRuntimeConfig config,
+                                 String rewardConfigName, String trainingConfigName,
+                                 String logsDir, String modelsDir,
+                                 Path outputDirectory,
+                                 RLTrainingConfig trainingConfig) {
         Path dir = RLModelManager.normalizeModelOutputDirectory(modelName, outputDirectory);
         Path metaPath = dir.resolve(modelName + "_run_metadata.json");
 
@@ -272,6 +281,20 @@ public class RLTrainingLogger {
             pw.printf(Locale.US, "  \"run_id\": \"%s\",%n", currentRunId);
             pw.printf(Locale.US, "  \"model_name\": \"%s\",%n", modelName);
             pw.printf(Locale.US, "  \"timestamp_start\": \"%s\",%n", LocalDateTime.now().format(TS_FMT));
+            pw.println();
+            if (trainingConfig != null) {
+                long durationMs = trainingConfig.getTrainingDurationMs();
+                pw.printf(Locale.US, "  \"episodes_per_epoch\": %d,%n", trainingConfig.getEpisodesPerEpoch());
+                pw.printf(Locale.US, "  \"epochs\": %d,%n", trainingConfig.getEpochs());
+                pw.printf(Locale.US, "  \"max_steps_per_episode\": %d,%n", trainingConfig.getMaxStepsPerEpisode());
+                pw.printf(Locale.US, "  \"training_duration_ms\": %d,%n", durationMs);
+                pw.printf(Locale.US, "  \"training_duration_seconds\": %.3f,%n", durationMs / 1000.0);
+                pw.printf(Locale.US, "  \"training_time_limit_enabled\": %b,%n", durationMs > 0);
+            } else {
+                pw.printf(Locale.US, "  \"training_duration_ms\": 0,%n");
+                pw.printf(Locale.US, "  \"training_duration_seconds\": 0.000,%n");
+                pw.printf(Locale.US, "  \"training_time_limit_enabled\": false,%n");
+            }
             pw.println();
             pw.printf(Locale.US, "  \"state_encoder_name\": \"%s\",%n", config.stateEncodingSpec.encoderName);
             pw.printf(Locale.US, "  \"state_encoder_version\": \"%s\",%n", currentEncoderVersion);

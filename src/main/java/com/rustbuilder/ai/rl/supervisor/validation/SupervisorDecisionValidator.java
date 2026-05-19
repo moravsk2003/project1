@@ -10,6 +10,7 @@ import com.rustbuilder.ai.rl.domain.RLRewardConfig;
 import com.rustbuilder.ai.rl.domain.reward.RewardFormulaSet;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
+import java.util.List;
 import java.util.LinkedHashMap;
 import java.util.Map;
 import java.util.Set;
@@ -114,10 +115,42 @@ public class SupervisorDecisionValidator {
                 if (modelName.isBlank()) {
                     return SupervisorDecision.keepGoing(decision.getAction() + " decision had no safe modelName.");
                 }
+                Double proposedStartEpsilon = decision.getProposedEpsilon();
+                if (observation != null && decision.getAction() == SupervisorAction.START_NEW_RUN
+                        && (proposedStartEpsilon == null || proposedStartEpsilon.isNaN() || proposedStartEpsilon.isInfinite())) {
+                    return SupervisorDecision.keepGoing("START_NEW_RUN decision must include a safe epsilon.");
+                }
+                if (observation != null
+                        && decision.getAction() == SupervisorAction.START_NEW_RUN
+                        && availableModelNames(observation).contains(modelName)) {
+                    return SupervisorDecision.keepGoing("START_NEW_RUN modelName already exists; use LOAD_EXISTING_MODEL for existing models.");
+                }
+                Double sanitizedStartEpsilon = proposedStartEpsilon != null
+                    ? clamp(proposedStartEpsilon, MIN_EPSILON, MAX_EPSILON)
+                    : null;
                 SupervisorDecision startDecision = decision.getAction() == SupervisorAction.START_NEW_RUN
-                    ? SupervisorDecision.startNewRun(decision.getProposedUse2dCnn(), null, modelName, decision.getReason())
+                    ? SupervisorDecision.startNewRun(decision.getProposedUse2dCnn(), null, modelName, sanitizedStartEpsilon, decision.getReason())
                     : SupervisorDecision.restartTraining(decision.getProposedUse2dCnn(), null, modelName, decision.getReason());
                 return preserveMetadata(startDecision, decision);
+
+            case LOAD_EXISTING_MODEL:
+                String loadModelName = sanitizeModelName(decision.getProposedModelName());
+                if (loadModelName.isBlank()) {
+                    return SupervisorDecision.keepGoing("LOAD_EXISTING_MODEL decision had no safe modelName.");
+                }
+                Double loadEpsilon = decision.getProposedEpsilon();
+                if (observation != null && (loadEpsilon == null || loadEpsilon.isNaN() || loadEpsilon.isInfinite())) {
+                    return SupervisorDecision.keepGoing("LOAD_EXISTING_MODEL decision must include a safe epsilon.");
+                }
+                if (observation != null && !isCompatibleAvailableModel(observation, loadModelName)) {
+                    return SupervisorDecision.keepGoing("LOAD_EXISTING_MODEL can only target a compatible model from availableModels.");
+                }
+                Double sanitizedLoadEpsilon = loadEpsilon != null
+                    ? clamp(loadEpsilon, MIN_EPSILON, MAX_EPSILON)
+                    : null;
+                return preserveMetadata(
+                    SupervisorDecision.loadExistingModel(loadModelName, sanitizedLoadEpsilon, decision.getReason()),
+                    decision);
 
             case REQUEST_HISTORICAL_REPORT:
                 String reportModelName = sanitizeModelName(decision.getReportModelName());
@@ -284,5 +317,47 @@ public class SupervisorDecisionValidator {
             return null;
         }
         return Math.max(0, epoch);
+    }
+
+    private static List<String> availableModelNames(SupervisorObservation observation) {
+        if (observation == null || observation.trendMetrics == null) {
+            return List.of();
+        }
+        Object modelsObject = observation.trendMetrics.get("availableModels");
+        if (!(modelsObject instanceof List<?> models)) {
+            return List.of();
+        }
+        java.util.ArrayList<String> names = new java.util.ArrayList<>();
+        for (Object item : models) {
+            if (item instanceof Map<?, ?> model) {
+                Object name = model.get("name");
+                if (name instanceof String text && !text.isBlank()) {
+                    names.add(text);
+                }
+            }
+        }
+        return names;
+    }
+
+    private static boolean isCompatibleAvailableModel(SupervisorObservation observation, String modelName) {
+        if (observation == null || observation.trendMetrics == null || modelName == null) {
+            return false;
+        }
+        Object modelsObject = observation.trendMetrics.get("availableModels");
+        if (!(modelsObject instanceof List<?> models)) {
+            return false;
+        }
+        for (Object item : models) {
+            if (!(item instanceof Map<?, ?> model)) {
+                continue;
+            }
+            Object name = model.get("name");
+            if (!(name instanceof String text) || !modelName.equals(text)) {
+                continue;
+            }
+            Object compatible = model.get("compatible");
+            return Boolean.TRUE.equals(compatible);
+        }
+        return false;
     }
 }

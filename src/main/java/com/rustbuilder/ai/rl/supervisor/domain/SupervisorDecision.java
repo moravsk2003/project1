@@ -156,8 +156,16 @@ public final class SupervisorDecision {
         return new SupervisorDecision(SupervisorAction.START_NEW_RUN, null, config, use2dCnn, modelName, null, null, null, reason);
     }
 
+    public static SupervisorDecision startNewRun(Boolean use2dCnn, RLRewardConfig config, String modelName, Double epsilon, String reason) {
+        return new SupervisorDecision(SupervisorAction.START_NEW_RUN, epsilon, config, use2dCnn, modelName, null, null, null, reason);
+    }
+
     public static SupervisorDecision restartTraining(Boolean use2dCnn, RLRewardConfig config, String modelName, String reason) {
         return new SupervisorDecision(SupervisorAction.RESTART_TRAINING, null, config, use2dCnn, modelName, null, null, null, reason);
+    }
+
+    public static SupervisorDecision loadExistingModel(String modelName, Double epsilon, String reason) {
+        return new SupervisorDecision(SupervisorAction.LOAD_EXISTING_MODEL, epsilon, null, null, modelName, null, null, null, reason);
     }
 
     public static SupervisorDecision requestHistoricalReport(String reportModelName, Integer reportStartEpoch, Integer reportEndEpoch, String reason) {

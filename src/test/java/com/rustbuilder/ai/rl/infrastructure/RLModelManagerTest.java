@@ -2,26 +2,36 @@ package com.rustbuilder.ai.rl.infrastructure;
 
 
 import com.rustbuilder.ai.rl.application.RLTrainingLogger;
+import com.rustbuilder.ai.rl.application.RLTrainingConfig;
+import com.rustbuilder.ai.rl.environment.spec.EncodingRuntimeConfig;
+import com.rustbuilder.ai.rl.supervisor.config.LlmSupervisorConfig;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
+import com.rustbuilder.ai.rl.domain.RLRewardConfig;
 import java.io.IOException;
+import java.io.BufferedOutputStream;
+import java.io.ObjectOutputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
 import java.util.stream.Stream;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.Test;
 
 class RLModelManagerTest {
     private static final String MODEL_NAME = "codex_legacy_flat_model_test";
+    private static final String CATALOG_MODEL = "codex_catalog_model_test";
     private static final String LINEAGE_OWNER = "codex_lineage_owner_test";
     private static final String LINEAGE_BRANCH = LINEAGE_OWNER + "_candidate_123";
 
     @AfterEach
     void cleanup() throws Exception {
         deleteIfExists(RLModelManager.getModelsDir().resolve(MODEL_NAME));
+        deleteIfExists(RLModelManager.getModelsDir().resolve(CATALOG_MODEL));
         deleteIfExists(RLModelManager.getModelsDir().resolve(LINEAGE_OWNER));
         deleteIfExists(RLModelManager.getModelsDir().resolve(LINEAGE_BRANCH));
         Files.deleteIfExists(RLModelManager.getModelsDir().resolve(MODEL_NAME + ".rmeta"));
@@ -127,6 +137,83 @@ class RLModelManagerTest {
             .resolve(MODEL_NAME)
             .resolve("main")
             .resolve(MODEL_NAME + "_multi_discrete_training.csv")));
+    }
+
+    @Test
+    void loggerRunMetadataRecordsTrainingTimeLimit() throws Exception {
+        RLTrainingLogger logger = new RLTrainingLogger();
+        EncodingRuntimeConfig encodingConfig = EncodingRuntimeConfig.createHybridV3Config();
+        RLTrainingConfig trainingConfig = new RLTrainingConfig(
+            MODEL_NAME,
+            100,
+            40,
+            1.0,
+            0.8,
+            1.2,
+            1.0,
+            0.5,
+            50,
+            LlmSupervisorConfig.enabledDefault("candidate"),
+            21_600_000L,
+            false);
+
+        logger.setRunContext("run_test", "v3", 16, true, 32);
+        logger.writeRunMetadata(MODEL_NAME, encodingConfig,
+            "default_config",
+            "default_training",
+            RLModelManager.getModelMainDirectory(MODEL_NAME).toString(),
+            RLModelManager.getModelMainDirectory(MODEL_NAME).toString(),
+            null,
+            trainingConfig);
+
+        String metadata = Files.readString(RLModelManager.getModelMainDirectory(MODEL_NAME)
+            .resolve(MODEL_NAME + "_run_metadata.json"));
+
+        assertTrue(metadata.contains("\"episodes_per_epoch\": 100"));
+        assertTrue(metadata.contains("\"epochs\": 50"));
+        assertTrue(metadata.contains("\"training_duration_ms\": 21600000"));
+        assertTrue(metadata.contains("\"training_time_limit_enabled\": true"));
+    }
+
+    @Test
+    void catalogSummarizesCompatibleModelForLlmStartupChoice() throws Exception {
+        Path mainDir = RLModelManager.getModelMainDirectory(CATALOG_MODEL);
+        RLModelManager.RLModel model = new RLModelManager.RLModel(
+            CATALOG_MODEL,
+            120,
+            1.75,
+            0.18,
+            1.0,
+            0.8,
+            1.2,
+            1.0,
+            0.5,
+            RLRewardConfig.createDefault());
+        model.stateEncoderName = "HYBRID_V3_VOXEL_GLOBAL";
+        model.stateEncoderVersion = "v3";
+        model.voxelChannels = 16;
+        model.hasGlobalVector = true;
+        model.globalFeatureCount = 32;
+        try (ObjectOutputStream out = new ObjectOutputStream(
+                new BufferedOutputStream(Files.newOutputStream(mainDir.resolve(CATALOG_MODEL + ".rmeta"))))) {
+            out.writeObject(model);
+        }
+        Files.writeString(mainDir.resolve(CATALOG_MODEL + ".rnet"), "fake-network-presence");
+        Files.write(mainDir.resolve(CATALOG_MODEL + "_multi_discrete_training.csv"), List.of(
+            "timestamp,epoch,episodes,avg_total_reward,best_reward_all_time,epsilon,invalid_rate_pct,best_base_blocks",
+            "t0,3,40,0.50,1.75,0.18,12.5,22"));
+
+        List<Map<String, Object>> catalog =
+            RLModelCatalogService.availableModelSummaries(EncodingRuntimeConfig.createHybridV3Config());
+
+        Map<String, Object> entry = catalog.stream()
+            .filter(item -> CATALOG_MODEL.equals(item.get("name")))
+            .findFirst()
+            .orElseThrow();
+        assertEquals(true, entry.get("compatible"));
+        assertEquals(120, entry.get("episodesTrained"));
+        assertEquals(0.18, (Double) entry.get("savedEpsilon"), 0.0);
+        assertTrue(entry.get("recommendationHint").toString().contains("resume"));
     }
 
     @Test

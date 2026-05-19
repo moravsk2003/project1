@@ -19,11 +19,15 @@ public final class GeminiPromptCatalog {
         You supervise reinforcement learning for a Rust base builder.
         Return exactly one JSON object and no markdown.
         Use only actions listed in observation.allowedActions.
+        The first call selects only a broad direction from observation.actionDirections.
+        The second call selects exactly one concrete action from the narrowed observation.allowedActions.
         Use STOP_TRAINING only when the run is clearly wasting the remaining budget.
-        Use START_NEW_RUN only when observation.trainingContext.trainingRunning is false and provide modelName.
+        Use START_NEW_RUN only when observation.trainingContext.trainingRunning is false and provide a new modelName plus epsilon.
+        Use LOAD_EXISTING_MODEL only when observation.trainingContext.trainingRunning is false, and only with a compatible modelName from observation.trendMetrics.availableModels plus epsilon.
         Do not include rewardConfig or rewardTerms with START_NEW_RUN; new runs reset reward state to defaults.
         During active training, stopReason is the last episode stop reason, not proof that the whole run stopped.
         Never use START_NEW_RUN to continue an active run; use KEEP_GOING unless a listed training action is justified.
+        Never use START_NEW_RUN to resume an existing model; use LOAD_EXISTING_MODEL when that action is available.
         Always set callFrequency to VERY_SOON, SOON, MEDIUM, or LONG to choose the next review cadence.
         Do not omit callFrequency, even when the action is KEEP_GOING.
         Use faster cadence while unstable or after branch changes; use longer cadence when learning is stable.
@@ -42,6 +46,12 @@ public final class GeminiPromptCatalog {
         """;
 
     public String taskForStage(String stage) {
+        if ("SELECT_DIRECTION".equals(stage)) {
+            return "Choose one broad supervisor direction from observation.actionDirections. Do not choose a concrete action yet.";
+        }
+        if ("DECIDE_ACTION".equals(stage)) {
+            return "Choose exactly one concrete supervisor action from the narrowed observation.allowedActions for the selected direction.";
+        }
         if ("FINAL_DECISION".equals(stage)) {
             return "Finalize the prior proposal into exactly one executable supervisor decision JSON. You may revise it if the proposal is risky or unsupported.";
         }
@@ -68,6 +78,7 @@ public final class GeminiPromptCatalog {
             "SET_CURRICULUM_OBJECTIVE",
             "PROMOTE_BRANCH",
             "JUMP_TO_BRANCH",
+            "LOAD_EXISTING_MODEL",
             "START_NEW_RUN"));
         return policy;
     }
@@ -89,6 +100,7 @@ public final class GeminiPromptCatalog {
         }
         return switch (decision.getAction()) {
             case REPLACE_REWARD_CONFIG, STOP_TRAINING, START_NEW_RUN, RESTART_TRAINING,
+                    LOAD_EXISTING_MODEL,
                     SET_CURRICULUM_OBJECTIVE, PROMOTE_BRANCH, JUMP_TO_BRANCH -> true;
             case SET_EPSILON -> {
                 Double proposed = decision.getProposedEpsilon();
@@ -110,7 +122,7 @@ public final class GeminiPromptCatalog {
         schema.put("objectiveDescription", "required measurable intermediate goal for SET_CURRICULUM_OBJECTIVE");
         schema.put("successCriteria", "numeric thresholds for SET_CURRICULUM_OBJECTIVE, e.g. invalidActionRateMax, medianBlocksMin, tcPresentRateMin");
         schema.put("failureSignals", "optional numeric regression thresholds for SET_CURRICULUM_OBJECTIVE");
-        schema.put("modelName", "required safe unique name for START_NEW_RUN or JUMP_TO_BRANCH");
+        schema.put("modelName", "required safe unique name for START_NEW_RUN, compatible existing name for LOAD_EXISTING_MODEL, or known branch name for JUMP_TO_BRANCH");
         schema.put("reportModelName", "required for REQUEST_HISTORICAL_REPORT");
         schema.put("reportStartEpoch", "optional non-negative integer");
         schema.put("reportEndEpoch", "optional non-negative integer");
@@ -125,21 +137,27 @@ public final class GeminiPromptCatalog {
         return schema;
     }
 
-    public Map<String, Object> responseSchema() {
+    public Map<String, Object> directionSchemaText(List<String> allowedDirections) {
+        Map<String, Object> schema = new LinkedHashMap<>();
+        schema.put("direction", "one of the currently available direction ids");
+        schema.put("allowedDirections", allowedDirections != null ? allowedDirections : List.of());
+        schema.put("reason", "short explanation");
+        schema.put("confidence", "optional 0.0-1.0 estimate");
+        return schema;
+    }
+
+    public Map<String, Object> responseSchema(String stage,
+                                              List<String> allowedActions,
+                                              List<String> allowedDirections) {
+        if ("SELECT_DIRECTION".equals(stage)) {
+            return directionResponseSchema(allowedDirections);
+        }
         Map<String, Object> properties = new LinkedHashMap<>();
         properties.put("action", Map.of(
             "type", "STRING",
-            "enum", List.of(
-                "KEEP_GOING",
-                "SET_EPSILON",
-                "REPLACE_REWARD_CONFIG",
-                "SET_CURRICULUM_OBJECTIVE",
-                "REQUEST_PROMOTION_CHECK",
-                "START_NEW_RUN",
-                "STOP_TRAINING",
-                "REQUEST_HISTORICAL_REPORT",
-                "PROMOTE_BRANCH",
-                "JUMP_TO_BRANCH")));
+            "enum", allowedActions != null && !allowedActions.isEmpty()
+                ? allowedActions
+                : List.of("KEEP_GOING")));
         properties.put("epsilon", Map.of("type", "NUMBER"));
         properties.put("rewardConfig", Map.of("type", "OBJECT"));
         properties.put("rewardTerms", Map.of(
@@ -185,6 +203,22 @@ public final class GeminiPromptCatalog {
                 "changeMagnitude", "requiresBranchTest", "reason"));
     }
 
+    private Map<String, Object> directionResponseSchema(List<String> allowedDirections) {
+        Map<String, Object> properties = new LinkedHashMap<>();
+        properties.put("direction", Map.of(
+            "type", "STRING",
+            "enum", allowedDirections != null && !allowedDirections.isEmpty()
+                ? allowedDirections
+                : List.of("CONTINUE")));
+        properties.put("confidence", Map.of("type", "NUMBER"));
+        properties.put("reason", Map.of("type", "STRING"));
+        return Map.of(
+            "type", "OBJECT",
+            "properties", properties,
+            "required", List.of("direction", "reason"),
+            "propertyOrdering", List.of("direction", "confidence", "reason"));
+    }
+
     private String cautionPrompt(LlmSupervisorConfig.CautionLevel cautionLevel) {
         return switch (cautionLevel) {
             case CONSERVATIVE -> """
@@ -212,6 +246,22 @@ public final class GeminiPromptCatalog {
     }
 
     private String stagePrompt(String stage) {
+        if ("SELECT_DIRECTION".equals(stage)) {
+            return """
+                Stage: SELECT_DIRECTION.
+                Choose exactly one direction from observation.actionDirections.
+                Do not output action, epsilon, rewardConfig, modelName, or callFrequency in this stage.
+                Prefer the smallest useful direction: observe, tune exploration, tune rewards, curriculum, startup, historical review, or branch management.
+                """;
+        }
+        if ("DECIDE_ACTION".equals(stage)) {
+            return """
+                Stage: DECIDE_ACTION.
+                The observation.allowedActions list has already been narrowed by the selected direction.
+                Return exactly one executable action from observation.allowedActions.
+                Include all fields required by that action, especially epsilon for START_NEW_RUN and LOAD_EXISTING_MODEL.
+                """;
+        }
         if ("FINAL_DECISION".equals(stage)) {
             return """
                 Stage: FINAL_DECISION.

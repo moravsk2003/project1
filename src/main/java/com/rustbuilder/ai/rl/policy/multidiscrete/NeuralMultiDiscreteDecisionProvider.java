@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.Random;
+import java.util.function.Function;
 
 /**
  * Provides multi-discrete actions using a trained neural network with conditional head architecture.
@@ -82,13 +83,12 @@ public class NeuralMultiDiscreteDecisionProvider implements MultiDiscretePhaseDe
             if (explore) {
                 selected[1] = validFloors.get(random.nextInt(validFloors.size()));
             } else {
-                INDArray typeContext = ActionConditioningUtils.oneHot(selected[0], MultiDiscreteActionSpace.TYPE_COUNT);
-                INDArray floorInput = ActionConditioningUtils.concat(stateFeatures, typeContext);
-                INDArray logits = agent.predictFloor(floorInput);
-                ownedArrays.add(typeContext);
-                ownedArrays.add(floorInput);
-                ownedArrays.add(logits);
-                selected[1] = maskedArgmax(logits, 0, validFloors);
+                selected[1] = predictHeadAndTrack(
+                    stateFeatures,
+                    new int[]{selected[0]},
+                    new int[]{MultiDiscreteActionSpace.TYPE_COUNT},
+                    agent::predictFloor, validFloors, ownedArrays
+                );
             }
 
             // 3. PHASE: TILE (Conditional on Type, Floor)
@@ -100,15 +100,12 @@ public class NeuralMultiDiscreteDecisionProvider implements MultiDiscretePhaseDe
             if (explore) {
                 selected[2] = validTiles.get(random.nextInt(validTiles.size()));
             } else {
-                INDArray typeContext = ActionConditioningUtils.oneHot(selected[0], MultiDiscreteActionSpace.TYPE_COUNT);
-                INDArray floorContext = ActionConditioningUtils.oneHot(selected[1], MultiDiscreteActionSpace.FLOOR_COUNT);
-                INDArray tileInput = ActionConditioningUtils.concat(stateFeatures, typeContext, floorContext);
-                INDArray logits = agent.predictTile(tileInput);
-                ownedArrays.add(typeContext);
-                ownedArrays.add(floorContext);
-                ownedArrays.add(tileInput);
-                ownedArrays.add(logits);
-                selected[2] = maskedArgmax(logits, 0, validTiles);
+                selected[2] = predictHeadAndTrack(
+                    stateFeatures,
+                    new int[]{selected[0], selected[1]},
+                    new int[]{MultiDiscreteActionSpace.TYPE_COUNT, MultiDiscreteActionSpace.FLOOR_COUNT},
+                    agent::predictTile, validTiles, ownedArrays
+                );
             }
 
             // 4. PHASE: ROTATION (Conditional on Type, Floor, Tile)
@@ -120,17 +117,12 @@ public class NeuralMultiDiscreteDecisionProvider implements MultiDiscretePhaseDe
             if (explore) {
                 selected[3] = validRotations.get(random.nextInt(validRotations.size()));
             } else {
-                INDArray typeContext = ActionConditioningUtils.oneHot(selected[0], MultiDiscreteActionSpace.TYPE_COUNT);
-                INDArray floorContext = ActionConditioningUtils.oneHot(selected[1], MultiDiscreteActionSpace.FLOOR_COUNT);
-                INDArray tileContext = ActionConditioningUtils.oneHot(selected[2], MultiDiscreteActionSpace.TILE_COUNT);
-                INDArray rotInput = ActionConditioningUtils.concat(stateFeatures, typeContext, floorContext, tileContext);
-                INDArray logits = agent.predictRot(rotInput);
-                ownedArrays.add(typeContext);
-                ownedArrays.add(floorContext);
-                ownedArrays.add(tileContext);
-                ownedArrays.add(rotInput);
-                ownedArrays.add(logits);
-                selected[3] = maskedArgmax(logits, 0, validRotations);
+                selected[3] = predictHeadAndTrack(
+                    stateFeatures,
+                    new int[]{selected[0], selected[1], selected[2]},
+                    new int[]{MultiDiscreteActionSpace.TYPE_COUNT, MultiDiscreteActionSpace.FLOOR_COUNT, MultiDiscreteActionSpace.TILE_COUNT},
+                    agent::predictRot, validRotations, ownedArrays
+                );
             }
 
             // 5. PHASE: AIM (Conditional on Type, Floor, Tile, Rotation)
@@ -148,19 +140,12 @@ public class NeuralMultiDiscreteDecisionProvider implements MultiDiscretePhaseDe
                 } else if (explore) {
                     selected[4] = validAimSectors.get(random.nextInt(validAimSectors.size()));
                 } else {
-                    INDArray typeContext = ActionConditioningUtils.oneHot(selected[0], MultiDiscreteActionSpace.TYPE_COUNT);
-                    INDArray floorContext = ActionConditioningUtils.oneHot(selected[1], MultiDiscreteActionSpace.FLOOR_COUNT);
-                    INDArray tileContext = ActionConditioningUtils.oneHot(selected[2], MultiDiscreteActionSpace.TILE_COUNT);
-                    INDArray rotContext = ActionConditioningUtils.oneHot(selected[3], MultiDiscreteActionSpace.ROTATION_COUNT);
-                    INDArray aimInput = ActionConditioningUtils.concat(stateFeatures, typeContext, floorContext, tileContext, rotContext);
-                    INDArray logits = agent.predictAim(aimInput);
-                    ownedArrays.add(typeContext);
-                    ownedArrays.add(floorContext);
-                    ownedArrays.add(tileContext);
-                    ownedArrays.add(rotContext);
-                    ownedArrays.add(aimInput);
-                    ownedArrays.add(logits);
-                    selected[4] = maskedArgmax(logits, 0, validAimSectors);
+                    selected[4] = predictHeadAndTrack(
+                        stateFeatures,
+                        new int[]{selected[0], selected[1], selected[2], selected[3]},
+                        new int[]{MultiDiscreteActionSpace.TYPE_COUNT, MultiDiscreteActionSpace.FLOOR_COUNT, MultiDiscreteActionSpace.TILE_COUNT, MultiDiscreteActionSpace.ROTATION_COUNT},
+                        agent::predictAim, validAimSectors, ownedArrays
+                    );
                 }
             }
 
@@ -171,6 +156,30 @@ public class NeuralMultiDiscreteDecisionProvider implements MultiDiscretePhaseDe
                 state.close();
             }
         }
+    }
+
+    /**
+     * Creates one-hot context vectors from previous action selections, concatenates them
+     * with state features, runs the prediction head, and returns the masked argmax.
+     * All created INDArrays are tracked in ownedArrays for proper off-heap cleanup.
+     */
+    private int predictHeadAndTrack(
+            INDArray stateFeatures,
+            int[] previousSelections,
+            int[] contextSizes,
+            Function<INDArray, INDArray> predictFunc,
+            List<Integer> validOptions,
+            List<INDArray> ownedArrays) {
+        INDArray[] contexts = new INDArray[previousSelections.length];
+        for (int i = 0; i < previousSelections.length; i++) {
+            contexts[i] = ActionConditioningUtils.oneHot(previousSelections[i], contextSizes[i]);
+            ownedArrays.add(contexts[i]);
+        }
+        INDArray input = ActionConditioningUtils.concat(stateFeatures, contexts);
+        ownedArrays.add(input);
+        INDArray logits = predictFunc.apply(input);
+        ownedArrays.add(logits);
+        return maskedArgmax(logits, 0, validOptions);
     }
 
     private MultiDiscretePhaseDecision fallbackDecision(MultiDiscretePhaseContext context, int blockCount) {

@@ -1,6 +1,7 @@
 package com.rustbuilder.ai.rl.supervisor.provider.gemini;
 
 import com.rustbuilder.ai.rl.supervisor.config.LlmSupervisorConfig;
+import com.rustbuilder.ai.rl.supervisor.domain.SupervisorActionDirection;
 import com.rustbuilder.ai.rl.supervisor.serialization.SimpleJson;
 import com.rustbuilder.ai.rl.supervisor.serialization.SupervisorJson;
 import com.rustbuilder.ai.rl.supervisor.domain.SupervisorObservation;
@@ -22,7 +23,25 @@ public final class GeminiRequestBuilder {
     }
 
     public String buildRequestBody(String stage, SupervisorObservation observation, String priorProposalJson) {
-        Object observationJson = SimpleJson.parse(SupervisorJson.observationToJson(observation));
+        return buildRequestBody(stage, observation, priorProposalJson, null);
+    }
+
+    public String buildRequestBody(String stage,
+                                   SupervisorObservation observation,
+                                   String priorProposalJson,
+                                   SupervisorActionDirection selectedDirection) {
+        List<String> baseAllowedActions = SupervisorJson.allowedActionsFor(observation);
+        List<String> allowedActions = selectedDirection != null
+            ? selectedDirection.allowedActionNames(baseAllowedActions)
+            : baseAllowedActions;
+        Map<String, Object> observationJson = SupervisorJson.observationToMap(observation, allowedActions);
+        if (selectedDirection != null) {
+            observationJson.put("selectedActionDirection", selectedDirection.toMap(baseAllowedActions));
+        }
+        List<String> allowedDirections = SupervisorActionDirection.allowedDirectionsFor(baseAllowedActions)
+            .stream()
+            .map(Enum::name)
+            .toList();
 
         Map<String, Object> userPayload = new LinkedHashMap<>();
         userPayload.put("task", promptCatalog.taskForStage(stage));
@@ -31,7 +50,11 @@ public final class GeminiRequestBuilder {
         userPayload.put("decisionMode", supervisorConfig.getDecisionMode().name());
         userPayload.put("supervisorPolicy", promptCatalog.supervisorPolicy(supervisorConfig));
         userPayload.put("observation", observationJson);
-        userPayload.put("decision_schema", promptCatalog.decisionSchemaText());
+        if ("SELECT_DIRECTION".equals(stage)) {
+            userPayload.put("direction_schema", promptCatalog.directionSchemaText(allowedDirections));
+        } else {
+            userPayload.put("decision_schema", promptCatalog.decisionSchemaText());
+        }
         if (priorProposalJson != null && !priorProposalJson.isBlank()) {
             userPayload.put("priorProposal", SimpleJson.parse(priorProposalJson));
         }
@@ -45,7 +68,7 @@ public final class GeminiRequestBuilder {
         request.put("generationConfig", Map.of(
             "temperature", promptCatalog.temperatureFor(supervisorConfig),
             "responseMimeType", "application/json",
-            "responseSchema", promptCatalog.responseSchema()));
+            "responseSchema", promptCatalog.responseSchema(stage, allowedActions, allowedDirections)));
         return SimpleJson.stringify(request);
     }
 }

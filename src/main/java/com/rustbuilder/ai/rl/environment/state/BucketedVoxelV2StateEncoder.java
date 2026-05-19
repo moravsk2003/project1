@@ -16,6 +16,14 @@ import java.util.List;
 
 public class BucketedVoxelV2StateEncoder implements StateRepresentationEncoder {
 
+    // Voxel tensor channel indices (channels 0-9 are type masks, controlled via loop variable)
+    private static final int CHANNEL_OCCUPANCY_BINARY = 10;
+    private static final int CHANNEL_DENSITY = 11;
+    private static final int CHANNEL_STABILITY = 12;
+    private static final int CHANNEL_SUPPORT_BELOW = 13;
+    private static final int CHANNEL_NEAR_STRUCTURE = 14;
+    private static final int CHANNEL_TC_PROXIMITY = 15;
+
     private final EncodingRuntimeConfig config;
     private final VoxelAggregationBuffer buffer;
     
@@ -135,34 +143,35 @@ public class BucketedVoxelV2StateEncoder implements StateRepresentationEncoder {
                             }
                         }
                         
-                        flatTensor[tensorIndex(10, z, y, x, gridF, gridH, gridW)] = 1.0f;
+                        flatTensor[tensorIndex(CHANNEL_OCCUPANCY_BINARY, z, y, x, gridF, gridH, gridW)] = 1.0f;
                         diagnostics.occupancyBinaryNonzero++;
                         
                         double density = Math.min(count / 4.0, 1.0);
-                        flatTensor[tensorIndex(11, z, y, x, gridF, gridH, gridW)] = (float) density;
+                        flatTensor[tensorIndex(CHANNEL_DENSITY, z, y, x, gridF, gridH, gridW)] = (float) density;
                         diagnostics.occupancyDensityNonzero++;
                         
                         if (buffer.structuralStabilityMax[idx] > 0) {
-                            flatTensor[tensorIndex(12, z, y, x, gridF, gridH, gridW)] = buffer.structuralStabilityMax[idx];
+                            flatTensor[tensorIndex(CHANNEL_STABILITY, z, y, x, gridF, gridH, gridW)] = buffer.structuralStabilityMax[idx];
                             diagnostics.stabilityNonzero++;
                         }
                     }
                     
                     if (z == 0 || (idx >= gridW * gridH && buffer.blockCounts[idx - gridW * gridH] > 0)) {
-                        flatTensor[tensorIndex(13, z, y, x, gridF, gridH, gridW)] = 1.0f;
+                        flatTensor[tensorIndex(CHANNEL_SUPPORT_BELOW, z, y, x, gridF, gridH, gridW)] = 1.0f;
                         diagnostics.supportBelowNonzero++;
                     }
                     
                     if (isNearStructure(x, y, z, gridW, gridH, gridF)) {
-                        flatTensor[tensorIndex(14, z, y, x, gridF, gridH, gridW)] = 1.0f;
+                        flatTensor[tensorIndex(CHANNEL_NEAR_STRUCTURE, z, y, x, gridF, gridH, gridW)] = 1.0f;
                         diagnostics.nearStructureNonzero++;
                     }
                     
                     if (hasAnyTc) {
-                        double dist = Math.sqrt(Math.pow(x - tcX, 2) + Math.pow(y - tcY, 2) + Math.pow(z - tcZ, 2));
+                        double dx = x - tcX, dy = y - tcY, dz = z - tcZ;
+                        double dist = Math.sqrt(dx * dx + dy * dy + dz * dz);
                         double prox = 1.0 - Math.min(dist / maxDist, 1.0);
                         if (prox > 0) {
-                            flatTensor[tensorIndex(15, z, y, x, gridF, gridH, gridW)] = (float) prox;
+                            flatTensor[tensorIndex(CHANNEL_TC_PROXIMITY, z, y, x, gridF, gridH, gridW)] = (float) prox;
                             diagnostics.tcProximityNonzero++;
                         }
                     }

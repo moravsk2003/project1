@@ -110,21 +110,38 @@ public class LlmOrchestrator {
                             Thread.sleep(IDLE_POLL_INTERVAL_MS);
                             continue;
                         }
-                        // Create a special observation indicating idle state
+                        
                         try {
-                            SupervisorObservation obs = rlService.createIdleSupervisorObservation("idle_check");
-                            
-                            SupervisorDecision decision = askLlm(config, obs);
-                            processDecision(decision, obs, config, msg -> {
-                                // RunLoop doesn't have a UI callback, but we can log via the status callback if set
-                                if (this.statusCallback != null) this.statusCallback.accept(msg);
-                            }, 0);
+                            if (rlService.hasPendingAutoResume()) {
+                                rlService.clearPendingAutoResume();
+                                String modelName = rlService.getActiveTrainingModelName();
+                                if (modelName == null || modelName.isBlank()) modelName = "auto_run_" + System.currentTimeMillis();
+                                
+                                SupervisorDecision autoResumeDecision = SupervisorDecision.startNewRun(
+                                    null,
+                                    null,
+                                    modelName,
+                                    "Auto-resuming training after branch jump/promotion."
+                                );
+                                
+                                java.util.function.Consumer<String> cb = msg -> {
+                                    if (this.statusCallback != null) this.statusCallback.accept(msg);
+                                };
+                                cb.accept("[ORCHESTRATOR] Auto-resume triggered. Bypassing LLM check.");
+                                processDecision(autoResumeDecision, null, config, cb, 0);
+                            } else {
+                                // Create a special observation indicating idle state
+                                SupervisorObservation obs = rlService.createIdleSupervisorObservation("idle_check");
+                                SupervisorDecision decision = askLlm(config, obs);
+                                processDecision(decision, obs, config, msg -> {
+                                    if (this.statusCallback != null) this.statusCallback.accept(msg);
+                                }, 0);
+                            }
                         } finally {
                             idleDecisionInProgress.set(false);
                         }
                     }
                 }
-                
                 Thread.sleep(IDLE_POLL_INTERVAL_MS);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
@@ -182,14 +199,18 @@ public class LlmOrchestrator {
             }
         }
 
-        if (decision.getAction() == SupervisorAction.START_NEW_RUN || decision.getAction() == SupervisorAction.RESTART_TRAINING) {
+        if (decision.getAction() == SupervisorAction.START_NEW_RUN
+                || decision.getAction() == SupervisorAction.RESTART_TRAINING
+                || decision.getAction() == SupervisorAction.LOAD_EXISTING_MODEL) {
             if (config.getApplyMode() != LlmSupervisorApplyMode.AUTO_APPLY) {
                 cb.accept("[ORCHESTRATOR] Start-run decision recorded but not applied because apply mode is " + config.getApplyMode() + ".");
                 return;
             }
             String modelName = decision.getProposedModelName();
             if (modelName == null || modelName.isBlank()) modelName = "auto_" + System.currentTimeMillis();
-            cb.accept("[ORCHESTRATOR] Starting new run: " + modelName.trim());
+            cb.accept(decision.getAction() == SupervisorAction.LOAD_EXISTING_MODEL
+                ? "[ORCHESTRATOR] Loading existing model for training: " + modelName.trim()
+                : "[ORCHESTRATOR] Starting new run: " + modelName.trim());
             startNewRun(decision);
         } else if (decision.getAction() == SupervisorAction.SET_CURRICULUM_OBJECTIVE) {
             if (config.getApplyMode() != LlmSupervisorApplyMode.AUTO_APPLY) {
@@ -332,9 +353,11 @@ public class LlmOrchestrator {
             
             return summary.toString();
         } catch (Exception e) {
-            return "Error reading logs: " + e.getMessage();
+            return "Error: Failed to read training logs: " + e.getMessage();
         }
     }
+
+
 
     private void startNewRun(SupervisorDecision decision) {
         java.util.function.Consumer<String> cb = this.statusCallback;
@@ -345,20 +368,79 @@ public class LlmOrchestrator {
             return;
         }
 
+        boolean loadExisting = decision.getAction() == SupervisorAction.LOAD_EXISTING_MODEL;
         Boolean use2dCnn = decision.getProposedUse2dCnn();
-        boolean is2d = use2dCnn != null ? use2dCnn : false;
-        
-        rlService.resetForNewTrainingRun(is2d);
+        boolean is2d = loadExisting ? rlService.isUse2dCnn() : use2dCnn != null ? use2dCnn : false;
         
         String modelName = decision.getProposedModelName();
         if (modelName == null || modelName.trim().isEmpty()) {
             modelName = "auto_run_" + System.currentTimeMillis();
         }
+        modelName = modelName.trim();
         
+        // Check if the proposed model already exists on disk
+        boolean proposedModelExists = false;
+        try {
+            java.nio.file.Path metaPath = com.rustbuilder.ai.rl.infrastructure.RLModelManager.findExistingModelFile(modelName, modelName + ".rmeta");
+            proposedModelExists = java.nio.file.Files.exists(metaPath);
+        } catch (Exception e) {
+            // ignore
+        }
+
+        String activeModel = rlService.getActiveTrainingModelName();
+
+        if (loadExisting) {
+            if (!proposedModelExists) {
+                if (cb != null) {
+                    cb.accept("[ORCHESTRATOR] Load-existing rejected: model not found: " + modelName);
+                }
+                return;
+            }
+            if (modelName.equals(activeModel)) {
+                if (cb != null) {
+                    cb.accept("[ORCHESTRATOR] Resuming training for active model: " + modelName + " (weights already loaded)");
+                }
+            } else {
+                try {
+                    rlService.loadExistingModelForTraining(modelName);
+                    if (cb != null) {
+                        cb.accept("[ORCHESTRATOR] Existing model loaded safely: " + modelName);
+                    }
+                } catch (Exception e) {
+                    if (cb != null) {
+                        cb.accept("[ORCHESTRATOR] Failed to load existing model; training not started. Error: " + e.getMessage());
+                    }
+                    return;
+                }
+            }
+            is2d = rlService.isUse2dCnn();
+        } else if (proposedModelExists && modelName.equals(activeModel)) {
+            // Best case: the proposed model is exactly the one already loaded in memory
+            // (e.g. right after PROMOTE_BRANCH). Skip both reset and load.
+            if (cb != null) {
+                cb.accept("[ORCHESTRATOR] Resuming training for active model: " + modelName + " (weights already loaded)");
+            }
+        } else if (proposedModelExists) {
+            // The proposed model exists on disk but is not the currently active one — load it.
+            if (cb != null) {
+                cb.accept("[ORCHESTRATOR] Start-new rejected: model already exists. Use LOAD_EXISTING_MODEL for " + modelName);
+            }
+            return;
+        } else {
+            // No model file on disk — truly a fresh start with random Xavier weights.
+            rlService.resetForNewTrainingRun(is2d);
+        }
+        if (decision.getProposedEpsilon() != null) {
+            rlService.setEpsilon(clampStartupEpsilon(decision.getProposedEpsilon()));
+            if (cb != null) {
+                cb.accept(String.format("[ORCHESTRATOR] Startup epsilon set to %.4f", rlService.getEpsilon()));
+            }
+        }
+
         LlmSupervisorConfig supervisorConfig = rlService.getSupervisorConfig();
         long durationMs = supervisorConfig.getAutopilotTrainingDurationMs();
         RLTrainingConfig trainingConfig = new RLTrainingConfig(
-            modelName.trim(), 100, 40, 1.0, 0.8, 1.2, 1.0, 0.5, 50,
+            modelName, 100, 40, 1.0, 0.8, 1.2, 1.0, 0.5, 50,
             supervisorConfig, durationMs, is2d);
             
         java.util.function.Consumer<TrainingMetrics> trainingCb = this.trainingProgressCallback;
@@ -368,7 +450,10 @@ public class LlmOrchestrator {
                 cb.accept("[ORCHESTRATOR] Autopilot run time limit: " + formatDuration(durationMs));
             }
         }
-        rlService.recordSupervisorAppliedChange("START_NEW_RUN", trainingConfig.getModelName(), decision.getReason());
+        rlService.recordSupervisorAppliedChange(
+            loadExisting ? "LOAD_EXISTING_MODEL" : "START_NEW_RUN",
+            trainingConfig.getModelName(),
+            decision.getReason());
 
         java.util.function.Consumer<com.rustbuilder.ai.core.TrainingMetrics> progressCb = null;
         if (trainingCb != null) {
@@ -413,5 +498,12 @@ public class LlmOrchestrator {
             return String.format("%dm %02ds", minutes, seconds);
         }
         return String.format("%ds", seconds);
+    }
+
+    private static double clampStartupEpsilon(double epsilon) {
+        if (Double.isNaN(epsilon) || Double.isInfinite(epsilon)) {
+            return 1.0;
+        }
+        return Math.max(0.01, Math.min(1.0, epsilon));
     }
 }

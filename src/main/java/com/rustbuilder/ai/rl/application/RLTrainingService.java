@@ -8,6 +8,7 @@ import com.rustbuilder.ai.rl.domain.RLRewardConfig;
 import com.rustbuilder.ai.rl.environment.spec.StateEncodingSpec;
 import com.rustbuilder.ai.rl.infrastructure.DefaultStateEncoderFactory;
 import com.rustbuilder.ai.rl.infrastructure.DefaultTrainingAgentFactory;
+import com.rustbuilder.ai.rl.infrastructure.RLModelCatalogService;
 import com.rustbuilder.ai.rl.infrastructure.RLModelManager;
 import com.rustbuilder.ai.rl.policy.multidiscrete.HeuristicMaskingUtils;
 import com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscreteAction;
@@ -64,6 +65,7 @@ import com.rustbuilder.model.core.Orientation;
 import com.rustbuilder.service.evaluator.HouseEvaluationService;
 import com.rustbuilder.service.evaluator.HouseEvaluatorFactory;
 import com.rustbuilder.service.physics.PlacementService;
+import java.io.IOException;
 
 /**
  * Main service to train the RL Agent using a Deep Q-Network.
@@ -248,6 +250,7 @@ public class RLTrainingService {
     private final LinkedList<CurriculumEpisodeSample> curriculumSamples = new LinkedList<>();
     private int lastCurriculumObjectiveChangeEpisode = 0;
     private int curriculumObjectiveRevision = 0;
+    private volatile boolean pendingAutoResume = false;
     private volatile String lastCurriculumObjectiveStatus = "";
     private final Object branchExperimentLock = new Object();
     private volatile boolean branchExperimentRunning = false;
@@ -368,6 +371,50 @@ public class RLTrainingService {
         return llmOrchestrator;
     }
 
+    public LlmSupervisorConfig getSupervisorConfig() {
+        return supervisorConfig != null ? supervisorConfig.clone() : LlmSupervisorConfig.disabled();
+    }
+
+    public void setSupervisorConfig(LlmSupervisorConfig supervisorConfig) {
+        this.supervisorConfig = supervisorConfig != null ? supervisorConfig.clone() : LlmSupervisorConfig.disabled();
+    }
+
+    public RLRewardConfig getRewardConfig() {
+        return rewardConfig != null ? rewardConfig.clone() : RLRewardConfig.createDefault();
+    }
+
+    public void setRewardConfig(RLRewardConfig rewardConfig) {
+        this.rewardConfig = rewardConfig != null ? rewardConfig.clone() : RLRewardConfig.createDefault();
+        if (this.multiDiscreteAgent != null) {
+            this.multiDiscreteAgent.setRewardConfig(this.rewardConfig);
+        }
+    }
+
+    public void setLlmSupervisor(LlmSupervisor llmSupervisor) {
+        this.llmSupervisor = llmSupervisor != null ? llmSupervisor : new NoOpLlmSupervisor();
+    }
+
+    public String getActiveTrainingModelName() {
+        return activeTrainingModelName != null ? activeTrainingModelName : "";
+    }
+
+    public RLModelManager.RLModel loadExistingModelForTraining(String modelName)
+            throws IOException, ClassNotFoundException {
+        if (trainingRunning) {
+            throw new IllegalStateException("Cannot load a model while training is running.");
+        }
+        if (modelName == null || modelName.isBlank()) {
+            throw new IllegalArgumentException("modelName must not be blank");
+        }
+        String safeName = modelName.trim();
+        RLModelManager.RLModel model = RLModelManager.loadMetadata(safeName);
+        setEncoderMode(encoderModeFromVersion(model.stateEncoderVersion));
+        RLModelManager.restoreFromModel(this, model);
+        RLModelManager.loadNetworkWeights(safeName, this);
+        activeTrainingModelName = safeName;
+        return model;
+    }
+
     public void setEncoderMode(EncoderMode mode) {
         if (this.encoderMode == mode) return;
         this.encoderMode = mode;
@@ -376,6 +423,16 @@ public class RLTrainingService {
 
     public EncoderMode getEncoderMode() {
         return encoderMode;
+    }
+
+    public static EncoderMode encoderModeFromVersion(String encoderVersion) {
+        if ("v3".equalsIgnoreCase(encoderVersion)) {
+            return EncoderMode.V3;
+        }
+        if ("v2".equalsIgnoreCase(encoderVersion)) {
+            return EncoderMode.V2;
+        }
+        return EncoderMode.V1;
     }
 
     private void applyEncoderMode(EncoderMode mode) {
@@ -387,7 +444,9 @@ public class RLTrainingService {
     private void recreateLearningComponents() {
         this.multiDiscreteMemory = trainingAgentFactory.createReplay(MEMORY_CAPACITY);
         this.multiDiscreteAgent = trainingAgentFactory.createAgent(this.activeConfig, this.use2dCnn);
-        this.multiDiscreteAgent.setRewardConfig(this.rewardConfig);
+        if (this.multiDiscreteAgent != null) {
+            this.multiDiscreteAgent.setRewardConfig(this.rewardConfig);
+        }
         this.multiDiscreteNeuralProvider = trainingAgentFactory.createNeuralProvider(this.multiDiscreteAgent, this.stateEncoder);
         this.multiDiscreteNeuralProvider.setUseAimSectorLearning(this.useAimSectorLearning);
         this.multiDiscretePolicy = trainingAgentFactory.createPolicy(this.multiDiscreteNeuralProvider);
@@ -579,7 +638,8 @@ public class RLTrainingService {
             "default_config",
             "default_training",
             modelRunDir, modelRunDir,
-            trainingOutputDir);
+            trainingOutputDir,
+            trainingConfig);
 
         logger.init();
 
@@ -872,6 +932,9 @@ public class RLTrainingService {
         if (metrics.totalEpisodesTrained <= 0 || interval <= 0 || metrics.totalEpisodesTrained % interval != 0) {
             return;
         }
+        if (shouldStopForTrainingTimeLimit()) {
+            return;
+        }
 
         Map<String, Object> trendMetrics = buildSupervisorTrendMetrics(metrics);
         trendMetrics.put("currentEpisodeEvaluationDiagnostics", evaluationDiagnostics(result));
@@ -892,6 +955,9 @@ public class RLTrainingService {
         if (!waitForSupervisorRateLimit(observation)) {
             return;
         }
+        if (shouldStopForTrainingTimeLimit()) {
+            return;
+        }
 
         SupervisorDecision rawDecision;
         try {
@@ -899,6 +965,9 @@ public class RLTrainingService {
         } catch (Exception e) {
             emitSupervisorLog("Supervisor call failed: " + e.getMessage());
             rawDecision = SupervisorDecision.keepGoing("Supervisor call failed: " + e.getMessage());
+        }
+        if (shouldStopForTrainingTimeLimit()) {
+            return;
         }
 
         Map<String, Object> diagnostics = supervisorDiagnostics();
@@ -995,6 +1064,7 @@ public class RLTrainingService {
         trends.put("curriculumStability", curriculumStabilitySummary());
         trends.put("curriculumObjectiveProgress", curriculumObjectiveProgressSnapshot());
         trends.put("curriculumObjectiveHistory", curriculumObjectiveHistorySnapshot());
+        trends.put("availableModels", RLModelCatalogService.availableModelSummaries(activeConfig));
         Map<String, Object> comparison = latestBranchComparisonSnapshot();
         if (!comparison.isEmpty()) {
             trends.put("latestBranchComparison", comparison);
@@ -1592,6 +1662,7 @@ public class RLTrainingService {
             case JUMP_TO_BRANCH -> applied ? "branch_jump_applied_or_queued" : "branch_jump_not_applied";
             case STOP_TRAINING -> applied ? "stop_requested" : "stop_not_requested";
             case START_NEW_RUN, RESTART_TRAINING -> applied ? "new_run_started" : "new_run_not_started";
+            case LOAD_EXISTING_MODEL -> applied ? "existing_model_loaded" : "existing_model_not_loaded";
             case REQUEST_PROMOTION_CHECK -> applied ? "promotion_check_requested" : "promotion_check_not_applied";
             case REQUEST_HISTORICAL_REPORT -> "historical_report_requested";
             case KEEP_GOING -> "no_runtime_change";
@@ -1714,7 +1785,7 @@ public class RLTrainingService {
         emitSupervisorLog(lastSupervisorDecisionSummary);
 
         long remainingMs = delay.toMillis();
-        while (remainingMs > 0 && !stopRequested) {
+        while (remainingMs > 0 && !stopRequested && !isTrainingTimeLimitReached()) {
             long sleepMs = Math.min(remainingMs, 1_000L);
             try {
                 Thread.sleep(sleepMs);
@@ -1724,7 +1795,7 @@ public class RLTrainingService {
             }
             remainingMs -= sleepMs;
         }
-        if (stopRequested) {
+        if (stopRequested || shouldStopForTrainingTimeLimit()) {
             return false;
         }
         supervisorRateLimiter.reserveNowAfterDelay(estimatedTokens);
@@ -1830,6 +1901,7 @@ public class RLTrainingService {
                 return requestBranchJump(decision.getProposedModelName(), decision.getReason()) || applied;
             case START_NEW_RUN:
             case RESTART_TRAINING:
+            case LOAD_EXISTING_MODEL:
             case REQUEST_PROMOTION_CHECK:
             case KEEP_GOING:
             default:
@@ -2607,6 +2679,7 @@ public class RLTrainingService {
         if (!pendingBranchSwitchRequested || trainingRunning) {
             return false;
         }
+        pendingAutoResume = true;
         String modelName = pendingBranchSwitchModelName;
         String ownerModelName = pendingBranchSwitchOwnerModelName;
         String reason = pendingBranchSwitchReason;
@@ -2842,43 +2915,7 @@ public class RLTrainingService {
                 }
             }
         }
-
         return res;
-    }
-
-    public RLRewardConfig getRewardConfig() {
-        return (rewardConfig != null) ? rewardConfig.clone() : null;
-    }
-
-    public void setRewardConfig(RLRewardConfig rewardConfig) {
-        if (rewardConfig == null) {
-            this.rewardConfig = RLRewardConfig.createDefault();
-        } else if (this.rewardConfig == null) {
-            this.rewardConfig = rewardConfig.clone();
-        } else {
-            this.rewardConfig.copyFrom(rewardConfig);
-        }
-        if (this.multiDiscreteAgent != null) {
-            this.multiDiscreteAgent.setRewardConfig(this.rewardConfig);
-        }
-    }
-
-    public LlmSupervisorConfig getSupervisorConfig() {
-        return supervisorConfig != null ? supervisorConfig.clone() : LlmSupervisorConfig.disabled();
-    }
-
-    public void setSupervisorConfig(LlmSupervisorConfig supervisorConfig) {
-        this.supervisorConfig = supervisorConfig != null
-            ? supervisorConfig.clone()
-            : LlmSupervisorConfig.disabled();
-    }
-
-    public void setLlmSupervisor(LlmSupervisor llmSupervisor) {
-        this.llmSupervisor = llmSupervisor != null ? llmSupervisor : new NoOpLlmSupervisor();
-    }
-
-    public String getLastSupervisorDecisionSummary() {
-        return lastSupervisorDecisionSummary != null ? lastSupervisorDecisionSummary : "";
     }
 
     public String getPendingSupervisorDecisionSummary() {
@@ -2933,6 +2970,14 @@ public class RLTrainingService {
 
         // Re-create memory buffers to clear them
         this.multiDiscreteMemory = trainingAgentFactory.createReplay(MEMORY_CAPACITY);
+    }
+
+    public boolean hasPendingAutoResume() {
+        return pendingAutoResume;
+    }
+
+    public void clearPendingAutoResume() {
+        this.pendingAutoResume = false;
     }
 
     // --- Getters for Summary Stats ---

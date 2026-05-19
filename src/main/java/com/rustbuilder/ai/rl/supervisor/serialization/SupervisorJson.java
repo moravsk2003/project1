@@ -5,6 +5,7 @@ import com.rustbuilder.ai.rl.domain.log.StopReason;
 import com.rustbuilder.ai.rl.domain.reward.RewardFormulaSet;
 import com.rustbuilder.ai.rl.supervisor.config.LlmSupervisorConfig;
 import com.rustbuilder.ai.rl.supervisor.domain.SupervisorAction;
+import com.rustbuilder.ai.rl.supervisor.domain.SupervisorActionDirection;
 import com.rustbuilder.ai.rl.supervisor.domain.SupervisorDecision;
 import com.rustbuilder.ai.rl.supervisor.domain.SupervisorObservation;
 import com.rustbuilder.ai.rl.domain.RLRewardConfig;
@@ -30,6 +31,7 @@ public final class SupervisorJson {
         SupervisorAction.KEEP_GOING.name(),
         SupervisorAction.SET_CURRICULUM_OBJECTIVE.name(),
         SupervisorAction.START_NEW_RUN.name(),
+        SupervisorAction.LOAD_EXISTING_MODEL.name(),
         SupervisorAction.REQUEST_HISTORICAL_REPORT.name(),
         SupervisorAction.PROMOTE_BRANCH.name(),
         SupervisorAction.JUMP_TO_BRANCH.name());
@@ -74,6 +76,15 @@ public final class SupervisorJson {
     }
 
     public static String observationToJson(SupervisorObservation obs) {
+        return SimpleJson.stringify(observationToMap(obs));
+    }
+
+    public static Map<String, Object> observationToMap(SupervisorObservation obs) {
+        return observationToMap(obs, null);
+    }
+
+    public static Map<String, Object> observationToMap(SupervisorObservation obs,
+                                                       List<String> allowedActionsOverride) {
         Map<String, Object> map = new LinkedHashMap<>();
         map.put("branchId", obs.branchId);
         map.put("totalEpisodesTrained", obs.totalEpisodesTrained);
@@ -118,14 +129,18 @@ public final class SupervisorJson {
         map.put("trainingContext", obs.trainingContext);
         map.put("trendMetrics", obs.trendMetrics);
         map.put("rewardFormulaContract", rewardFormulaContract());
-        map.put("allowedActions", allowedActions(obs));
+        List<String> allowedActions = allowedActionsOverride != null
+            ? List.copyOf(allowedActionsOverride)
+            : allowedActions(obs);
+        map.put("allowedActions", allowedActions);
+        map.put("actionDirections", actionDirectionMaps(allowedActions));
         
         if (obs.historicalReport != null && !obs.historicalReport.isBlank()) {
             map.put("historicalReport", obs.historicalReport);
         }
         map.put("responseContract",
-            "Return one JSON object. The action must be one of allowedActions. Always include reason and callFrequency. callFrequency must be VERY_SOON, SOON, MEDIUM, or LONG and selects the next review cadence. For SET_EPSILON include epsilon. For REPLACE_REWARD_CONFIG include only changed rewardConfig fields and/or rewardTerms. For SET_CURRICULUM_OBJECTIVE include objectiveId, objectiveDescription, and numeric successCriteria/failureSignals. For START_NEW_RUN include modelName only; rewardConfig/rewardTerms are ignored because new runs reset reward state to defaults. For JUMP_TO_BRANCH include modelName. For important changes include confidence, riskLevel, expectedEffect, rollbackPlan, changeMagnitude, and requiresBranchTest.");
-        return SimpleJson.stringify(map);
+            "Built-in LLM mode uses two calls: first choose one actionDirections.direction that is available now, then return one concrete action from allowedActions. The final action must be one of allowedActions. Always include reason and callFrequency. callFrequency must be VERY_SOON, SOON, MEDIUM, or LONG and selects the next review cadence. For SET_EPSILON include epsilon. For REPLACE_REWARD_CONFIG include only changed rewardConfig fields and/or rewardTerms. For SET_CURRICULUM_OBJECTIVE include objectiveId, objectiveDescription, and numeric successCriteria/failureSignals. For START_NEW_RUN include a new modelName and epsilon; rewardConfig/rewardTerms are ignored because new runs reset reward state to defaults. For LOAD_EXISTING_MODEL include a compatible modelName from trendMetrics.availableModels and epsilon. For JUMP_TO_BRANCH include modelName. For important changes include confidence, riskLevel, expectedEffect, rollbackPlan, changeMagnitude, and requiresBranchTest.");
+        return map;
     }
 
     public static List<String> allowedActionsFor(SupervisorObservation obs) {
@@ -135,6 +150,14 @@ public final class SupervisorJson {
 
     private static List<String> allowedActions(SupervisorObservation obs) {
         return allowedActionsFor(obs);
+    }
+
+    public static List<Map<String, Object>> actionDirectionMaps(List<String> allowedActions) {
+        List<Map<String, Object>> result = new ArrayList<>();
+        for (SupervisorActionDirection direction : SupervisorActionDirection.allowedDirectionsFor(allowedActions)) {
+            result.add(direction.toMap(allowedActions));
+        }
+        return result;
     }
 
     private static Map<String, Object> rewardFormulaContract() {
@@ -195,12 +218,19 @@ public final class SupervisorJson {
         if (action == SupervisorAction.START_NEW_RUN || action == SupervisorAction.RESTART_TRAINING) {
             Boolean use2dCnn = booleanValue(map.get("use2dCnn"));
             String modelName = stringValue(map.get("modelName"));
+            Double epsilon = doubleValue(map.get("epsilon"));
             
             if (action == SupervisorAction.START_NEW_RUN) {
-                return withMetadata(withCallFrequency(SupervisorDecision.startNewRun(use2dCnn, null, modelName, reason), callFrequency), map);
+                return withMetadata(withCallFrequency(SupervisorDecision.startNewRun(use2dCnn, null, modelName, epsilon, reason), callFrequency), map);
             } else {
                 return withMetadata(withCallFrequency(SupervisorDecision.restartTraining(use2dCnn, null, modelName, reason), callFrequency), map);
             }
+        }
+
+        if (action == SupervisorAction.LOAD_EXISTING_MODEL) {
+            String modelName = stringValue(map.get("modelName"));
+            Double epsilon = doubleValue(map.get("epsilon"));
+            return withMetadata(withCallFrequency(SupervisorDecision.loadExistingModel(modelName, epsilon, reason), callFrequency), map);
         }
         
         if (action == SupervisorAction.REQUEST_HISTORICAL_REPORT) {

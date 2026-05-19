@@ -66,7 +66,8 @@ class SupervisorJsonTest {
     void idleObservationContractAllowsStartingRunsAndReports() {
         String json = SupervisorJson.observationToJson(observation(false));
 
-        assertTrue(json.contains("\"allowedActions\":[\"KEEP_GOING\",\"SET_CURRICULUM_OBJECTIVE\",\"START_NEW_RUN\",\"REQUEST_HISTORICAL_REPORT\",\"PROMOTE_BRANCH\",\"JUMP_TO_BRANCH\"]"));
+        assertTrue(json.contains("\"allowedActions\":[\"KEEP_GOING\",\"SET_CURRICULUM_OBJECTIVE\",\"START_NEW_RUN\",\"LOAD_EXISTING_MODEL\",\"REQUEST_HISTORICAL_REPORT\",\"PROMOTE_BRANCH\",\"JUMP_TO_BRANCH\"]"));
+        assertTrue(json.contains("\"actionDirections\""));
     }
 
     @Test
@@ -74,7 +75,10 @@ class SupervisorJsonTest {
         RLRewardConfig current = RLRewardConfig.createDefault();
         current.earlyStopPenaltyMult = -0.1;
         SupervisorDecision start = SupervisorJson.decisionFromJson(
-            "{\"action\":\"START_NEW_RUN\",\"modelName\":\"auto_run_1\",\"use2dCnn\":true,\"reason\":\"idle\"}",
+            "{\"action\":\"START_NEW_RUN\",\"modelName\":\"auto_run_1\",\"use2dCnn\":true,\"epsilon\":0.85,\"reason\":\"idle\"}",
+            current);
+        SupervisorDecision load = SupervisorJson.decisionFromJson(
+            "{\"action\":\"LOAD_EXISTING_MODEL\",\"modelName\":\"model_a\",\"epsilon\":0.12,\"reason\":\"resume\"}",
             current);
         SupervisorDecision report = SupervisorJson.decisionFromJson(
             "{\"action\":\"REQUEST_HISTORICAL_REPORT\",\"reportModelName\":\"model_a\",\"reportStartEpoch\":2,\"reportEndEpoch\":5}",
@@ -83,7 +87,11 @@ class SupervisorJsonTest {
         assertEquals(SupervisorAction.START_NEW_RUN, start.getAction());
         assertEquals("auto_run_1", start.getProposedModelName());
         assertEquals(Boolean.TRUE, start.getProposedUse2dCnn());
+        assertEquals(0.85, start.getProposedEpsilon(), 0.0);
         assertNull(start.getProposedRewardConfig());
+        assertEquals(SupervisorAction.LOAD_EXISTING_MODEL, load.getAction());
+        assertEquals("model_a", load.getProposedModelName());
+        assertEquals(0.12, load.getProposedEpsilon(), 0.0);
         assertEquals(SupervisorAction.REQUEST_HISTORICAL_REPORT, report.getAction());
         assertEquals("model_a", report.getReportModelName());
         assertEquals(2, report.getReportStartEpoch());

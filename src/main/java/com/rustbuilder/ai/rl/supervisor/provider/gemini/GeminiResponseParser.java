@@ -2,7 +2,9 @@ package com.rustbuilder.ai.rl.supervisor.provider.gemini;
 
 import com.rustbuilder.ai.rl.domain.RLRewardConfig;
 import com.rustbuilder.ai.rl.supervisor.serialization.SimpleJson;
+import com.rustbuilder.ai.rl.supervisor.domain.SupervisorActionDirection;
 import com.rustbuilder.ai.rl.supervisor.domain.SupervisorDecision;
+import com.rustbuilder.ai.rl.supervisor.domain.SupervisorDirectionDecision;
 import com.rustbuilder.ai.rl.supervisor.serialization.SupervisorJson;
 
 import java.util.List;
@@ -85,5 +87,42 @@ public final class GeminiResponseParser {
             throw new IllegalArgumentException("missing required callFrequency");
         }
         return decision;
+    }
+
+    public SupervisorDirectionDecision parseDirection(String directionJson,
+                                                      List<SupervisorActionDirection> allowedDirections) {
+        Object parsed = SimpleJson.parse(directionJson);
+        if (!(parsed instanceof Map<?, ?> map)) {
+            throw new IllegalArgumentException("direction response was not a JSON object");
+        }
+        SupervisorActionDirection direction = SupervisorActionDirection.fromId(stringValue(map.get("direction")));
+        if (direction == null) {
+            throw new IllegalArgumentException("missing or invalid direction");
+        }
+        if (allowedDirections != null && !allowedDirections.contains(direction)) {
+            throw new IllegalArgumentException("direction is not available now: " + direction.name());
+        }
+        return new SupervisorDirectionDecision(
+            direction,
+            stringValue(map.get("reason")),
+            doubleValue(map.get("confidence")));
+    }
+
+    private static String stringValue(Object value) {
+        return value instanceof String ? (String) value : "";
+    }
+
+    private static Double doubleValue(Object value) {
+        if (value instanceof Number number) {
+            return number.doubleValue();
+        }
+        if (value instanceof String text) {
+            try {
+                return Double.parseDouble(text);
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
+        }
+        return null;
     }
 }

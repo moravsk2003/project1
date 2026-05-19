@@ -185,7 +185,7 @@ class SupervisorDecisionValidatorTest {
         LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
 
         SupervisorDecision decision = validator.validate(
-            SupervisorDecision.startNewRun(false, RLRewardConfig.createDefault(), "new_run", "start"),
+            SupervisorDecision.startNewRun(false, RLRewardConfig.createDefault(), "new_run", 0.9, "start"),
             config,
             RLRewardConfig.createDefault(),
             observation(false));
@@ -193,7 +193,54 @@ class SupervisorDecisionValidatorTest {
         assertEquals(SupervisorAction.START_NEW_RUN, decision.getAction());
     }
 
+    @Test
+    void requiresStartupEpsilonForIdleStartRun() {
+        LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
+
+        SupervisorDecision decision = validator.validate(
+            SupervisorDecision.startNewRun(false, RLRewardConfig.createDefault(), "new_run", "start"),
+            config,
+            RLRewardConfig.createDefault(),
+            observation(false));
+
+        assertEquals(SupervisorAction.KEEP_GOING, decision.getAction());
+    }
+
+    @Test
+    void allowsCompatibleLoadExistingModelForIdleObservation() {
+        LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
+
+        SupervisorDecision decision = validator.validate(
+            SupervisorDecision.loadExistingModel("good_model", 1.5, "resume"),
+            config,
+            RLRewardConfig.createDefault(),
+            observation(false, Map.of("availableModels", java.util.List.of(
+                Map.of("name", "good_model", "compatible", true)))));
+
+        assertEquals(SupervisorAction.LOAD_EXISTING_MODEL, decision.getAction());
+        assertEquals("good_model", decision.getProposedModelName());
+        assertEquals(1.0, decision.getProposedEpsilon(), 0.0);
+    }
+
+    @Test
+    void rejectsLoadExistingModelOutsideAvailableCatalog() {
+        LlmSupervisorConfig config = LlmSupervisorConfig.enabledDefault("candidate");
+
+        SupervisorDecision decision = validator.validate(
+            SupervisorDecision.loadExistingModel("missing_model", 0.2, "resume"),
+            config,
+            RLRewardConfig.createDefault(),
+            observation(false, Map.of("availableModels", java.util.List.of(
+                Map.of("name", "good_model", "compatible", true)))));
+
+        assertEquals(SupervisorAction.KEEP_GOING, decision.getAction());
+    }
+
     private SupervisorObservation observation(boolean trainingRunning) {
+        return observation(trainingRunning, Map.of());
+    }
+
+    private SupervisorObservation observation(boolean trainingRunning, Map<String, Object> trendMetrics) {
         return new SupervisorObservation(
             "candidate",
             10,
@@ -236,7 +283,7 @@ class SupervisorDecisionValidatorTest {
             Map.of(),
             null,
             Map.of("trainingRunning", trainingRunning),
-            Map.of(),
+            trendMetrics,
             null);
     }
 }
