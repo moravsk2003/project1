@@ -1,18 +1,26 @@
 package com.rustbuilder.ui;
 
+
+import com.rustbuilder.ai.rl.domain.RLRewardConfig;
+import com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscreteAction;
+import com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscreteActionMapper;
+import com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscreteActionSpace;
+import com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscretePhaseContext;
+import com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscretePhasePolicy;
+import com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscreteStateObserver;
+import com.rustbuilder.ai.rl.supervisor.provider.LlmSupervisorFactory;
 import java.io.IOException;
 import java.util.Locale;
 
 import com.rustbuilder.ai.core.TrainingMetrics;
-import com.rustbuilder.ai.rl.RLModelManager;
-import com.rustbuilder.ai.rl.RLModelManager.RLModel;
-import com.rustbuilder.ai.rl.RLTrainingConfig;
-import com.rustbuilder.ai.rl.RLTrainingService;
-import com.rustbuilder.ai.rl.supervisor.GeminiLlmSupervisor;
-import com.rustbuilder.ai.rl.supervisor.LlmSupervisorApplyMode;
-import com.rustbuilder.ai.rl.supervisor.LlmSupervisorConfig;
-import com.rustbuilder.ai.rl.supervisor.LlmSupervisorFactory;
-import com.rustbuilder.ai.rl.supervisor.NoOpLlmSupervisor;
+import com.rustbuilder.ai.rl.infrastructure.RLModelManager;
+import com.rustbuilder.ai.rl.infrastructure.RLModelManager.RLModel;
+import com.rustbuilder.ai.rl.application.RLTrainingConfig;
+import com.rustbuilder.ai.rl.application.RLTrainingService;
+import com.rustbuilder.ai.rl.supervisor.provider.GeminiLlmSupervisor;
+import com.rustbuilder.ai.rl.supervisor.config.LlmSupervisorApplyMode;
+import com.rustbuilder.ai.rl.supervisor.config.LlmSupervisorConfig;
+import com.rustbuilder.ai.rl.supervisor.provider.NoOpLlmSupervisor;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.ui.hints.HintKey;
@@ -1168,7 +1176,7 @@ public class RLGeneratorDialog {
     private void runDiagnosticStep() {
         if (trainingRunning) return;
         
-        com.rustbuilder.ai.rl.multidiscrete.MultiDiscretePhasePolicy policy = rlService.getMultiDiscretePolicy();
+        com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscretePhasePolicy policy = rlService.getMultiDiscretePolicy();
         if (policy == null) {
             showAlert("No active RL policy found.");
             return;
@@ -1178,33 +1186,33 @@ public class RLGeneratorDialog {
         diagnosticButton.setDisable(true);
         appendStatus("--- Running AI Single Step ---");
         
-        com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteStateObserver guiObserver = 
-            new com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteStateObserver() {
+        com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscreteStateObserver guiObserver = 
+            new com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscreteStateObserver() {
                 @Override
-                public void observePhase(com.rustbuilder.ai.rl.multidiscrete.MultiDiscretePhaseContext ctx, String phaseName, int phaseIdx, int choice) {
+                public void observePhase(com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscretePhaseContext ctx, String phaseName, int phaseIdx, int choice) {
                     appendStatus(String.format("  [%s] choice=%d", phaseName, choice));
                 }
                 
                 @Override
-                public void onActionAssembled(com.rustbuilder.ai.rl.multidiscrete.MultiDiscretePhaseContext ctx, com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteAction action) {
+                public void onActionAssembled(com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscretePhaseContext ctx, com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscreteAction action) {
                     appendStatus("  Action Assembled: " + action);
                 }
             };
         
         Thread t = new Thread(() -> {
             try {
-                com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteAction action = rlService.chooseSingleStepAction(stepGrid, guiObserver);
-                if (action == null || !action.isValid() || action.getTypeIndex() == com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteActionSpace.STOP_TYPE_INDEX) {
+                com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscreteAction action = rlService.chooseSingleStepAction(stepGrid, guiObserver);
+                if (action == null || !action.isValid() || action.getTypeIndex() == com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscreteActionSpace.STOP_TYPE_INDEX) {
                     appendStatus("  AI selected STOP. No block placed.");
                     Platform.runLater(() -> diagnosticButton.setDisable(false));
                     return;
                 }
                 
                 com.rustbuilder.core.action.BuildAction bAction =
-                    com.rustbuilder.ai.rl.multidiscrete.MultiDiscreteActionMapper.toBuildAction(action);
+                    com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscreteActionMapper.toBuildAction(action);
                 
                 Platform.runLater(() -> {
-                    com.rustbuilder.ai.rl.RLTrainingService.PlacementResult res = rlService.placeBlock(mainGrid, bAction);
+                    com.rustbuilder.ai.rl.application.RLTrainingService.PlacementResult res = rlService.placeBlock(mainGrid, bAction);
                     if (res.inserted) {
                         appendStatus("  Placement successful: " + bAction.actionType);
                     } else {
@@ -1558,7 +1566,7 @@ public class RLGeneratorDialog {
     }
 
     private void syncRewardUIFromConfig() {
-        com.rustbuilder.ai.rl.RLRewardConfig config = rlService.getRewardConfig();
+        com.rustbuilder.ai.rl.domain.RLRewardConfig config = rlService.getRewardConfig();
         if (config == null) return;
 
         updateSpinner("basePlacementReward", config.basePlacementReward);
@@ -1596,8 +1604,8 @@ public class RLGeneratorDialog {
     }
 
     private void applyRewardConfig() {
-        com.rustbuilder.ai.rl.RLRewardConfig config = rlService.getRewardConfig();
-        if (config == null) config = new com.rustbuilder.ai.rl.RLRewardConfig();
+        com.rustbuilder.ai.rl.domain.RLRewardConfig config = rlService.getRewardConfig();
+        if (config == null) config = new com.rustbuilder.ai.rl.domain.RLRewardConfig();
         
         config.basePlacementReward = rewardSpinners.get("basePlacementReward").getValue();
         config.socketConnectionReward = rewardSpinners.get("socketConnectionReward").getValue();
@@ -1630,7 +1638,7 @@ public class RLGeneratorDialog {
     }
 
     private void resetRewardConfig() {
-        rlService.setRewardConfig(com.rustbuilder.ai.rl.RLRewardConfig.createDefault());
+        rlService.setRewardConfig(com.rustbuilder.ai.rl.domain.RLRewardConfig.createDefault());
         syncRewardUIFromConfig();
         appendStatus("Reward Configuration reset to defaults.");
     }

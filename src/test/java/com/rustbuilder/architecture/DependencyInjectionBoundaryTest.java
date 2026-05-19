@@ -1,5 +1,4 @@
 package com.rustbuilder.architecture;
-
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -22,7 +21,7 @@ class DependencyInjectionBoundaryTest {
 
     @Test
     void rlTrainingServiceDelegatesLearningComponentCreationToFactories() throws IOException {
-        String source = read("src/main/java/com/rustbuilder/ai/rl/RLTrainingService.java");
+        String source = read("src/main/java/com/rustbuilder/ai/rl/application/RLTrainingService.java");
 
         assertTrue(source.contains("StateEncoderFactory stateEncoderFactory"));
         assertTrue(source.contains("TrainingAgentFactory trainingAgentFactory"));
@@ -38,7 +37,7 @@ class DependencyInjectionBoundaryTest {
 
     @Test
     void geneticAlgorithmServiceAcceptsInjectedEvaluatorAndGridFactory() throws IOException {
-        String source = read("src/main/java/com/rustbuilder/ai/ea/GeneticAlgorithmService.java");
+        String source = read("src/main/java/com/rustbuilder/ai/ea/application/GeneticAlgorithmService.java");
 
         assertTrue(source.contains("HouseEvaluationService evaluator"));
         assertTrue(source.contains("GridModelFactory gridModelFactory"));

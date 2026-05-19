@@ -1,5 +1,4 @@
 package com.rustbuilder.architecture;
-
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -44,6 +43,14 @@ class ArchitectureBoundaryTest {
     void generationStrategiesStaySeparated() throws IOException {
         assertNoReferences(Paths.get("ai", "rl"), "com.rustbuilder.ai.ea.");
         assertNoReferences(Paths.get("ai", "ea"), "com.rustbuilder.ai.rl.");
+    }
+
+    @Test
+    void llmProviderAdaptersDoNotOrchestrateTrainingRuntime() throws IOException {
+        assertNoReferences(Paths.get("ai", "rl", "supervisor", "provider", "gemini"),
+                "com.rustbuilder.ai.rl.application.RLTrainingService",
+                "com.rustbuilder.ai.rl.infrastructure.RLModelManager",
+                "com.rustbuilder.ai.rl.supervisor.application.LlmOrchestrator");
     }
 
     @Test

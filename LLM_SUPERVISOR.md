@@ -44,11 +44,11 @@ Use this command for the default Java implementation:
 builtin:gemini
 ```
 
-It calls `gemini-2.5-flash` first and retries once with `gemma-4-31b-it` if the
-primary model fails, times out, returns empty/non-JSON content, or hits an HTTP
-error. Override the models with `GEMINI_MODEL` and `GEMINI_FALLBACK_MODEL`, or
-set `GEMINI_FALLBACK_MODEL` to the same value as `GEMINI_MODEL` to disable the
-fallback.
+It calls `gemma-4-31b-it` first and retries once with
+`gemini-3.1-flash-lite` if the primary model fails, times out, returns
+empty/non-JSON content, or hits an HTTP error. Override the models with
+`GEMINI_MODEL` and `GEMINI_FALLBACK_MODEL`, or set `GEMINI_FALLBACK_MODEL` to
+the same value as `GEMINI_MODEL` to disable the fallback.
 
 Older UI configs that still reference `scripts/llm_supervisor_gemini.ps1` or
 `scripts/llm_supervisor_gemini.py` are routed to the same Java implementation so

@@ -2,8 +2,8 @@ package com.rustbuilder.di;
 
 import com.google.inject.Guice;
 import com.google.inject.Injector;
-import com.rustbuilder.ai.ea.GeneticAlgorithmService;
-import com.rustbuilder.ai.rl.RLTrainingService;
+import com.rustbuilder.ai.ea.application.GeneticAlgorithmService;
+import com.rustbuilder.ai.rl.application.RLTrainingService;
 import com.rustbuilder.controller.GameController;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.GridModelFactory;

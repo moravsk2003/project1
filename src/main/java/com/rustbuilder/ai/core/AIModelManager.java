@@ -1,7 +1,7 @@
 package com.rustbuilder.ai.core;
 
-import com.rustbuilder.ai.ea.BaseGenome;
-import com.rustbuilder.ai.ea.GeneticAlgorithmService;
+import com.rustbuilder.ai.ea.domain.BaseGenome;
+import com.rustbuilder.ai.ea.application.GeneticAlgorithmService;
 
 import java.io.BufferedInputStream;
 import java.io.BufferedOutputStream;

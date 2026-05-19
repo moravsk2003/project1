@@ -3,8 +3,8 @@ package com.rustbuilder.service;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 
-import com.rustbuilder.ai.ea.BaseGenome;
-import com.rustbuilder.ai.ea.GeneticAlgorithmService;
+import com.rustbuilder.ai.ea.domain.BaseGenome;
+import com.rustbuilder.ai.ea.application.GeneticAlgorithmService;
 import com.rustbuilder.model.GridModel;
 import org.junit.jupiter.api.Disabled;
 import org.junit.jupiter.api.Test;

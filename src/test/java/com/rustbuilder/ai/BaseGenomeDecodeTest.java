@@ -11,7 +11,7 @@ import org.junit.jupiter.api.Test;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.model.GridModel;
-import com.rustbuilder.ai.ea.BaseGenome;
+import com.rustbuilder.ai.ea.domain.BaseGenome;
 import com.rustbuilder.core.action.BuildAction;
 
 /**

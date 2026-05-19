@@ -1,5 +1,4 @@
 package com.rustbuilder.util;
-
 import com.rustbuilder.core.action.BuildAction;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingTier;

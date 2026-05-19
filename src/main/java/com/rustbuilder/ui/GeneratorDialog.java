@@ -5,8 +5,8 @@ import java.util.Objects;
 
 import com.rustbuilder.ai.core.AIModelManager;
 import com.rustbuilder.ai.core.AIModelManager.AIModel;
-import com.rustbuilder.ai.ea.BaseGenome;
-import com.rustbuilder.ai.ea.GeneticAlgorithmService;
+import com.rustbuilder.ai.ea.domain.BaseGenome;
+import com.rustbuilder.ai.ea.application.GeneticAlgorithmService;
 import com.rustbuilder.di.AppComponent;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.ui.hints.HintKey;

@@ -12,6 +12,15 @@ without the operational cost of microservices.
 - `service.evaluator`: scoring criteria and final house evaluation.
 - `service.raid`: shared raid-cost rules used by graph and evaluator code.
 - `ai`: generation strategies. `ai.rl` and `ai.ea` are independent approaches.
+  - `ai.ea.application`: EA use cases.
+  - `ai.ea.domain`: EA genome/domain model.
+  - `ai.rl.application`: RL training orchestration, runners, config, and logs.
+  - `ai.rl.domain`: episode results, reward config, reward logic, and formula evaluation.
+  - `ai.rl.environment`: state/action specs and state encoders.
+  - `ai.rl.infrastructure`: model persistence and default adapter factories.
+  - `ai.rl.policy`: action-selection policies such as multi-discrete DQN.
+  - `ai.rl.ports`: factory interfaces consumed by the application layer.
+  - `ai.rl.supervisor`: LLM supervisor boundary split into application, config, domain, observability, ports, provider, serialization, and validation packages.
 - `controller` and `ui`: JavaFX interaction and presentation.
 - `core`: shared command/result types used across modules.
 - `config` and `util`: low-level shared support.

@@ -5,7 +5,7 @@ import java.io.StringWriter;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.TimeUnit;
 
-import com.rustbuilder.ai.rl.RLTrainingService;
+import com.rustbuilder.ai.rl.application.RLTrainingService;
 import com.rustbuilder.controller.GameController;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.BuildingBlock;
