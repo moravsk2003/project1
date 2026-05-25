@@ -47,7 +47,7 @@ public class RLRewardConfig implements Serializable, Cloneable {
     public double tcProtectionDeltaReward = 0.2;
     public double tcProtectionEpisodeRewardCap = 1.0;
     public double noGrowthPenalty = -0.04;
-    public double stepEvalDeltaMultiplier = 6.0;
+    public double stepEvalDeltaMultiplier = 10.0;
     public double stopUnderbuildPenaltyLow = -0.5;
     public double stopUnderbuildPenaltyHigh = -1.0;
     public double stopRewardClampMin = -4.0;

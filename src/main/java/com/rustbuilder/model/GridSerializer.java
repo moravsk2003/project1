@@ -12,8 +12,11 @@ import com.rustbuilder.model.structure.Door;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.Locale;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 public class GridSerializer {
+    private static final Logger LOGGER = Logger.getLogger(GridSerializer.class.getName());
 
     public static String toJson(GridModel grid) {
         if (grid == null) return "[]";
@@ -69,8 +72,8 @@ public class GridSerializer {
                     b.setTier(tier);
                     grid.addBlockSilent(b);
                 }
-            } catch (Exception e) {
-                // Ignore parse errors for single blocks
+            } catch (IllegalArgumentException e) {
+                LOGGER.log(Level.FINE, "Skipping malformed serialized block.", e);
             }
         }
         grid.finalizeLoad();

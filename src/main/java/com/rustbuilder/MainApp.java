@@ -7,6 +7,7 @@ import java.util.concurrent.TimeUnit;
 
 import com.rustbuilder.ai.rl.application.RLTrainingService;
 import com.rustbuilder.controller.GameController;
+import com.rustbuilder.di.AppComponent;
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.BuildingTier;
@@ -31,14 +32,16 @@ public class MainApp extends Application {
 
     private GameController gameController;
     private RLTrainingService rlTrainingService;
+    private AppComponent appComponent;
 
     @Override
     public void start(Stage stage) {
         try {
-            GridModel gridModel = new GridModel();
+            appComponent = new AppComponent();
+            GridModel gridModel = appComponent.createGridModel();
             GameCanvas gameCanvas = new GameCanvas(gridModel, 800, 600);
-            gameController = new GameController(gridModel, gameCanvas);
-            rlTrainingService = new RLTrainingService();
+            gameController = appComponent.createGameController(gridModel, gameCanvas);
+            rlTrainingService = appComponent.createRLTrainingService();
             gameCanvas.setController(gameController);
 
             // === Building Tools ===

@@ -2,6 +2,10 @@ package com.rustbuilder.ui;
 
 import java.util.List;
 import java.util.Objects;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 
 import com.rustbuilder.ai.core.AIModelManager;
 import com.rustbuilder.ai.core.AIModelManager.AIModel;
@@ -45,6 +49,7 @@ public class GeneratorDialog {
     private final GameCanvas gameCanvas;
     private final AppComponent appComponent;
     private final Stage dialogStage;
+    private final ExecutorService backgroundExecutor;
 
     private GeneticAlgorithmService gaService;
     private String currentModelName;
@@ -116,6 +121,7 @@ public class GeneratorDialog {
         this.gridModel = gridModel;
         this.gameCanvas = gameCanvas;
         this.appComponent = Objects.requireNonNull(appComponent, "appComponent");
+        this.backgroundExecutor = Executors.newSingleThreadExecutor(daemonThreadFactory("ga-generator-dialog"));
         this.gaService = this.appComponent.createGeneticAlgorithmService();
 
         dialogStage = new Stage();
@@ -149,6 +155,7 @@ public class GeneratorDialog {
 
         Scene scene = new Scene(scroll, 460, 740);
         dialogStage.setScene(scene);
+        dialogStage.setOnCloseRequest(e -> backgroundExecutor.shutdownNow());
     }
 
     // ── MODEL ────────────────────────────────────────────────────────────────
@@ -519,7 +526,7 @@ public class GeneratorDialog {
 
         final int startGen = gaService.getGeneration();
 
-        Thread trainThread = new Thread(() -> {
+        CompletableFuture.runAsync(() -> {
             for (int epoch = 0; epoch < epochs; epoch++) {
                 final int currentEpoch = epoch + 1;
                 gaService.evolve(generations, logW, costW, raidW, workingAreaW, safeZoneW, progress -> {
@@ -567,9 +574,16 @@ public class GeneratorDialog {
                 saveCurrentModel();
                 refreshModelList();
             });
+        }, backgroundExecutor).exceptionally(ex -> {
+            Throwable cause = ex.getCause() != null ? ex.getCause() : ex;
+            Platform.runLater(() -> {
+                trainButton.setDisable(false);
+                generateButton.setDisable(gaService.getBestGenome() == null);
+                progressBar.setVisible(false);
+                setStatus("Training failed: " + cause.getMessage(), "#e74c3c");
+            });
+            return null;
         });
-        trainThread.setDaemon(true);
-        trainThread.start();
     }
 
     private void generateBest() {
@@ -609,7 +623,23 @@ public class GeneratorDialog {
             result.safeZone.closedBlocks, result.safeZone.score));
     }
 
-    public void show() { dialogStage.showAndWait(); }
+    public void show() {
+        try {
+            dialogStage.showAndWait();
+        } finally {
+            backgroundExecutor.shutdownNow();
+        }
+    }
+
+    private static ThreadFactory daemonThreadFactory(String name) {
+        ThreadFactory baseFactory = Executors.defaultThreadFactory();
+        return task -> {
+            Thread thread = baseFactory.newThread(task);
+            thread.setName(name);
+            thread.setDaemon(true);
+            return thread;
+        };
+    }
 
     // ── SHARED HELPERS ────────────────────────────────────────────────────────
 

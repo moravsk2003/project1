@@ -3,6 +3,7 @@ package com.rustbuilder.model.core;
 import java.util.List;
 import java.util.UUID;
 import java.util.Collections;
+import java.util.concurrent.ConcurrentHashMap;
 
 public abstract class BuildingBlock {
     private final String id;
@@ -14,7 +15,7 @@ public abstract class BuildingBlock {
     private double rotation; // Degrees
     protected java.util.Map<ResourceType, Integer> buildCost;
 
-    private static final java.util.Map<String, java.util.Map<ResourceType, Integer>> COST_CACHE = new java.util.HashMap<>();
+    private static final java.util.Map<String, java.util.Map<ResourceType, Integer>> COST_CACHE = new ConcurrentHashMap<>();
 
     private double[] cachedPolygonPoints = null;
     private double[] cachedCollisionPoints = null;
@@ -105,7 +106,7 @@ public abstract class BuildingBlock {
 
         if (type == BuildingType.TC) {
              cost.put(ResourceType.WOOD, 1000);
-             this.buildCost = cost;
+             this.buildCost = Collections.unmodifiableMap(cost);
              return;
         }
 

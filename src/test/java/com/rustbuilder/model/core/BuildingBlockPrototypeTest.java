@@ -70,4 +70,27 @@ class BuildingBlockPrototypeTest {
         assertEquals(BuildingTier.STONE, clonedBlock.getTier());
         assertEquals(45, clonedBlock.getRotation());
     }
+
+    @Test
+    void clone_geometryCacheIndependence() {
+        Foundation foundation = new Foundation(0, 0, 0, 0);
+        
+        // Force calculation of caches on original
+        double[] origPoints = foundation.getPolygonPoints();
+        
+        // Clone it
+        Foundation cloned = (Foundation) foundation.clone();
+        
+        // Modify cloned transform
+        cloned.setTransform(100, 200, 1, 90);
+        
+        // Check that original points are unchanged
+        double[] newOrigPoints = foundation.getPolygonPoints();
+        assertEquals(origPoints[0], newOrigPoints[0], 0.01);
+        assertEquals(origPoints[1], newOrigPoints[1], 0.01);
+        
+        // Check that cloned points are updated correctly
+        double[] clonedPoints = cloned.getPolygonPoints();
+        assertNotEquals(origPoints[0], clonedPoints[0], 0.01);
+    }
 }

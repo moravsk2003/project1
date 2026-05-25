@@ -12,6 +12,7 @@ import com.rustbuilder.model.structure.Door;
 import com.rustbuilder.model.structure.Floor;
 import com.rustbuilder.model.structure.TriangleFloor;
 import com.rustbuilder.model.core.BuildingType;
+import com.rustbuilder.model.core.BuildingBlock;
 import com.rustbuilder.model.core.DoorType;
 import com.rustbuilder.model.core.Orientation;
 import com.rustbuilder.core.action.BuildAction;
@@ -264,5 +265,44 @@ public class GridModelTest {
         assertEquals(y, validPlacement.y(), 0.01);
         assertTrue(PlacementService.isActionActuallyFeasible(gridModel, action),
                 "RL feasibility mask should see the inside ceiling as a valid action");
+    }
+
+    @Test
+    void testSpatialIndexHashingAndTombstones() {
+        int count = 100;
+        java.util.List<Foundation> blocks = new java.util.ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            Foundation foundation = new Foundation(i * 120.0, 0, 0, 0);
+            blocks.add(foundation);
+            assertTrue(gridModel.addBlockSilent(foundation));
+        }
+
+        for (int i = 0; i < count; i++) {
+            double targetX = i * 120.0;
+            java.util.List<BuildingBlock> found = gridModel.getNearbyBlocks(targetX, 0, 0, 1.0);
+            assertEquals(1, found.size());
+            assertEquals(blocks.get(i), found.get(0));
+        }
+
+        for (int i = 0; i < count; i++) {
+            gridModel.removeBlock(blocks.get(i));
+        }
+
+        assertTrue(gridModel.getAllBlocks().isEmpty());
+        for (int i = 0; i < count; i++) {
+            double targetX = i * 120.0;
+            java.util.List<BuildingBlock> found = gridModel.getNearbyBlocks(targetX, 0, 0, 1.0);
+            assertTrue(found.isEmpty());
+        }
+
+        for (int i = 0; i < count; i++) {
+            assertTrue(gridModel.addBlockSilent(blocks.get(i)));
+        }
+
+        for (int i = 0; i < count; i++) {
+            double targetX = i * 120.0;
+            java.util.List<BuildingBlock> found = gridModel.getNearbyBlocks(targetX, 0, 0, 1.0);
+            assertEquals(1, found.size());
+        }
     }
 }

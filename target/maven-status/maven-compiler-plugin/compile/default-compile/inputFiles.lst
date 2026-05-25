@@ -8,10 +8,12 @@ D:\project\src\main\java\com\rustbuilder\ai\rl\ports\package-info.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\infrastructure\package-info.java
 D:\project\src\main\java\com\rustbuilder\ai\package-info.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\policy\multidiscrete\package-info.java
+D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\provider\gemini\GeminiDirectionResult.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\environment\spec\StateEncodingSpec.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\serialization\package-info.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\provider\gemini\GeminiStageResult.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\environment\state\VoxelAggregationBuffer.java
+D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\domain\SupervisorActionDirection.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\domain\SupervisorObservation.java
 D:\project\src\main\java\com\rustbuilder\util\BuildingTypeUtils.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\application\LlmOrchestrator.java
@@ -19,6 +21,7 @@ D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\config\LlmSupervisorAp
 D:\project\src\main\java\com\rustbuilder\service\graph\HouseGraph.java
 D:\project\src\main\java\com\rustbuilder\service\physics\SnapResolver.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\environment\spec\GlobalFeatureSpec.java
+D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\domain\SupervisorDirectionDecision.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\domain\log\StopReason.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\package-info.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\domain\RLRewardConfig.java
@@ -39,6 +42,7 @@ D:\project\src\main\java\com\rustbuilder\model\GridSerializer.java
 D:\project\src\main\java\com\rustbuilder\ai\core\AIModelManager.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\environment\state\GlobalFeatureEncoder.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\observability\package-info.java
+D:\project\src\main\java\com\rustbuilder\model\GridPlacementRules.java
 D:\project\src\main\java\com\rustbuilder\model\stability\package-info.java
 D:\project\src\main\java\com\rustbuilder\service\graph\package-info.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\provider\NoOpLlmSupervisor.java
@@ -67,12 +71,15 @@ D:\project\src\main\java\com\rustbuilder\model\deployable\ToolCupboard.java
 D:\project\src\main\java\com\rustbuilder\model\GridModel.java
 D:\project\src\main\java\com\rustbuilder\service\evaluator\LogisticsEvaluator.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\validation\SupervisorDecisionValidator.java
+D:\project\src\main\java\com\rustbuilder\model\spatial\LongBlockListMap.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\provider\GeminiLlmSupervisor.java
 D:\project\src\main\java\com\rustbuilder\ui\hints\ContextHintPopup.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\policy\multidiscrete\MultiDiscreteExperienceReplay.java
 D:\project\src\main\java\com\rustbuilder\ai\core\TrainingMetrics.java
 D:\project\src\main\java\com\rustbuilder\controller\package-info.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\policy\multidiscrete\NeuralMultiDiscreteDecisionProvider.java
+D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\application\HistoricalTrainingReportService.java
+D:\project\src\main\java\com\rustbuilder\ai\rl\infrastructure\RLModelCatalogService.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\supervisor\observability\SupervisorDecisionLogWriter.java
 D:\project\src\main\java\com\rustbuilder\ai\ea\domain\BaseGenome.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\environment\state\BucketedVoxelV2StateEncoder.java
@@ -95,6 +102,7 @@ D:\project\src\main\java\com\rustbuilder\ai\rl\environment\state\VoxelV1StateEnc
 D:\project\src\main\java\com\rustbuilder\model\structure\Floor.java
 D:\project\src\main\java\com\rustbuilder\ui\GeneratorDialog.java
 D:\project\src\main\java\com\rustbuilder\ui\hints\HintUtils.java
+D:\project\src\main\java\com\rustbuilder\model\GridCollisionPolicy.java
 D:\project\src\main\java\com\rustbuilder\service\evaluator\package-info.java
 D:\project\src\main\java\com\rustbuilder\ai\rl\package-info.java
 D:\project\src\main\java\com\rustbuilder\util\BlockFactory.java

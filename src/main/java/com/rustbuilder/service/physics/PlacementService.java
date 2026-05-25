@@ -100,7 +100,7 @@ public class PlacementService {
             return 0;
         }
         int desiredSide = desiredWallSocketSide(action, block);
-        return socket.getSide() == desiredSide ? 0 : 1;
+        return socket.getSide() == desiredSide ? 1 : 0;
     }
 
     private static boolean isWallAction(BuildAction.ActionType type) {

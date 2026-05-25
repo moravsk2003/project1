@@ -8,15 +8,14 @@ call :find_maven
 if errorlevel 1 goto :end
 
 set "PROFILE=cpu"
+if /I "%RUSTBUILDER_BACKEND%"=="cuda" set "PROFILE=cuda"
 if /I "%~1"=="cuda" set "PROFILE=cuda"
 if /I "%~1"=="gpu" set "PROFILE=cuda"
-if /I "%RUSTBUILDER_BACKEND%"=="cuda" set "PROFILE=cuda"
+if /I "%~1"=="cpu" set "PROFILE=cpu"
 
 if "%PROFILE%"=="cuda" (
-    set "PROFILE=cuda"
     echo Running Rust Base Builder with CUDA backend...
 ) else (
-    set "PROFILE=cpu"
     echo Running Rust Base Builder with CPU backend...
     echo Use run.bat gpu or run_gpu.bat to opt in to the CUDA backend.
 )

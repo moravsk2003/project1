@@ -7,11 +7,15 @@ import java.net.http.HttpResponse;
 import java.net.http.HttpTimeoutException;
 import java.time.Duration;
 import java.util.Set;
+import java.util.concurrent.TimeUnit;
+import java.util.logging.Level;
+import java.util.logging.Logger;
 
 /**
  * Low-level Gemini HTTP adapter.
  */
 public final class GeminiModelClient {
+    private static final Logger LOGGER = Logger.getLogger(GeminiModelClient.class.getName());
     private static final int MAX_RETRIES = 3;
     private static final long BASE_BACKOFF_MS = 2000;
     private static final Set<Integer> RETRYABLE_STATUS_CODES = Set.of(500, 502, 503);
@@ -65,28 +69,31 @@ public final class GeminiModelClient {
                     return GeminiModelResult.error(modelName, lastError);
                 }
 
-                System.err.printf("[GeminiModelClient] %s attempt %d/%d failed (HTTP %d), retrying in %dms...%n",
-                    modelName, attempt, MAX_RETRIES, status, backoffMs(attempt));
+                LOGGER.log(Level.WARNING,
+                    "{0} attempt {1}/{2} failed (HTTP {3}), retrying in {4}ms...",
+                    new Object[] { modelName, attempt, MAX_RETRIES, status, backoffMs(attempt) });
 
             } catch (HttpTimeoutException e) {
                 lastError = modelName + " request timed out (attempt " + attempt + "/" + MAX_RETRIES + ")";
-                System.err.printf("[GeminiModelClient] %s attempt %d/%d timed out, retrying in %dms...%n",
-                    modelName, attempt, MAX_RETRIES, backoffMs(attempt));
+                LOGGER.log(Level.WARNING,
+                    "{0} attempt {1}/{2} timed out, retrying in {3}ms...",
+                    new Object[] { modelName, attempt, MAX_RETRIES, backoffMs(attempt) });
             } catch (java.io.IOException e) {
                 lastError = modelName + " I/O error: " + e.getMessage();
-                System.err.printf("[GeminiModelClient] %s attempt %d/%d I/O error: %s, retrying in %dms...%n",
-                    modelName, attempt, MAX_RETRIES, e.getMessage(), backoffMs(attempt));
+                LOGGER.log(Level.WARNING,
+                    "{0} attempt {1}/{2} I/O error: {3}, retrying in {4}ms...",
+                    new Object[] { modelName, attempt, MAX_RETRIES, e.getMessage(), backoffMs(attempt) });
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return GeminiModelResult.error(modelName, modelName + " request interrupted");
-            } catch (Exception e) {
+            } catch (RuntimeException e) {
                 return GeminiModelResult.error(modelName, modelName + " request failed: " + e.getMessage());
             }
 
             // Backoff before next attempt (unless this was the last attempt)
             if (attempt < MAX_RETRIES) {
                 try {
-                    Thread.sleep(backoffMs(attempt));
+                    TimeUnit.MILLISECONDS.sleep(backoffMs(attempt));
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
                     return GeminiModelResult.error(modelName, modelName + " retry interrupted");

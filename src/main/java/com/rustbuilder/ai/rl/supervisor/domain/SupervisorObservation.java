@@ -197,6 +197,53 @@ public final class SupervisorObservation {
         this.historicalReport = historicalReport != null ? historicalReport : "";
     }
 
+    public SupervisorObservation withHistoricalReport(String historicalReport) {
+        return new SupervisorObservation(
+            branchId,
+            totalEpisodesTrained,
+            bestScore,
+            avgEvalScore,
+            currentEpisodeEvalScore,
+            currentEpisodeStepReward,
+            currentEpisodeFinalReward,
+            bestTotalReward,
+            invalidActionRate,
+            lastEpisodeInvalidActions,
+            lastEpisodeTotalActions,
+            epsilon,
+            lastTrainLoss,
+            memorySize,
+            bestBaseBlocks,
+            bestBaseHasTC,
+            bestBaseDoors,
+            episodeBlocksPlaced,
+            episodeHasTC,
+            componentCount,
+            mainComponentBlocks,
+            evalLogisticsScore,
+            evalCostScore,
+            evalRaidScore,
+            evalWorkingAreaScore,
+            evalSafeZoneScore,
+            raidSulfurToTC,
+            stopReason,
+            stepRewardBreakdown,
+            finalRewardBreakdown,
+            trainingStartTimeIso,
+            currentTimeIso,
+            trainingDeadlineIso,
+            trainingElapsedMs,
+            trainingRemainingMs,
+            trainingTimeLimitEnabled,
+            trainingTimeLimitReached,
+            invalidActionReasons,
+            actionTypeCounts,
+            currentRewardConfig,
+            trainingContext,
+            trendMetrics,
+            historicalReport);
+    }
+
     private static Map<String, Integer> copyMap(Map<String, Integer> source) {
         if (source == null || source.isEmpty()) {
             return Collections.emptyMap();

@@ -86,6 +86,8 @@ public class RLModelManager {
         public boolean hasObjectTable = false;
         public boolean hasGraphState = false;
         public boolean use2dCnn = false;
+        public double epsilonDecayRate = 0.9995;
+        public double minEpsilon = 0.05;
 
         public RLModel(String name, int episodesTrained,
                        double bestScore, double epsilon,
@@ -749,6 +751,8 @@ public class RLModelManager {
         model.hasGraphState = config.stateEncodingSpec.hasGraphState;
         model.supervisorConfig = rlService.getSupervisorConfig();
         model.use2dCnn = rlService.isUse2dCnn();
+        model.epsilonDecayRate = rlService.getEpsilonDecay();
+        model.minEpsilon = rlService.getMinEpsilon();
         
         model.bestBaseEvalJson = com.rustbuilder.model.GridSerializer.toJson(rlService.getBestGridModelSnapshot());
         model.bestBaseRewardJson = com.rustbuilder.model.GridSerializer.toJson(rlService.getBestRewardGridModelSnapshot());
@@ -786,6 +790,8 @@ public class RLModelManager {
         rlService.resetRuntimeState();
         rlService.setEpisodesTrained(model.episodesTrained);
         rlService.setEpsilon(model.epsilon);
+        rlService.setEpsilonDecay(model.epsilonDecayRate > 0.0 ? model.epsilonDecayRate : 0.9995);
+        rlService.setMinEpsilon(model.minEpsilon > 0.0 ? model.minEpsilon : 0.05);
         rlService.setBestScore(model.bestScore);
         rlService.setUse2dCnn(model.use2dCnn);
         if (model.rewardConfig != null) {

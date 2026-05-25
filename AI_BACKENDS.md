@@ -1,106 +1,129 @@
-# AI backend selection
+# AI Backend Selection
 
-The project uses DeepLearning4J/ND4J for reinforcement-learning models.
+The project uses DeepLearning4J and ND4J (version `1.0.0-M2.1`) for reinforcement-learning models.
 
-## Default: CPU
+ND4J selects its execution backend dynamically at runtime using Java's `ServiceLoader` mechanism, loading whichever backend platform implementation is present on the classpath.
 
-The Maven project uses the CPU backend by default. This is important for IDE
-runs, because `com.rustbuilder.Launcher` receives the classpath that IntelliJ
-IDEA or VS Code builds before the JVM starts. Keeping CUDA off the default
-classpath avoids startup crashes on Windows machines where the NVIDIA driver is
-present but the CUDA native dependencies required by ND4J cannot be loaded.
+---
 
-After changing this file or switching branches, reload the Maven project in the
-IDE so the launcher classpath is rebuilt.
+## Classpath Entry Points
 
-Expected startup log for the default IDE run:
+The project has two distinct entry points, depending on how the application is executed:
 
+1. **`com.rustbuilder.Launcher`**: A standard Java launcher class (not extending JavaFX `Application`). Running this class is the recommended way to start the app from an IDE (like IntelliJ IDEA or VS Code). It receives the classpath built by the IDE and forwards execution to `MainApp`, bypassing JavaFX restrictions on running application subclasses directly from the classpath.
+2. **`com.rustbuilder.MainApp`**: The main JavaFX application class. This entry point is used directly by the Maven plugin (`javafx:run`) configured in [pom.xml](file:///d:/project/pom.xml#L119), which handles modular dependencies and JVM parameters automatically.
+
+---
+
+## Maven Profiles & Dependencies
+
+The backend implementation is determined by which Maven profile is active during compile/run:
+
+### 1. Default Profile: `cpu`
+- **Active by default**: Keeps the classpath lightweight and stable on machines without NVIDIA GPUs.
+- **Dependencies**: Includes `nd4j-native-platform`.
+- **Declaration** in [pom.xml](file:///d:/project/pom.xml#L131-L148):
+  ```xml
+  <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>nd4j-native-platform</artifactId>
+      <version>${dl4j.version}</version>
+  </dependency>
+  ```
+
+### 2. CUDA Profile: `cuda`
+- **Opt-in**: Used on machines equipped with compatible NVIDIA GPU drivers and a CUDA toolkit.
+- **Dependencies**: Includes `nd4j-cuda-11.6-platform` and `nd4j-native-platform` (as fallback).
+- **Declaration** in [pom.xml](file:///d:/project/pom.xml#L150-L171):
+  ```xml
+  <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>nd4j-cuda-11.6-platform</artifactId>
+      <version>${dl4j.version}</version>
+  </dependency>
+  <dependency>
+      <groupId>org.nd4j</groupId>
+      <artifactId>nd4j-native-platform</artifactId>
+      <version>${dl4j.version}</version>
+  </dependency>
+  ```
+
+---
+
+## Log Verification
+
+Check the SLF4J/Logback logs during application startup to confirm which ND4J backend has loaded.
+
+### Expected logs for CPU (`cpu` profile):
 ```text
-Loaded [CpuBackend] backend
+[main] INFO org.nd4j.linalg.factory.Nd4jBackend - Loaded [CpuBackend] backend
+[main] INFO org.nd4j.linalg.api.ops.executioner.DefaultOpExecutioner - Backend used: [CPU]; OS: [Windows 10]
 ```
 
-Expected startup log for GPU:
-
+### Expected logs for GPU (`cuda` profile):
 ```text
-Loaded [JCublasBackend] backend
-Backend used: [CUDA]
+[main] INFO org.nd4j.linalg.factory.Nd4jBackend - Loaded [JCublasBackend] backend
+[main] INFO org.nd4j.linalg.api.ops.executioner.DefaultOpExecutioner - Backend used: [CUDA]; OS: [Windows 10]
 ```
 
-If the log says `Loaded [CpuBackend] backend` while you intended to use CUDA,
-the IDE is still running with the CPU dependency on its classpath. Activate the
-`cuda` Maven profile and reload the Maven project.
-
-If the log says:
-
+### Troubleshooting CUDA initialization:
+If the `cuda` profile is active but ND4J fails to load it, you will see a warning in the logs:
 ```text
-Skipped [JCublasBackend] backend (unavailable)
-jnicudart.dll: Can't find dependent libraries
+[main] WARN org.nd4j.linalg.factory.Nd4jBackend - Skipped [JCublasBackend] backend (unavailable)
 ```
+Followed by a stack trace indicating a linking failure (e.g., `java.lang.UnsatisfiedLinkError: no jnicudart in java.library.path` or similar missing native DLLs). 
 
-then the CUDA dependency is on the classpath, but Windows cannot load one of
-the required native CUDA/NVIDIA/Visual C++ DLLs. Check that `nvidia-smi` works,
-the NVIDIA driver is installed, and the Microsoft Visual C++ Redistributable is
-available. To start the app without fixing the CUDA installation first, switch
-back to the `cpu` profile.
+If this happens:
+- Confirm that `nvidia-smi` works on your command line.
+- Verify that Microsoft Visual C++ Redistributable is installed.
+- Ensure that the required CUDA toolkit version is installed and visible on the PATH.
+- If you need to temporarily bypass CUDA errors and launch the application, switch back to the `cpu` profile.
 
-For command-line launch, use:
+---
 
-```bat
-run.bat
-```
+## Command-Line Execution
 
-`run.bat` uses the CPU backend by default. To opt in to CUDA from the same
-script, use:
+To run the application from the command line, use the provided batch scripts in the project root:
 
-```bat
-run.bat gpu
-```
+- **`run.bat`**: The central launcher script. It automatically searches for a local JDK (including IDE-bundled runtimes) and detects Maven (checking for `mvnw.cmd` or local/IDE Maven installations).
+  - Runs the CPU profile by default:
+    ```cmd
+    run.bat
+    ```
+  - Force the CPU profile explicitly:
+    ```cmd
+    run.bat cpu
+    ```
+  - Opt-in to the CUDA backend:
+    ```cmd
+    run.bat gpu
+    ```
+    or
+    ```cmd
+    run.bat cuda
+    ```
+  - Override via environment variables:
+    ```cmd
+    set RUSTBUILDER_BACKEND=cuda
+    run.bat
+    ```
+    *(Note: explicit command-line arguments like `cpu` override the `RUSTBUILDER_BACKEND` environment variable)*
 
-You can also set:
+- **`run_cpu.bat`**: A convenience script that delegates to `run.bat cpu` to run with the CPU backend.
+- **`run_gpu.bat`**: A convenience script that delegates to `run.bat gpu` to run with the CUDA GPU backend.
 
-```bat
-set RUSTBUILDER_BACKEND=cuda
-run.bat
-```
+---
 
-## NVIDIA CUDA
+## Manual Maven Commands
 
-Use CUDA explicitly from the command line on a machine with a compatible NVIDIA
-GPU driver/CUDA runtime.
+If Maven is configured globally in your command line, you can start the application directly:
 
-```bat
-mvn -Pcuda clean javafx:run
-```
-
-or:
-
-```bat
-run_gpu.bat
-```
-
-The `cuda` profile uses:
-
-```xml
-org.nd4j:nd4j-cuda-11.6-platform
-org.nd4j:nd4j-native-platform
-```
-
-## CPU fallback
-
-Use the CPU backend on a machine without a compatible NVIDIA CUDA setup.
-
-```bat
+### Run on CPU
+```cmd
 mvn -Pcpu clean javafx:run
 ```
 
-or:
-
-```bat
-run_cpu.bat
-```
-
-The `cpu` profile uses:
-
-```xml
-org.nd4j:nd4j-native-platform
+### Run on GPU (CUDA)
+```cmd
+mvn -Pcuda clean javafx:run
 ```

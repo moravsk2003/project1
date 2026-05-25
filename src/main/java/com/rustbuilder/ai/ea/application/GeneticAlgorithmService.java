@@ -165,6 +165,7 @@ public class GeneticAlgorithmService {
                 genome.setFitness(finalFitness);
                 fitnessCache.put(genome, finalFitness);
             } catch (Exception e) {
+                LOGGER.log(Level.FINE, "Genome evaluation failed; keeping zero fitness.", e);
                 // Evaluation crashed — keep genome at 0 fitness
                 genome.setFitness(0.0);
                 fitnessCache.put(genome, 0.0);

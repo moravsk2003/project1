@@ -358,13 +358,7 @@ public class MultiDiscreteDQNAgent {
         for (int i = 0; i < m; i++) {
             MultiDiscreteExperienceReplay.Transition t = batch.get(i);
             if (!t.isDone && t.nextGrid != null) {
-                boolean hasTC = false;
-                boolean hasLootRoom = false;
-                for (com.rustbuilder.model.core.BuildingBlock b : t.nextGrid.getAllBlocks()) {
-                    if (b.getType() == com.rustbuilder.model.core.BuildingType.TC) hasTC = true;
-                        if (b.getType() == com.rustbuilder.model.core.BuildingType.LOOT_ROOM) hasLootRoom = true;
-                }
-                nextContexts[i] = new MultiDiscretePhaseContext(t.nextGrid, hasTC, hasLootRoom, t.step + 1, t.step + 2);
+                nextContexts[i] = new MultiDiscretePhaseContext(t.nextGrid, t.step + 1, t.step + 2);
                 // Determine valid types for next state
                 List<Integer> vTypes = HeuristicMaskingUtils.getFeasibleTypes(nextContexts[i]);
                 if (vTypes.isEmpty()) {

@@ -274,7 +274,11 @@ public final class SupervisorJson {
             return n.intValue();
         }
         if (val instanceof String s) {
-            try { return Integer.parseInt(s.trim()); } catch (Exception ignored) {}
+            try {
+                return Integer.parseInt(s.trim());
+            } catch (NumberFormatException ignored) {
+                return null;
+            }
         }
         return null;
     }

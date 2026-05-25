@@ -34,6 +34,9 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Random;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 import java.util.function.Consumer;
 import java.util.function.Supplier;
 import java.time.Instant;
@@ -183,7 +186,7 @@ public class RLTrainingService {
     // Hyperparameters
     private double epsilon = 1.0;
     private double epsilonDecay;
-    private final double minEpsilon = 0.05;
+    private double minEpsilon = 0.05;
     private final int targetUpdateFreq = 10;
     private static final int MEMORY_CAPACITY = 10000;
     private static final int AUTOSAVE_INTERVAL_EPISODES = 100;
@@ -222,6 +225,8 @@ public class RLTrainingService {
     private double bestBaseStepReward = 0;
     private double bestBaseFinalReward = 0;
     private double bestBaseTotalReward = 0;
+    private volatile EpisodeResult lastEpisodeResult;
+    private volatile boolean orchestratorActive = false;
 
     private RLRewardConfig rewardConfig;
 
@@ -253,6 +258,8 @@ public class RLTrainingService {
     private volatile boolean pendingAutoResume = false;
     private volatile String lastCurriculumObjectiveStatus = "";
     private final Object branchExperimentLock = new Object();
+    private final ExecutorService branchExperimentExecutor =
+        Executors.newSingleThreadExecutor(daemonThreadFactory("rl-branch-experiment"));
     private volatile boolean branchExperimentRunning = false;
     private volatile boolean branchReviewInProgress = false;
     private volatile String branchExperimentStatus = "No branch experiment yet.";
@@ -307,6 +314,16 @@ public class RLTrainingService {
         if (callback != null && message != null && !message.isBlank()) {
             callback.accept(message);
         }
+    }
+
+    private static ThreadFactory daemonThreadFactory(String name) {
+        ThreadFactory baseFactory = Executors.defaultThreadFactory();
+        return task -> {
+            Thread thread = baseFactory.newThread(task);
+            thread.setName(name);
+            thread.setDaemon(true);
+            return thread;
+        };
     }
 
     public RLTrainingService() {
@@ -483,6 +500,7 @@ public class RLTrainingService {
         this.bestBaseStepReward = 0;
         this.bestBaseFinalReward = 0;
         this.bestBaseTotalReward = 0;
+        this.lastEpisodeResult = null;
         resetCurriculumStateForNewRun("encoder_switch");
         this.logger.init(); // Re-initialize log files for new encoder mode
     }
@@ -519,6 +537,7 @@ public class RLTrainingService {
         this.avgEvalScore = 0;
         this.lastEpisodeInvalidActions = 0;
         this.lastEpisodeTotalActions = 0;
+        this.lastEpisodeResult = null;
         this.bestBaseBlocks = 0;
         this.bestBaseHasTC = false;
         this.bestBaseDoors = 0;
@@ -605,15 +624,6 @@ public class RLTrainingService {
             trainingConfig.getWorkingAreaWeight(),
             trainingConfig.getSafeZoneWeight());
 
-        int totalEpisodesToTrain = epochs * episodes;
-        double exploreEpisodes = totalEpisodesToTrain * 0.8;
-
-        if (exploreEpisodes > 0 && epsilon > (minEpsilon + 0.001)) {
-            epsilonDecay = Math.pow(minEpsilon / epsilon, 1.0 / exploreEpisodes);
-        } else {
-            epsilonDecay = 1.0;
-        }
-
         stopRequested = false;
         trainingRunning = true;
         this.trainingStartTime = System.currentTimeMillis();
@@ -644,24 +654,350 @@ public class RLTrainingService {
         logger.init();
 
         try {
-            TrainingLoadProfile lastAppliedLoadProfile = null;
+            if (this.supervisorConfig != null && this.supervisorConfig.isEnabled()) {
+                orchestratorActive = true;
+                runSupervisorLedTrainLoop(trainingConfig, progressCallback, epochCompleteCallback);
+            } else {
+                orchestratorActive = false;
+                runStandardTrainLoop(trainingConfig, progressCallback, epochCompleteCallback);
+            }
+        } finally {
+            orchestratorActive = false;
+            maybeAutosaveModel(activeTrainingModelName, trainingConfig, "final", true);
+            logger.close();
+            totalTrainingTimeMs += System.currentTimeMillis() - trainingStartTime;
+            currentTrainingDurationMs = 0L;
+            trainingDeadlineMs = 0L;
+            trainingRunning = false;
+            applyPendingBranchSwitchIfReady();
+        }
+    }
 
-            for (int epoch = 0; epoch < epochs; epoch++) {
-                if (stopRequested || shouldStopForTrainingTimeLimit()) break;
+    private void runSupervisorLedTrainLoop(RLTrainingConfig trainingConfig,
+                                           Consumer<TrainingMetrics> progressCallback,
+                                           Runnable epochCompleteCallback) {
+        String modelName = trainingConfig.getModelName();
+        int episodesPerEpoch = trainingConfig.getEpisodesPerEpoch();
+        int epochs = trainingConfig.getEpochs();
+        int targetLimitEpisodes = epochs * episodesPerEpoch;
+        int startEpisodesTrained = episodesTrained;
+        int segmentSize = supervisorConfig.getEffectiveCallIntervalEpisodes();
 
-                double epochTotalReward = 0;
-                double epochTotalStepReward = 0;
-                double epochTotalFinalReward = 0;
-                int epochPositiveTotal = 0;
-                int epochPositiveFinal = 0;
-                int epochTotalInvalid = 0;
-                int epochTotalActions = 0;
-                int epochTotalBlocks = 0;
-                int epochRejectedProx = 0;
-                long epochEncoderTime = 0;
-                long epochGlobalTime = 0;
-                double epochBestEpScore = -1;
-                long epochStartMs = System.currentTimeMillis();
+        if (epsilonDecay <= 0.0 || epsilonDecay == 1.0) {
+            double exploreEpisodes = targetLimitEpisodes * 0.8;
+            if (exploreEpisodes > 0 && epsilon > (minEpsilon + 0.001)) {
+                epsilonDecay = Math.pow(minEpsilon / epsilon, 1.0 / exploreEpisodes);
+            } else {
+                epsilonDecay = 0.9995;
+            }
+        }
+
+        while (episodesTrained < targetLimitEpisodes && !stopRequested && !shouldStopForTrainingTimeLimit()) {
+            int actualEpisodesToRun = Math.min(segmentSize, targetLimitEpisodes - episodesTrained);
+            int currentEpoch = ((episodesTrained - startEpisodesTrained) / segmentSize) + 1;
+
+            runTrainingSegment(actualEpisodesToRun, currentEpoch, progressCallback, epochCompleteCallback);
+
+            if (stopRequested || shouldStopForTrainingTimeLimit()) {
+                break;
+            }
+
+            if (branchExperimentRunning || branchReviewInProgress) {
+                continue;
+            }
+
+            double lastEvalScore = 0.0;
+            if (lastEpisodeResult != null && lastEpisodeResult.evaluationResult != null) {
+                lastEvalScore = lastEpisodeResult.evaluationResult.finalScore;
+            }
+
+            TrainingMetrics metrics = createTrainingMetrics(
+                currentEpoch,
+                epochs,
+                actualEpisodesToRun,
+                actualEpisodesToRun,
+                lastEpisodeResult,
+                lastEvalScore
+            );
+
+            Map<String, Object> trendMetrics = buildSupervisorTrendMetrics(metrics);
+            if (lastEpisodeResult != null) {
+                trendMetrics.put("currentEpisodeEvaluationDiagnostics", evaluationDiagnostics(lastEpisodeResult));
+            }
+
+            SupervisorObservation observation = trainingAnalyzer.summarize(
+                supervisorConfig.getBranchId(),
+                metrics,
+                lastEpisodeResult,
+                getRewardConfig(),
+                buildSupervisorTrainingContext(metrics, supervisorConfig),
+                trendMetrics
+            );
+
+            rememberSupervisorTrend(metrics);
+
+            emitSupervisorLog(String.format(
+                java.util.Locale.US,
+                "Supervisor check: branch=%s episode=%d epsilon=%.5f best=%.4f",
+                observation.branchId,
+                observation.totalEpisodesTrained,
+                observation.epsilon,
+                observation.bestScore
+            ));
+
+            if (!waitForSupervisorRateLimit(observation)) {
+                break;
+            }
+
+            if (stopRequested || shouldStopForTrainingTimeLimit()) {
+                break;
+            }
+
+            SupervisorDecision rawDecision;
+            try {
+                rawDecision = llmSupervisor.review(observation);
+            } catch (Exception e) {
+                emitSupervisorLog("Supervisor call failed: " + e.getMessage());
+                rawDecision = SupervisorDecision.keepGoing("Supervisor call failed: " + e.getMessage());
+            }
+
+            if (stopRequested || shouldStopForTrainingTimeLimit()) {
+                break;
+            }
+
+            Map<String, Object> diagnostics = supervisorDiagnostics();
+            SupervisorDecision decision = supervisorDecisionValidator.validate(rawDecision, supervisorConfig, getRewardConfig(), observation);
+            recordSupervisorDecisionOutcome(decision, "training");
+            boolean applied = shouldApplySupervisorDecision(supervisorConfig, decision);
+            if (applied) {
+                applied = applySupervisorDecision(decision);
+                clearPendingSupervisorDecision();
+            } else if (supervisorConfig.getApplyMode() == LlmSupervisorApplyMode.MANUAL_APPROVAL
+                    && isManuallyApplicable(decision)) {
+                pendingSupervisorDecision = decision;
+                pendingSupervisorDecisionSummary = formatSupervisorDecisionSummary(observation, decision, false, supervisorConfig);
+                emitSupervisorLog("[PENDING] " + pendingSupervisorDecisionSummary);
+            } else if (supervisorConfig.getApplyMode() == LlmSupervisorApplyMode.LOG_ONLY) {
+                clearPendingSupervisorDecision();
+            }
+
+            lastSupervisorDecisionSummary = formatSupervisorDecisionSummary(observation, decision, applied, supervisorConfig);
+            emitSupervisorLog(lastSupervisorDecisionSummary);
+            supervisorDecisionLogWriter.write(activeTrainingModelName, observation, decision, applied, diagnostics);
+            rememberSupervisorDecision(observation, decision, applied, diagnostics);
+
+            if (stopRequested || shouldStopForTrainingTimeLimit()) {
+                break;
+            }
+
+            if (pendingBranchSwitchRequested && !trainingRunning) {
+                trainingRunning = false;
+                boolean jumped = applyPendingBranchSwitchIfReady();
+                trainingRunning = true;
+                if (jumped) {
+                    modelName = activeTrainingModelName;
+
+                    int remainingEpisodes = targetLimitEpisodes - episodesTrained;
+                    if (epsilonDecay <= 0.0 || epsilonDecay == 1.0) {
+                        if (remainingEpisodes > 0 && epsilon > (minEpsilon + 0.001)) {
+                            epsilonDecay = Math.pow(minEpsilon / epsilon, 1.0 / (remainingEpisodes * 0.8));
+                        } else {
+                            epsilonDecay = 0.9995;
+                        }
+                    }
+
+                    logger.close();
+                    java.nio.file.Path trainingOutputDir = RLModelManager.normalizeModelOutputDirectory(
+                        modelName,
+                        trainingConfig.getOutputDirectory()
+                    );
+                    logger.setLogFile(modelName, true, trainingOutputDir);
+                    logger.init();
+                }
+            }
+        }
+    }
+
+    private void runTrainingSegment(int segmentSize,
+                                    int currentEpoch,
+                                    Consumer<TrainingMetrics> progressCallback,
+                                    Runnable epochCompleteCallback) {
+        TrainingLoadProfile lastAppliedLoadProfile = null;
+        EpisodeEvaluator episodeEvaluator = episodeRunnerFactory.createEvaluator(evaluator, rewardConfig);
+        EpisodeRunner runner = episodeRunnerFactory.createRunner(
+            multiDiscreteAgent,
+            multiDiscreteMemory,
+            multiDiscretePolicy,
+            multiDiscreteObserver,
+            random,
+            rewardConfig,
+            logger,
+            this,
+            stateEncoder,
+            evaluator);
+
+        double epochTotalReward = 0;
+        double epochTotalStepReward = 0;
+        double epochTotalFinalReward = 0;
+        int epochPositiveTotal = 0;
+        int epochPositiveFinal = 0;
+        int epochTotalInvalid = 0;
+        int epochTotalActions = 0;
+        int epochTotalBlocks = 0;
+        int epochRejectedProx = 0;
+        long epochEncoderTime = 0;
+        long epochGlobalTime = 0;
+        double epochBestEpScore = -1;
+        long epochStartMs = System.currentTimeMillis();
+
+        for (int ep = 0; ep < segmentSize; ep++) {
+            if (stopRequested || shouldStopForTrainingTimeLimit()) break;
+            TrainingLoadProfile activeLoadProfile = trainingLoadProfile;
+            if (activeLoadProfile != lastAppliedLoadProfile) {
+                applyTrainingThreadPriority(activeLoadProfile);
+                lastAppliedLoadProfile = activeLoadProfile;
+            }
+
+            long episodeWorkStartNs = System.nanoTime();
+            EpisodeResult result;
+            if (multiDiscreteNeuralProvider != null) {
+                multiDiscreteNeuralProvider.setEpsilon(epsilon);
+            }
+            result = runner.runExperimentalMultiDiscreteEpisode(activeMaxStepsPerEpisode, episodesTrained, currentEpoch, ep + 1);
+
+            this.currentMultiAction = runner.getCurrentMultiAction();
+            if (runner.getLastTrainLoss() > 0) {
+                this.lastTrainLoss = runner.getLastTrainLoss();
+            }
+
+            long finalEvalStartNs = System.nanoTime();
+            episodeEvaluator.evaluate(result, activeMaxStepsPerEpisode, currentEpoch - 1, ep, segmentSize, multiDiscreteMemory);
+            result.perfFinalEvalNs += System.nanoTime() - finalEvalStartNs;
+
+            // Accumulate epoch stats
+            double epTotal = result.accStepReward + result.finalEvalReward;
+            epochTotalReward += epTotal;
+            epochTotalStepReward += result.accStepReward;
+            epochTotalFinalReward += result.finalEvalReward;
+            if (epTotal > 0) epochPositiveTotal++;
+            if (result.finalEvalReward > 0) epochPositiveFinal++;
+            epochTotalInvalid += result.invalidActions;
+            epochTotalActions += result.totalActions;
+            epochTotalBlocks += result.blocksPlaced;
+            epochRejectedProx += HeuristicMaskingUtils.tilesRejectedByNearStructureRule;
+            epochEncoderTime += result.totalEncoderTimeMs;
+            epochGlobalTime += result.totalGlobalEncoderTimeMs;
+
+            if (epTotal > epochBestEpScore) epochBestEpScore = epTotal;
+
+            // Track stats or write log
+            long episodeLogStartNs = System.nanoTime();
+            logger.writeEpisodeLog(currentEpoch, ep + 1, episodesTrained + 1, result, epsilon);
+            result.perfEpisodeLogNs += System.nanoTime() - episodeLogStartNs;
+
+            long updateBestStartNs = System.nanoTime();
+            updateBestBase(result);
+            result.perfUpdateBestNs += System.nanoTime() - updateBestStartNs;
+
+            logger.writePerformanceLog(currentEpoch, ep + 1, episodesTrained + 1, result);
+
+            double episodeEvalScore = 0.0;
+            if (result.evaluationResult != null) {
+                episodeEvalScore = result.evaluationResult.finalScore;
+            }
+            recentEvalScores.addLast(episodeEvalScore);
+            if (recentEvalScores.size() > AVG_WINDOW) recentEvalScores.removeFirst();
+            avgEvalScore = recentEvalScores.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+
+            if (ep > 0 && ep % targetUpdateFreq == 0) {
+                if (multiDiscreteAgent != null) {
+                    multiDiscreteAgent.updateTargetNetwork();
+                }
+            }
+
+            // Continuous epsilon decay
+            if (epsilon > minEpsilon) {
+                epsilon *= epsilonDecay;
+            }
+
+            episodesTrained++;
+            this.lastEpisodeResult = result;
+
+            this.lastEpisodeInvalidActions = result.invalidActions;
+            this.lastEpisodeTotalActions = result.totalActions;
+
+            recentRewards.addLast(result.accStepReward);
+            if (recentRewards.size() > AVG_WINDOW) recentRewards.removeFirst();
+            avgReward = recentRewards.stream().mapToDouble(Double::doubleValue).average().orElse(0.0);
+            recordCurriculumEpisodeSample(result, episodeEvalScore, epTotal);
+
+            maybeAutosaveModel(activeTrainingModelName, activeTrainingConfig, "interval", false);
+
+            if (progressCallback != null && (ep % 5 == 0 || ep == segmentSize - 1)) {
+                TrainingMetrics metrics = createTrainingMetrics(
+                    currentEpoch, activeTrainingConfig.getEpochs(), ep + 1, segmentSize, result, episodeEvalScore);
+                progressCallback.accept(metrics);
+            }
+
+            if (result.finalEvalReward > epochBestEpScore) epochBestEpScore = result.finalEvalReward;
+            throttleTrainingLoad(System.nanoTime() - episodeWorkStartNs, activeLoadProfile);
+            if (shouldStopForTrainingTimeLimit()) break;
+        }
+
+        // End of epoch logging
+        long epochMs = System.currentTimeMillis() - epochStartMs;
+        logger.writeEpochLog(currentEpoch, segmentSize, epochTotalReward,
+            epochTotalStepReward, epochTotalFinalReward,
+            epochPositiveTotal, epochPositiveFinal,
+            epochTotalInvalid, epochTotalActions, epochTotalBlocks,
+            epochRejectedProx, epochEncoderTime, epochGlobalTime,
+            epochBestEpScore, epochMs,
+            bestScore, epsilon, lastTrainLoss,
+            bestBaseBlocks, bestBaseHasTC, bestBaseDoors);
+
+        if (epochCompleteCallback != null) {
+            epochCompleteCallback.run();
+        }
+        maybeAutosaveModel(activeTrainingModelName, activeTrainingConfig, "epoch " + currentEpoch, true);
+    }
+
+    private void runStandardTrainLoop(RLTrainingConfig trainingConfig,
+                                      Consumer<TrainingMetrics> progressCallback,
+                                      Runnable epochCompleteCallback) {
+        String modelName = trainingConfig.getModelName();
+        int episodes = trainingConfig.getEpisodesPerEpoch();
+        int maxStepsPerEpisode = trainingConfig.getMaxStepsPerEpisode();
+        int epochs = trainingConfig.getEpochs();
+
+        if (epsilonDecay <= 0.0 || epsilonDecay == 1.0) {
+            int totalEpisodesToTrain = epochs * episodes;
+            double exploreEpisodes = totalEpisodesToTrain * 0.8;
+
+            if (exploreEpisodes > 0 && epsilon > (minEpsilon + 0.001)) {
+                epsilonDecay = Math.pow(minEpsilon / epsilon, 1.0 / exploreEpisodes);
+            } else {
+                epsilonDecay = 0.9995;
+            }
+        }
+
+        TrainingLoadProfile lastAppliedLoadProfile = null;
+
+        for (int epoch = 0; epoch < epochs; epoch++) {
+            if (stopRequested || shouldStopForTrainingTimeLimit()) break;
+
+            double epochTotalReward = 0;
+            double epochTotalStepReward = 0;
+            double epochTotalFinalReward = 0;
+            int epochPositiveTotal = 0;
+            int epochPositiveFinal = 0;
+            int epochTotalInvalid = 0;
+            int epochTotalActions = 0;
+            int epochTotalBlocks = 0;
+            int epochRejectedProx = 0;
+            long epochEncoderTime = 0;
+            long epochGlobalTime = 0;
+            double epochBestEpScore = -1;
+            long epochStartMs = System.currentTimeMillis();
 
             EpisodeEvaluator episodeEvaluator = episodeRunnerFactory.createEvaluator(evaluator, rewardConfig);
             EpisodeRunner runner = episodeRunnerFactory.createRunner(
@@ -686,7 +1022,6 @@ public class RLTrainingService {
 
                 long episodeWorkStartNs = System.nanoTime();
                 EpisodeResult result;
-                // Set epsilon BEFORE the episode to ensure correct exploration rate
                 if (multiDiscreteNeuralProvider != null) {
                     multiDiscreteNeuralProvider.setEpsilon(epsilon);
                 }
@@ -702,10 +1037,11 @@ public class RLTrainingService {
                 result.perfFinalEvalNs += System.nanoTime() - finalEvalStartNs;
 
                 // Track epoch stats
-                epochTotalReward += (result.accStepReward + result.finalEvalReward);
+                double epTotal = result.accStepReward + result.finalEvalReward;
+                epochTotalReward += epTotal;
                 epochTotalStepReward += result.accStepReward;
                 epochTotalFinalReward += result.finalEvalReward;
-                if ((result.accStepReward + result.finalEvalReward) > 0) epochPositiveTotal++;
+                if (epTotal > 0) epochPositiveTotal++;
                 if (result.finalEvalReward > 0) epochPositiveFinal++;
                 epochTotalInvalid += result.invalidActions;
                 epochTotalActions += result.totalActions;
@@ -714,7 +1050,6 @@ public class RLTrainingService {
                 epochEncoderTime += result.totalEncoderTimeMs;
                 epochGlobalTime += result.totalGlobalEncoderTimeMs;
 
-                double epTotal = result.accStepReward + result.finalEvalReward;
                 if (epTotal > epochBestEpScore) epochBestEpScore = epTotal;
 
                 long episodeLogStartNs = System.nanoTime();
@@ -746,6 +1081,7 @@ public class RLTrainingService {
                 }
 
                 episodesTrained++;
+                this.lastEpisodeResult = result;
 
                 this.lastEpisodeInvalidActions = result.invalidActions;
                 this.lastEpisodeTotalActions = result.totalActions;
@@ -769,30 +1105,21 @@ public class RLTrainingService {
                 if (shouldStopForTrainingTimeLimit()) break;
             }
 
-                // End of epoch logging
-                long epochMs = System.currentTimeMillis() - epochStartMs;
-                logger.writeEpochLog(epoch + 1, episodes, epochTotalReward,
-                    epochTotalStepReward, epochTotalFinalReward,
-                    epochPositiveTotal, epochPositiveFinal,
-                    epochTotalInvalid, epochTotalActions, epochTotalBlocks,
-                    epochRejectedProx, epochEncoderTime, epochGlobalTime,
-                    epochBestEpScore, epochMs,
-                    bestScore, epsilon, lastTrainLoss,
-                    bestBaseBlocks, bestBaseHasTC, bestBaseDoors);
+            // End of epoch logging
+            long epochMs = System.currentTimeMillis() - epochStartMs;
+            logger.writeEpochLog(epoch + 1, episodes, epochTotalReward,
+                epochTotalStepReward, epochTotalFinalReward,
+                epochPositiveTotal, epochPositiveFinal,
+                epochTotalInvalid, epochTotalActions, epochTotalBlocks,
+                epochRejectedProx, epochEncoderTime, epochGlobalTime,
+                epochBestEpScore, epochMs,
+                bestScore, epsilon, lastTrainLoss,
+                bestBaseBlocks, bestBaseHasTC, bestBaseDoors);
 
             if (epochCompleteCallback != null) {
                 epochCompleteCallback.run();
             }
             maybeAutosaveModel(modelName, trainingConfig, "epoch " + (epoch + 1), true);
-        }
-        } finally {
-            maybeAutosaveModel(modelName, trainingConfig, "final", true);
-            logger.close();
-            totalTrainingTimeMs += System.currentTimeMillis() - trainingStartTime;
-            currentTrainingDurationMs = 0L;
-            trainingDeadlineMs = 0L;
-            trainingRunning = false;
-            applyPendingBranchSwitchIfReady();
         }
     }
 
@@ -919,7 +1246,12 @@ public class RLTrainingService {
         }
     }
 
+
+
     private void maybeInvokeSupervisor(String modelName, TrainingMetrics metrics, EpisodeResult result) {
+        if (orchestratorActive) {
+            return;
+        }
         LlmSupervisorConfig config = supervisorConfig;
         if (config == null || !config.isEnabled() || metrics == null) {
             return;
@@ -1785,7 +2117,7 @@ public class RLTrainingService {
         emitSupervisorLog(lastSupervisorDecisionSummary);
 
         long remainingMs = delay.toMillis();
-        while (remainingMs > 0 && !stopRequested && !isTrainingTimeLimitReached()) {
+        while (remainingMs > 0 && !stopRequested && !isTrainingTimeLimitReached() && !orchestratorActive) {
             long sleepMs = Math.min(remainingMs, 1_000L);
             try {
                 Thread.sleep(sleepMs);
@@ -1795,7 +2127,7 @@ public class RLTrainingService {
             }
             remainingMs -= sleepMs;
         }
-        if (stopRequested || shouldStopForTrainingTimeLimit()) {
+        if (stopRequested || shouldStopForTrainingTimeLimit() || orchestratorActive) {
             return false;
         }
         supervisorRateLimiter.reserveNowAfterDelay(estimatedTokens);
@@ -1968,7 +2300,7 @@ public class RLTrainingService {
         final double finalBaselineEpsilon = getEpsilon();
         final String proposedAction = decision.getAction().name();
         final String proposalReason = decision.getReason();
-        Thread thread = new Thread(() -> runBranchExperiment(
+        branchExperimentExecutor.execute(() -> runBranchExperiment(
             sourceConfig,
             baselineName,
             candidateName,
@@ -1978,8 +2310,6 @@ public class RLTrainingService {
             finalCandidateEpsilon,
             proposedAction,
             proposalReason));
-        thread.setDaemon(true);
-        thread.start();
         return true;
     }
 
@@ -2960,6 +3290,7 @@ public class RLTrainingService {
         this.bestBaseTotalReward = 0;
         this.totalTrainingTimeMs = 0;
         this.lastSupervisorDecisionSummary = "";
+        this.lastEpisodeResult = null;
         resetCurriculumStateForNewRun("runtime_reset");
         clearPendingSupervisorDecision();
         resetSupervisorTrendState();
@@ -2990,6 +3321,12 @@ public class RLTrainingService {
 
     public double getEpsilon() { return epsilon; }
     public void setEpsilon(double epsilon) { this.epsilon = epsilon; }
+
+    public double getEpsilonDecay() { return epsilonDecay; }
+    public void setEpsilonDecay(double epsilonDecay) { this.epsilon = epsilonDecay; }
+
+    public double getMinEpsilon() { return minEpsilon; }
+    public void setMinEpsilon(double minEpsilon) { this.minEpsilon = minEpsilon; }
 
     public double getAvgReward() { return avgReward; }
     public double getAvgEvalScore() { return avgEvalScore; }

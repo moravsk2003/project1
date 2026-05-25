@@ -118,8 +118,8 @@ final class SocketPlacementResolver {
                 return distCompare;
             }
             int preferenceCompare = Integer.compare(
-                    preference.priority(a.block, a.socket),
-                    preference.priority(b.block, b.socket));
+                    preference.priority(b.block, b.socket),
+                    preference.priority(a.block, a.socket));
             if (preferenceCompare != 0) {
                 return preferenceCompare;
             }

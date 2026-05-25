@@ -26,7 +26,7 @@ public final class RLModelCatalogService {
         for (String modelName : RLModelManager.listModels()) {
             try {
                 summaries.add(describeModel(modelName, currentConfig));
-            } catch (Exception ignored) {
+            } catch (IOException | ClassNotFoundException ignored) {
                 // A corrupt or half-written model should not block LLM supervision.
             }
         }

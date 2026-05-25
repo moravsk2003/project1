@@ -127,9 +127,12 @@ public class GeminiLlmSupervisor implements LlmSupervisor, LlmSupervisorDiagnost
         SupervisorDirectionDecision directionDecision = directionResult.getDirectionDecision();
         if (directionDecision == null || directionDecision.getDirection() == null) {
             diagnostics.put("finalStage", "SELECT_DIRECTION");
-            diagnostics.put("error", "Gemini did not select a valid action direction.");
+            String errorMsg = directionResult.getDiagnostics().get("error") != null
+                ? String.valueOf(directionResult.getDiagnostics().get("error"))
+                : "Gemini did not select a valid action direction.";
+            diagnostics.put("error", errorMsg);
             lastDiagnostics = diagnostics;
-            return SupervisorDecision.keepGoing("Gemini did not select a valid action direction.");
+            return SupervisorDecision.keepGoing(errorMsg);
         }
 
         SupervisorActionDirection selectedDirection = directionDecision.getDirection();
@@ -140,6 +143,18 @@ public class GeminiLlmSupervisor implements LlmSupervisor, LlmSupervisorDiagnost
             directionResult.getDirectionJson(),
             selectedDirection);
         stages.add(finalDecision.getDiagnostics());
+
+        // If the DECIDE_ACTION stage call itself failed/errored (resulting in a blank JSON response)
+        if (finalDecision.getDecisionJson().isBlank()) {
+            diagnostics.put("finalStage", "DECIDE_ACTION");
+            String errorMsg = finalDecision.getDiagnostics().get("error") != null
+                ? String.valueOf(finalDecision.getDiagnostics().get("error"))
+                : "Gemini decision call failed.";
+            diagnostics.put("error", errorMsg);
+            lastDiagnostics = diagnostics;
+            return finalDecision.getDecision(); // Return the failure keepGoing decision directly
+        }
+
         if (!selectedDirection.allows(finalDecision.getDecision().getAction(), SupervisorJson.allowedActionsFor(observation))) {
             diagnostics.put("finalStage", "DECIDE_ACTION");
             diagnostics.put("error", "Gemini selected an action outside the chosen direction.");

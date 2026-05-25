@@ -64,6 +64,17 @@ class DependencyInjectionBoundaryTest {
         assertTrue(component.contains("Guice.createInjector(new AppModule())"));
     }
 
+    @Test
+    void mainAppUsesApplicationComponentForRuntimeWiring() throws IOException {
+        String source = read("src/main/java/com/rustbuilder/MainApp.java");
+
+        assertTrue(source.contains("new AppComponent()"));
+        assertTrue(source.contains("createGameController(gridModel, gameCanvas)"));
+        assertTrue(source.contains("createRLTrainingService()"));
+        assertFalse(source.contains("new GameController("));
+        assertFalse(source.contains("new RLTrainingService("));
+    }
+
     private String read(String path) throws IOException {
         return Files.readString(Path.of(path), StandardCharsets.UTF_8);
     }

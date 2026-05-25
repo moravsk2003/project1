@@ -2,6 +2,7 @@ package com.rustbuilder.ai.rl.policy.multidiscrete;
 
 import com.rustbuilder.model.GridModel;
 import com.rustbuilder.model.core.BuildingBlock;
+import com.rustbuilder.model.core.BuildingType;
 import com.rustbuilder.config.GameConstants;
 import com.rustbuilder.util.BuildingTypeUtils;
 import java.util.ArrayList;
@@ -32,6 +33,15 @@ public class MultiDiscretePhaseContext {
     private final List<Integer>[] wallExactTilesByFloor;
     private final List<Integer>[] wallPlacementTilesByFloor;
     private final List<Integer>[] ceilingPlacementTilesByFloor;
+
+    public MultiDiscretePhaseContext(GridModel grid, int step, int maxSteps) {
+        this(
+            grid,
+            containsType(grid, BuildingType.TC),
+            containsType(grid, BuildingType.LOOT_ROOM),
+            step,
+            maxSteps);
+    }
 
     public MultiDiscretePhaseContext(GridModel grid, boolean hasTC, boolean hasLootRoom, int step, int maxSteps) {
         this.grid = grid;
@@ -282,5 +292,17 @@ public class MultiDiscretePhaseContext {
             return Collections.emptyList();
         }
         return lists[floor];
+    }
+
+    private static boolean containsType(GridModel grid, BuildingType type) {
+        if (grid == null || type == null) {
+            return false;
+        }
+        for (BuildingBlock block : grid.getAllBlocks()) {
+            if (block.getType() == type) {
+                return true;
+            }
+        }
+        return false;
     }
 }

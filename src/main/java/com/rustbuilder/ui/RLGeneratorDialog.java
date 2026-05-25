@@ -11,6 +11,9 @@ import com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscreteStateObserver;
 import com.rustbuilder.ai.rl.supervisor.provider.LlmSupervisorFactory;
 import java.io.IOException;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.ThreadFactory;
 
 import com.rustbuilder.ai.core.TrainingMetrics;
 import com.rustbuilder.ai.rl.infrastructure.RLModelManager;
@@ -63,6 +66,7 @@ public class RLGeneratorDialog {
     private final GameCanvas gameCanvas; // Optional, can be null
     private final Stage dialogStage;
     private final Runnable refreshCallback;
+    private final ExecutorService backgroundExecutor;
 
     private RLTrainingService rlService;
     private String currentModelName;
@@ -152,6 +156,7 @@ public class RLGeneratorDialog {
         this.mainGrid = mainGrid;
         this.refreshCallback = refreshCallback;
         this.gameCanvas = gameCanvas;
+        this.backgroundExecutor = Executors.newSingleThreadExecutor(daemonThreadFactory("rl-generator-dialog"));
 
         dialogStage = new Stage();
         dialogStage.initModality(Modality.NONE);
@@ -756,7 +761,7 @@ public class RLGeneratorDialog {
         }
         
         final String finalModelName = modelName;
-        Thread trainingThread = new Thread(() -> {
+        backgroundExecutor.execute(() -> {
             try {
                 RLTrainingConfig trainingConfig = new RLTrainingConfig(
                     finalModelName, ep, steps, lw, cw, rw, ww, safeZoneW, epochs,
@@ -774,7 +779,7 @@ public class RLGeneratorDialog {
                     diagnosticButton.setDisable(false);
                     updateStats();
                 });
-            } catch (Throwable ex) {
+            } catch (Exception ex) {
                 java.io.StringWriter sw = new java.io.StringWriter();
                 ex.printStackTrace(new java.io.PrintWriter(sw));
                 String stack = sw.toString();
@@ -789,8 +794,6 @@ public class RLGeneratorDialog {
                 });
             }
         });
-        trainingThread.setDaemon(true);
-        trainingThread.start();
     }
 
     private void applyLoadProfileFromUI(boolean announce) {
@@ -1201,7 +1204,7 @@ public class RLGeneratorDialog {
                 }
             };
         
-        Thread t = new Thread(() -> {
+        backgroundExecutor.execute(() -> {
             try {
                 com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscreteAction action = rlService.chooseSingleStepAction(stepGrid, guiObserver);
                 if (action == null || !action.isValid() || action.getTypeIndex() == com.rustbuilder.ai.rl.policy.multidiscrete.MultiDiscreteActionSpace.STOP_TYPE_INDEX) {
@@ -1232,8 +1235,6 @@ public class RLGeneratorDialog {
                 Platform.runLater(() -> diagnosticButton.setDisable(false));
             }
         });
-        t.setDaemon(true);
-        t.start();
     }
 
     private BuildingBlock cloneBlock(BuildingBlock b) {
@@ -1409,6 +1410,17 @@ public class RLGeneratorDialog {
         if (trainingRunning) {
             stopTraining();
         }
+        backgroundExecutor.shutdownNow();
+    }
+
+    private static ThreadFactory daemonThreadFactory(String name) {
+        ThreadFactory baseFactory = Executors.defaultThreadFactory();
+        return task -> {
+            Thread thread = baseFactory.newThread(task);
+            thread.setName(name);
+            thread.setDaemon(true);
+            return thread;
+        };
     }
 
     private VBox createSummarySection() {

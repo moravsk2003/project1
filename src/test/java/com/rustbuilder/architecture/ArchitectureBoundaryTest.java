@@ -1,4 +1,5 @@
 package com.rustbuilder.architecture;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -58,6 +59,38 @@ class ArchitectureBoundaryTest {
         assertNoReferences(Paths.get("service", "graph"), "com.rustbuilder.service.evaluator.");
     }
 
+    @Test
+    void llmOrchestratorDelegatesHistoricalLogAccess() throws IOException {
+        String source = read("src/main/java/com/rustbuilder/ai/rl/supervisor/application/LlmOrchestrator.java");
+
+        assertFalse(source.contains("RLModelManager"));
+        assertFalse(source.contains("Files."));
+        assertFalse(source.contains(".split("));
+        assertFalse(source.contains("new SupervisorObservation("));
+        assertFalse(source.contains("new Thread("));
+        assertFalse(source.contains("Thread.sleep("));
+    }
+
+    @Test
+    void multiDiscreteDqnAgentDoesNotInspectGameObjectTypes() throws IOException {
+        String source = read("src/main/java/com/rustbuilder/ai/rl/policy/multidiscrete/MultiDiscreteDQNAgent.java");
+
+        assertFalse(source.contains("BuildingType.TC"));
+        assertFalse(source.contains("BuildingType.LOOT_ROOM"));
+        assertFalse(source.contains("com.rustbuilder.model.core.BuildingType"));
+    }
+
+    @Test
+    void gridModelDelegatesCollisionPlacementAndSpatialDetails() throws IOException {
+        String source = read("src/main/java/com/rustbuilder/model/GridModel.java");
+
+        assertFalse(source.contains("private static final class LongBlockListMap"));
+        assertFalse(source.contains("SocketCompatibilityUtils"));
+        assertFalse(source.contains("BuildingType.TC"));
+        assertFalse(source.contains("BuildingType.WORKBENCH"));
+        assertFalse(source.contains("BuildingType.LOOT_ROOM"));
+    }
+
     private static void assertNoReferences(String modulePath, String... forbiddenReferences) throws IOException {
         assertNoReferences(Paths.get(modulePath), forbiddenReferences);
     }
@@ -80,5 +113,9 @@ class ArchitectureBoundaryTest {
         }
 
         assertTrue(violations.isEmpty(), () -> String.join(System.lineSeparator(), violations));
+    }
+
+    private static String read(String path) throws IOException {
+        return Files.readString(Path.of(path), StandardCharsets.UTF_8);
     }
 }

@@ -11,10 +11,17 @@ import com.rustbuilder.ai.rl.supervisor.ports.LlmSupervisor;
 import com.rustbuilder.ai.rl.supervisor.provider.LlmSupervisorFactory;
 import com.rustbuilder.ai.rl.supervisor.validation.SupervisorDecisionValidator;
 import com.rustbuilder.ai.core.TrainingMetrics;
-import com.rustbuilder.ai.rl.infrastructure.RLModelManager;
 import com.rustbuilder.ai.rl.application.RLTrainingConfig;
 import com.rustbuilder.ai.rl.application.RLTrainingService;
 
+import java.util.Objects;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.ThreadFactory;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
@@ -24,10 +31,14 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public class LlmOrchestrator {
 
     private final RLTrainingService rlService;
+    private final HistoricalTrainingReportService historicalReportService;
     private final SupervisorDecisionValidator decisionValidator = new SupervisorDecisionValidator();
     private final AtomicBoolean running = new AtomicBoolean(false);
     private final AtomicBoolean idleDecisionInProgress = new AtomicBoolean(false);
-    private Thread orchestratorThread;
+    private final Object executorLock = new Object();
+    private ScheduledExecutorService scheduler;
+    private ExecutorService forceCheckExecutor;
+    private ScheduledFuture<?> scheduledTask;
     private volatile java.util.function.Consumer<String> statusCallback;
     private volatile java.util.function.Consumer<TrainingMetrics> trainingProgressCallback;
     
@@ -35,21 +46,43 @@ public class LlmOrchestrator {
     private static final long IDLE_POLL_INTERVAL_MS = 10000;
 
     public LlmOrchestrator(RLTrainingService rlService) {
-        this.rlService = rlService;
+        this(rlService, new HistoricalTrainingReportService());
+    }
+
+    public LlmOrchestrator(RLTrainingService rlService,
+                           HistoricalTrainingReportService historicalReportService) {
+        this.rlService = Objects.requireNonNull(rlService, "rlService");
+        this.historicalReportService = Objects.requireNonNull(historicalReportService, "historicalReportService");
     }
 
     public void start() {
         if (running.compareAndSet(false, true)) {
-            orchestratorThread = new Thread(this::runLoop);
-            orchestratorThread.setDaemon(true);
-            orchestratorThread.start();
+            synchronized (executorLock) {
+                scheduler = Executors.newSingleThreadScheduledExecutor(daemonThreadFactory("llm-orchestrator"));
+                scheduledTask = scheduler.scheduleWithFixedDelay(
+                    this::runScheduledCheck,
+                    0L,
+                    IDLE_POLL_INTERVAL_MS,
+                    TimeUnit.MILLISECONDS);
+            }
         }
     }
 
     public void stop() {
         running.set(false);
-        if (orchestratorThread != null) {
-            orchestratorThread.interrupt();
+        synchronized (executorLock) {
+            if (scheduledTask != null) {
+                scheduledTask.cancel(true);
+                scheduledTask = null;
+            }
+            if (scheduler != null) {
+                scheduler.shutdownNow();
+                scheduler = null;
+            }
+            if (forceCheckExecutor != null) {
+                forceCheckExecutor.shutdownNow();
+                forceCheckExecutor = null;
+            }
         }
     }
 
@@ -67,95 +100,107 @@ public class LlmOrchestrator {
             return;
         }
         cb.accept("Orchestrator: contacting LLM...");
-        Thread t = new Thread(() -> {
+        try {
+            getForceCheckExecutor().execute(() -> {
+                try {
+                    LlmSupervisorConfig config = rlService.getSupervisorConfig();
+                    if (config == null || !config.isEnabled()) {
+                        cb.accept("Orchestrator: supervisor is not enabled.");
+                        return;
+                    }
+                    if (rlService.isTrainingRunning()) {
+                        cb.accept("Orchestrator: training is already running.");
+                        return;
+                    }
+                    if (rlService.isSupervisorBranchWorkInProgress()) {
+                        cb.accept("Orchestrator: branch experiment/review is still running.");
+                        return;
+                    }
+                    SupervisorObservation obs = rlService.createIdleSupervisorObservation("idle_check");
+                    SupervisorDecision decision = askLlm(config, obs);
+                    processDecision(decision, obs, config, cb, 0);
+                } catch (Exception e) {
+                    cb.accept("[ORCHESTRATOR] Error: " + e.getMessage());
+                } finally {
+                    idleDecisionInProgress.set(false);
+                }
+            });
+        } catch (RejectedExecutionException e) {
+            idleDecisionInProgress.set(false);
+            cb.accept("[ORCHESTRATOR] Error: executor is not accepting checks.");
+        }
+    }
+
+    private void runScheduledCheck() {
+        if (!running.get()) {
+            return;
+        }
+        try {
+            LlmSupervisorConfig config = rlService.getSupervisorConfig();
+            if (config == null || !config.isEnabled() || rlService.isTrainingRunning()) {
+                return;
+            }
+            if (rlService.isSupervisorBranchWorkInProgress()) {
+                return;
+            }
+            if (!idleDecisionInProgress.compareAndSet(false, true)) {
+                return;
+            }
+
             try {
-                LlmSupervisorConfig config = rlService.getSupervisorConfig();
-                if (config == null || !config.isEnabled()) {
-                    cb.accept("Orchestrator: supervisor is not enabled.");
-                    return;
+                if (rlService.hasPendingAutoResume()) {
+                    rlService.clearPendingAutoResume();
+                    String modelName = rlService.getActiveTrainingModelName();
+                    if (modelName == null || modelName.isBlank()) modelName = "auto_run_" + System.currentTimeMillis();
+
+                    SupervisorDecision autoResumeDecision = SupervisorDecision.startNewRun(
+                        null,
+                        null,
+                        modelName,
+                        "Auto-resuming training after branch jump/promotion."
+                    );
+
+                    java.util.function.Consumer<String> cb = msg -> {
+                        if (this.statusCallback != null) this.statusCallback.accept(msg);
+                    };
+                    cb.accept("[ORCHESTRATOR] Auto-resume triggered. Bypassing LLM check.");
+                    processDecision(autoResumeDecision, null, config, cb, 0);
+                } else {
+                    SupervisorObservation obs = rlService.createIdleSupervisorObservation("idle_check");
+                    SupervisorDecision decision = askLlm(config, obs);
+                    processDecision(decision, obs, config, msg -> {
+                        if (this.statusCallback != null) this.statusCallback.accept(msg);
+                    }, 0);
                 }
-                if (rlService.isTrainingRunning()) {
-                    cb.accept("Orchestrator: training is already running.");
-                    return;
-                }
-                if (rlService.isSupervisorBranchWorkInProgress()) {
-                    cb.accept("Orchestrator: branch experiment/review is still running.");
-                    return;
-                }
-                SupervisorObservation obs = rlService.createIdleSupervisorObservation("idle_check");
-                SupervisorDecision decision = askLlm(config, obs);
-                processDecision(decision, obs, config, cb, 0);
-            } catch (Exception e) {
-                cb.accept("[ORCHESTRATOR] Error: " + e.getMessage());
             } finally {
                 idleDecisionInProgress.set(false);
             }
-        });
-        t.setDaemon(true);
-        t.start();
-    }
-
-    private void runLoop() {
-        while (running.get()) {
-            try {
-                LlmSupervisorConfig config = rlService.getSupervisorConfig();
-                if (config != null && config.isEnabled()) {
-                    // If training is NOT currently running
-                    if (!rlService.isTrainingRunning()) {
-                        if (rlService.isSupervisorBranchWorkInProgress()) {
-                            Thread.sleep(IDLE_POLL_INTERVAL_MS);
-                            continue;
-                        }
-                        if (!idleDecisionInProgress.compareAndSet(false, true)) {
-                            Thread.sleep(IDLE_POLL_INTERVAL_MS);
-                            continue;
-                        }
-                        
-                        try {
-                            if (rlService.hasPendingAutoResume()) {
-                                rlService.clearPendingAutoResume();
-                                String modelName = rlService.getActiveTrainingModelName();
-                                if (modelName == null || modelName.isBlank()) modelName = "auto_run_" + System.currentTimeMillis();
-                                
-                                SupervisorDecision autoResumeDecision = SupervisorDecision.startNewRun(
-                                    null,
-                                    null,
-                                    modelName,
-                                    "Auto-resuming training after branch jump/promotion."
-                                );
-                                
-                                java.util.function.Consumer<String> cb = msg -> {
-                                    if (this.statusCallback != null) this.statusCallback.accept(msg);
-                                };
-                                cb.accept("[ORCHESTRATOR] Auto-resume triggered. Bypassing LLM check.");
-                                processDecision(autoResumeDecision, null, config, cb, 0);
-                            } else {
-                                // Create a special observation indicating idle state
-                                SupervisorObservation obs = rlService.createIdleSupervisorObservation("idle_check");
-                                SupervisorDecision decision = askLlm(config, obs);
-                                processDecision(decision, obs, config, msg -> {
-                                    if (this.statusCallback != null) this.statusCallback.accept(msg);
-                                }, 0);
-                            }
-                        } finally {
-                            idleDecisionInProgress.set(false);
-                        }
-                    }
-                }
-                Thread.sleep(IDLE_POLL_INTERVAL_MS);
-            } catch (InterruptedException e) {
-                Thread.currentThread().interrupt();
-                break;
-            } catch (Exception e) {
-                // Ignore transient errors and keep polling
-                try {
-                    Thread.sleep(IDLE_POLL_INTERVAL_MS);
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
+        } catch (Exception e) {
+            // Keep scheduled polling alive through transient supervisor/runtime errors.
+            java.util.function.Consumer<String> cb = statusCallback;
+            if (cb != null) {
+                cb.accept("[ORCHESTRATOR] Scheduled check skipped after error: " + e.getMessage());
             }
         }
+    }
+
+    private ExecutorService getForceCheckExecutor() {
+        synchronized (executorLock) {
+            if (forceCheckExecutor == null || forceCheckExecutor.isShutdown() || forceCheckExecutor.isTerminated()) {
+                forceCheckExecutor = Executors.newSingleThreadExecutor(daemonThreadFactory("llm-orchestrator-force-check"));
+            }
+            return forceCheckExecutor;
+        }
+    }
+
+    private static ThreadFactory daemonThreadFactory(String name) {
+        ThreadFactory baseFactory = Executors.defaultThreadFactory();
+        return task -> {
+            Thread thread = baseFactory.newThread(task);
+            thread.setName(name);
+            thread.setDaemon(true);
+            return thread;
+        };
     }
 
     private SupervisorDecision askLlm(LlmSupervisorConfig config, SupervisorObservation obs) {
@@ -248,22 +293,14 @@ public class LlmOrchestrator {
                 return;
             }
             cb.accept("[ORCHESTRATOR] LLM requested historical report for " + decision.getReportModelName());
-            String report = generateHistoricalReport(decision.getReportModelName(), decision.getReportStartEpoch(), decision.getReportEndEpoch());
-            
-            SupervisorObservation newObs = new SupervisorObservation(
-                originalObs.branchId, originalObs.totalEpisodesTrained, originalObs.bestScore, originalObs.avgEvalScore,
-                originalObs.currentEpisodeEvalScore, originalObs.currentEpisodeStepReward, originalObs.currentEpisodeFinalReward,
-                originalObs.bestTotalReward, originalObs.invalidActionRate, originalObs.lastEpisodeInvalidActions,
-                originalObs.lastEpisodeTotalActions, originalObs.epsilon, originalObs.lastTrainLoss, originalObs.memorySize,
-                originalObs.bestBaseBlocks, originalObs.bestBaseHasTC, originalObs.bestBaseDoors, originalObs.episodeBlocksPlaced,
-                originalObs.episodeHasTC, originalObs.componentCount, originalObs.mainComponentBlocks, originalObs.evalLogisticsScore,
-                originalObs.evalCostScore, originalObs.evalRaidScore, originalObs.evalWorkingAreaScore, originalObs.evalSafeZoneScore,
-                originalObs.raidSulfurToTC, originalObs.stopReason, originalObs.stepRewardBreakdown, originalObs.finalRewardBreakdown,
-                originalObs.trainingStartTimeIso, originalObs.currentTimeIso, originalObs.trainingDeadlineIso,
-                originalObs.trainingElapsedMs, originalObs.trainingRemainingMs, originalObs.trainingTimeLimitEnabled,
-                originalObs.trainingTimeLimitReached, originalObs.invalidActionReasons, originalObs.actionTypeCounts,
-                originalObs.currentRewardConfig, originalObs.trainingContext, originalObs.trendMetrics, report
-            );
+            String report = historicalReportService.generateHistoricalReport(
+                decision.getReportModelName(),
+                decision.getReportStartEpoch(),
+                decision.getReportEndEpoch());
+            SupervisorObservation baseObs = originalObs != null
+                ? originalObs
+                : rlService.createIdleSupervisorObservation("historical_report");
+            SupervisorObservation newObs = baseObs.withHistoricalReport(report);
             
             SupervisorDecision nextDecision = askLlm(config, newObs);
             processDecision(nextDecision, newObs, config, cb, depth + 1);
@@ -282,82 +319,6 @@ public class LlmOrchestrator {
         environment.put("OPENAI_API_KEY", apiKey);
         return environment;
     }
-
-    private String generateHistoricalReport(String modelName, Integer startEpoch, Integer endEpoch) {
-        if (modelName == null || modelName.isBlank()) return "Error: Model name not provided.";
-        
-        java.nio.file.Path logPath = RLModelManager.findExistingModelFile(modelName, modelName + "_legacy_training.csv");
-        if (!java.nio.file.Files.exists(logPath)) {
-            logPath = RLModelManager.findExistingModelFile(modelName, modelName + "_multi_discrete_training.csv");
-            if (!java.nio.file.Files.exists(logPath)) {
-                return "Error: Could not find training logs for model: " + modelName;
-            }
-        }
-        
-        try {
-            java.util.List<String> lines = java.nio.file.Files.readAllLines(logPath);
-            if (lines.size() <= 1) return "Error: Log file is empty.";
-            
-            String[] headers = lines.get(0).split(",");
-            int epochIdx = -1, avgTotalRewardIdx = -1, bestEpRewardIdx = -1, epsilonIdx = -1, invalidRateIdx = -1;
-            for (int i = 0; i < headers.length; i++) {
-                if (headers[i].equals("epoch")) epochIdx = i;
-                if (headers[i].equals("avg_total_reward")) avgTotalRewardIdx = i;
-                if (headers[i].equals("best_ep_reward")) bestEpRewardIdx = i;
-                if (headers[i].equals("epsilon")) epsilonIdx = i;
-                if (headers[i].equals("invalid_rate_pct")) invalidRateIdx = i;
-            }
-            
-            if (epochIdx == -1 || avgTotalRewardIdx == -1) return "Error: Invalid CSV format.";
-            
-            int sEpoch = startEpoch != null ? startEpoch : 0;
-            int eEpoch = endEpoch != null ? endEpoch : Integer.MAX_VALUE;
-            
-            int count = 0;
-            double startReward = 0, endReward = 0;
-            double minReward = Double.MAX_VALUE, maxReward = -Double.MAX_VALUE;
-            
-            StringBuilder summary = new StringBuilder();
-            summary.append("Historical Report for ").append(modelName).append(" (Epochs ").append(sEpoch).append("-").append(eEpoch == Integer.MAX_VALUE ? "End" : eEpoch).append("):\n");
-            
-            for (int i = 1; i < lines.size(); i++) {
-                String[] parts = lines.get(i).split(",");
-                if (parts.length <= avgTotalRewardIdx) continue;
-                try {
-                    int ep = Integer.parseInt(parts[epochIdx]);
-                    if (ep >= sEpoch && ep <= eEpoch) {
-                        double reward = Double.parseDouble(parts[avgTotalRewardIdx]);
-                        if (count == 0) startReward = reward;
-                        endReward = reward;
-                        minReward = Math.min(minReward, reward);
-                        maxReward = Math.max(maxReward, reward);
-                        count++;
-                        
-                        // Sample every 10th epoch for trend
-                        if (count <= 5 || count % 10 == 0 || i == lines.size() - 1) {
-                            String eps = epsilonIdx != -1 ? parts[epsilonIdx] : "N/A";
-                            String inv = invalidRateIdx != -1 ? parts[invalidRateIdx] : "N/A";
-                            summary.append(String.format("Epoch %d: Avg Reward %.4f, Epsilon %s, Invalid %s%%\n", ep, reward, eps, inv));
-                        }
-                    }
-                } catch (NumberFormatException ignored) {}
-            }
-            
-            if (count == 0) return "No data found in the specified epoch range.";
-            
-            summary.append(String.format("\nSummary over %d epochs:\n", count));
-            summary.append(String.format("Start Reward: %.4f | End Reward: %.4f\n", startReward, endReward));
-            summary.append(String.format("Min Reward: %.4f | Max Reward: %.4f\n", minReward, maxReward));
-            if (endReward > startReward) summary.append("Trend: IMPROVING\n");
-            else summary.append("Trend: STAGNANT/DEGRADING\n");
-            
-            return summary.toString();
-        } catch (Exception e) {
-            return "Error: Failed to read training logs: " + e.getMessage();
-        }
-    }
-
-
 
     private void startNewRun(SupervisorDecision decision) {
         java.util.function.Consumer<String> cb = this.statusCallback;
@@ -378,14 +339,7 @@ public class LlmOrchestrator {
         }
         modelName = modelName.trim();
         
-        // Check if the proposed model already exists on disk
-        boolean proposedModelExists = false;
-        try {
-            java.nio.file.Path metaPath = com.rustbuilder.ai.rl.infrastructure.RLModelManager.findExistingModelFile(modelName, modelName + ".rmeta");
-            proposedModelExists = java.nio.file.Files.exists(metaPath);
-        } catch (Exception e) {
-            // ignore
-        }
+        boolean proposedModelExists = historicalReportService.modelMetadataExists(modelName);
 
         String activeModel = rlService.getActiveTrainingModelName();
 
@@ -476,7 +430,7 @@ public class LlmOrchestrator {
             if (cb != null) {
                 cb.accept("[ORCHESTRATOR] Training finished: " + trainingConfig.getModelName());
             }
-        } catch (Throwable e) {
+        } catch (Exception e) {
             if (cb != null) {
                 java.io.StringWriter sw = new java.io.StringWriter();
                 e.printStackTrace(new java.io.PrintWriter(sw));
